@@ -1,0 +1,88 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-release",
+      "displayName": "Windows x64 Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /utf-8 /Zc:__cplusplus",
+        "CMAKE_C_FLAGS": "/DWIN32 /D_WINDOWS /W3 /utf-8",
+        "BUILD_TESTING": "ON",
+        "ZLIB_ROOT": "${sourceDir}/.build-tools/zlib/install",
+        "ZLIB_USE_STATIC_LIBS": "ON"
+      }
+    },
+    {
+      "name": "windows-qt-release",
+      "displayName": "Windows x64 Release with shared Qt host",
+      "inherits": "windows-release",
+      "binaryDir": "${sourceDir}/build-windows-qt",
+      "cacheVariables": {
+        "HDRSHOT_ENABLE_QT_HOST": "ON",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.build-tools/Qt/6.11.1/msvc2022_64"
+      }
+    },
+    {
+      "name": "mac-release",
+      "displayName": "macOS Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "15.5"
+      }
+    },
+    {
+      "name": "mac-qt-release",
+      "displayName": "macOS Release with shared Qt host",
+      "inherits": "mac-release",
+      "binaryDir": "${sourceDir}/build-qt",
+      "cacheVariables": {
+        "HDRSHOT_ENABLE_QT_HOST": "ON",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.build-tools/Qt/6.11.1/macos"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-release", "configurePreset": "windows-release" },
+    { "name": "windows-qt-release", "configurePreset": "windows-qt-release" },
+    {
+      "name": "mac-release",
+      "configurePreset": "mac-release"
+    },
+    {
+      "name": "mac-qt-release",
+      "configurePreset": "mac-qt-release"
+    }
+  ],
+  "testPresets": [
+    { "name": "windows-release", "configurePreset": "windows-release", "output": { "outputOnFailure": true } },
+    { "name": "windows-qt-release", "configurePreset": "windows-qt-release", "output": { "outputOnFailure": true }, "environment": { "QT_QPA_PLATFORM": "offscreen" } },
+    {
+      "name": "mac-release",
+      "configurePreset": "mac-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "mac-qt-release",
+      "configurePreset": "mac-qt-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "QT_QPA_PLATFORM": "offscreen"
+      }
+    }
+  ]
+}

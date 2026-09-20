@@ -1,0 +1,18 @@
+#include "domain/color/display_p3_icc_profile.hpp"
+
+#include <array>
+
+namespace hdrshot {
+namespace {
+
+constexpr std::array<std::uint8_t, @HDRSHOT_DISPLAY_P3_ICC_SIZE@> kDisplayP3IccBytes{
+    @HDRSHOT_DISPLAY_P3_ICC_BYTES@
+};
+
+}  // namespace
+
+std::span<const std::uint8_t> DisplayP3IccProfile::bytes() {
+  return kDisplayP3IccBytes;
+}
+
+}  // namespace hdrshot
