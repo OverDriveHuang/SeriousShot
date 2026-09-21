@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_commit": "31e8a21aeb24c95d8a8714fa362a42d37c43a419",
+  "source_commit": "25cd218d269d61e57e00fb0b1d141c153b3200e7",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "035ec7e5e429543a9d89ebaeb6eeaadde5464ff79b88ffd94abf77e08ee0d296",
+      "sha256": "db2d1ef43001f039a6a393856cc1a81aaee5b6c4d2d0e588b8a666c062ea506a",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -80,6 +80,18 @@
     },
     "cmake/windows_msvc.cmake": {
       "sha256": "8e716bf5c6ca797f9395c9d8fa057adb4552ff874896a7aa6177fe4a24ad0135",
+      "mode": 420
+    },
+    "docs/BUILDING.md": {
+      "sha256": "504ef0ff40ab4373e4232cb04d91e517db0accab8cb24e3fcc4ebb5bb352a2cc",
+      "mode": 420
+    },
+    "docs/images/analyzer-2026-09-20.png": {
+      "sha256": "b57539e66f6de0a2927d6fdcca3dfd90a044c90c4191d90b2f5014576ead658c",
+      "mode": 420
+    },
+    "docs/images/settings-2026-09-21.png": {
+      "sha256": "d2937cd7d641db64e882c2b0f4944f9485eaecaf80ebe2a20b397a4e1a81d013",
       "mode": 420
     },
     "scripts/analyzer_gamut_samples.cpp": {
