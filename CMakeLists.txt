@@ -791,6 +791,9 @@ if(APPLE)
       OUTPUT_NAME "SeriousShot"
     )
     hdrshot_enable_warnings(hdrshot_macos_qt_overlay_poc)
+    target_sources(hdrshot_macos_qt_overlay_poc PRIVATE assets/icons/SeriousShot.icns)
+    set_source_files_properties(assets/icons/SeriousShot.icns PROPERTIES
+      MACOSX_PACKAGE_LOCATION Resources)
     add_custom_command(TARGET hdrshot_macos_qt_overlay_poc POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E make_directory
         "$<TARGET_FILE_DIR:hdrshot_macos_qt_overlay_poc>/assets/fonts"

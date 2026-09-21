@@ -1,13 +1,13 @@
 {
   "schema": 1,
-  "source_commit": "ae9d07bef23e40702a7e3c89203d349ca48006e4",
+  "source_commit": "646372e7095394bfe5a6ae1bccf42d9d461451d9",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "ae3f624a590eceaca4a2efc3bd8e2cb27e62074896ee5f353aa067d54cb11c17",
+      "sha256": "f6e2f872a3e31213f54fa478f055f216065c94c41a72c4f6c7991ee659dce563",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -50,6 +50,10 @@
       "sha256": "8328964c61ecc128736bafea96f285da60f216f733410d6313429efe89e69c45",
       "mode": 420
     },
+    "assets/icons/SeriousShot.icns": {
+      "sha256": "6bbe16b44f53755f3ae62cb6ba00292f3d8a3d3692631cd94f135e2067b53dc7",
+      "mode": 420
+    },
     "cmake/GenerateBuildTimestamp.cmake": {
       "sha256": "2ac181dc49f715eba64062b0cc76602608368845f569db78cfbc51aa9ef1073e",
       "mode": 420
@@ -71,7 +75,7 @@
       "mode": 420
     },
     "cmake/macos/HDRShotInfo.plist.in": {
-      "sha256": "b3ea8abb758bd0a93ad364bba04ca1f42e68b925b0e6d66ec607a00a15e04b81",
+      "sha256": "6c346be3e2d23293d26221d5119cd0584437215b701279797ba3ceffa2441ee7",
       "mode": 420
     },
     "cmake/windows.cmake": {
