@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_commit": "646372e7095394bfe5a6ae1bccf42d9d461451d9",
+  "source_commit": "51d71a746856958bba8213140423c951875c5ce1",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -815,7 +815,7 @@
       "mode": 420
     },
     "src/ui/qt/analyzer_window.cpp": {
-      "sha256": "bcab1a34393003270e5f8e2ef29217beeb401ec160806027cdd92aeb48998e15",
+      "sha256": "08cc566d8a4746bd4e9718c8106075be891e79a6071e3498a4e04c5b6cd92c39",
       "mode": 420
     },
     "src/ui/qt/analyzer_window.hpp": {
@@ -879,7 +879,7 @@
       "mode": 420
     },
     "tests/analyzer_ui_tests.cpp": {
-      "sha256": "37fdc5276952c25f461b0412148c7c238f98e0b27bc0b6dcfa884bd6717786e1",
+      "sha256": "b410cc49cb2d2c26db3238e99d8b5652a3799e5a2e105a348d28f809500543cb",
       "mode": 420
     },
     "tests/annotation_antialiasing_tests.cpp": {
@@ -1063,7 +1063,7 @@
       "mode": 420
     },
     "tests/settings_window_tests.cpp": {
-      "sha256": "6db0e05028ebcbea8e5abb65ffbaffd7105ba587b6a797f07316a4a579441238",
+      "sha256": "7fdb0582170d9910e43b27121c15ec1b56dfa710f434dfeb12677a6e60cb23df",
       "mode": 420
     },
     "tests/settings_workflow_tests.cpp": {

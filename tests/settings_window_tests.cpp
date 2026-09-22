@@ -551,6 +551,17 @@ int main(int argc, char** argv) {
     if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path))) {
       return 1;
     }
+    // Also inspect the only locally colored text in Settings in both palettes.
+    auto* logging = fixture.window.findChild<QCheckBox*>("detailedLoggingCheckBox");
+    logging->click();
+    QApplication::processEvents();
+    if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path) + ".success.png"))
+      return 1;
+    fixture.store.fail_next_save = true;
+    logging->click();
+    QApplication::processEvents();
+    if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path) + ".error.png"))
+      return 1;
   }
   return hdrshot::test::run({
       {"detailed log checkbox autosaves and restores on error", detailed_logging_applies_and_rolls_back_on_failure},

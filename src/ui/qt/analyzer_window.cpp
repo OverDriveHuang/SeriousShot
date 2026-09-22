@@ -352,6 +352,9 @@ void AnalyzerWindow::set_close_confirmation(std::function<bool()> h) {
 void AnalyzerWindow::build_ui() {
   setStyleSheet(
       "QWidget#analyzerWindow{background:#202124;color:#e9ebef;} "
+      "QMessageBox#analyzerCloseConfirmation{background:#202124;color:#e9ebef;} "
+      "QMessageBox#analyzerCloseConfirmation QPushButton:default,"
+      "QMessageBox#analyzerCloseConfirmation QPushButton:focus{border-color:#9fb4c3;} "
       "QWidget{color:#e9ebef;font-size:12px;} "
       "QFrame[analyzerPanel=true]{background:#292b2f;border:1px solid "
       "#424750;border-radius:7px;} "
@@ -1821,6 +1824,10 @@ void AnalyzerWindow::closeEvent(QCloseEvent *e) {
   else {
     QMessageBox box(QMessageBox::Question, "关闭分析窗口",
                     "确定退出这个分析窗口吗？", QMessageBox::NoButton, this);
+    // The analyzer is always dark, including its confirmation dialog. A native
+    // dialog can otherwise mix the system light background with inherited QSS.
+    box.setObjectName("analyzerCloseConfirmation");
+    box.setOption(QMessageBox::Option::DontUseNativeDialog);
     auto *keep = box.addButton("继续分析", QMessageBox::RejectRole);
     auto *leave = box.addButton("退出分析", QMessageBox::AcceptRole);
     box.setDefaultButton(keep);

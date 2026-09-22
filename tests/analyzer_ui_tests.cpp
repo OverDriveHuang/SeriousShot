@@ -22,6 +22,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPointingDevice>
@@ -34,6 +36,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <iostream>
 
 namespace {
@@ -484,6 +487,82 @@ void stale_results_and_close_confirmation() {
   f.window.set_close_confirmation([] { return true; });
   HDRSHOT_CHECK(f.window.close());
   HDRSHOT_CHECK(another.window.isVisible());
+}
+
+void close_dialog_stays_dark_with_light_and_dark_application_palettes() {
+  struct RestorePalette {
+    QPalette saved = QApplication::palette();
+    ~RestorePalette() { QApplication::setPalette(saved); }
+  } restore;
+  for (bool dark : {false, true}) {
+    auto palette = restore.saved;
+    palette.setColor(QPalette::Window, dark ? QColor("#181818") : QColor("#fafafa"));
+    palette.setColor(QPalette::WindowText, dark ? Qt::white : Qt::black);
+    palette.setColor(QPalette::Button, dark ? QColor("#303030") : QColor("#eeeeee"));
+    palette.setColor(QPalette::ButtonText, dark ? Qt::white : Qt::black);
+    QApplication::setPalette(palette);
+    Fixture f;
+    f.window.set_close_confirmation({});
+    // Default/Enter and Escape both retain the analysis; only explicit Exit closes.
+    for (int action = 0; action < 3; ++action) {
+      std::exception_ptr failure;
+      bool visited = false;
+      QTimer::singleShot(0, &f.window, [&] {
+        auto *box = f.window.findChild<QMessageBox *>("analyzerCloseConfirmation");
+        try {
+          HDRSHOT_CHECK(box);
+          visited = true;
+          HDRSHOT_CHECK(box->testOption(QMessageBox::Option::DontUseNativeDialog));
+          HDRSHOT_CHECK(box->defaultButton()->text() == QStringLiteral("继续分析"));
+          HDRSHOT_CHECK(box->escapeButton() == box->defaultButton());
+          auto check_dark = [&] {
+            const auto image = box->grab().toImage();
+            HDRSHOT_CHECK(image.pixelColor(2, 2) == QColor("#202124"));
+            auto *label = box->findChild<QLabel *>("qt_msgbox_label");
+            HDRSHOT_CHECK(label);
+            HDRSHOT_CHECK(label->palette().color(QPalette::WindowText) == QColor("#e9ebef"));
+            for (auto *button : box->buttons()) {
+              HDRSHOT_CHECK(button->palette().color(QPalette::ButtonText) == QColor("#e9ebef"));
+              HDRSHOT_CHECK(button->palette().color(QPalette::Button) == QColor("#30343b"));
+            }
+          };
+          check_dark();
+          if (action == 0) {
+            const auto folder = qEnvironmentVariable("HDRSHOT_ANALYZER_SCREENSHOT_DIR");
+            if (!folder.isEmpty()) {
+              HDRSHOT_CHECK(QDir().mkpath(folder));
+              HDRSHOT_CHECK(box->grab().save(folder + (dark ? "/close_dialog_dark.png" : "/close_dialog_light.png")));
+            }
+            // A system/application palette change must not undo the fixed theme.
+            auto changed = palette;
+            changed.setColor(QPalette::Window, dark ? Qt::white : Qt::black);
+            changed.setColor(QPalette::WindowText, dark ? Qt::black : Qt::white);
+            QApplication::setPalette(changed);
+            events();
+            check_dark();
+            QWidget ordinary_window;
+            HDRSHOT_CHECK(ordinary_window.palette().color(QPalette::Window) == changed.color(QPalette::Window));
+            key(box, Qt::Key_Return);
+          } else if (action == 1) {
+            key(box, Qt::Key_Escape);
+          } else {
+            for (auto *button : box->buttons())
+              if (box->buttonRole(button) == QMessageBox::AcceptRole)
+                button->click();
+          }
+        } catch (...) {
+          failure = std::current_exception();
+          if (auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget()))
+            modal->reject();
+        }
+      });
+      const bool closed = f.window.close();
+      if (failure) std::rethrow_exception(failure);
+      HDRSHOT_CHECK(visited);
+      HDRSHOT_CHECK(closed == (action == 2));
+      HDRSHOT_CHECK(f.window.isVisible() == (action != 2));
+    }
+  }
 }
 
 void gamut_report_matches_visible_scope() {
@@ -1533,6 +1612,8 @@ int main(int argc, char **argv) {
        {"perceptual gamut report matches current visible scope", gamut_report_matches_visible_scope},
        {"stale result and independent close confirmation",
         stale_results_and_close_confirmation},
+       {"close dialog stays dark without leaking into system windows",
+        close_dialog_stays_dark_with_light_and_dark_application_palettes},
        {"pending control edits cannot export mixed report",
         pending_controls_cannot_export_mixed_report},
        {"explicit mask and hover marker states",
