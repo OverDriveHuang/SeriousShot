@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.0 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.1 LANGUAGES CXX)
 
 if(MSVC)
   include(cmake/windows_msvc.cmake)
