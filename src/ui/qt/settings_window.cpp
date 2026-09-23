@@ -3,6 +3,9 @@
 #include "core/build_metadata.hpp"
 
 #include <QFileDialog>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QEvent>
 #include <QApplication>
 #include <QComboBox>
@@ -54,8 +57,8 @@ SettingsWindow::SettingsWindow(
   qApp->installEventFilter(this);
   setWindowTitle(QStringLiteral("SeriousShot 设置"));
   setWindowFlag(Qt::WindowStaysOnTopHint, false);
-  setMinimumSize(800, 680);
-  resize(860, 720);
+  setMinimumSize(800, 730);
+  resize(860, 770);
 
   auto* root = new QVBoxLayout(this);
   root->setContentsMargins(28, 24, 28, 24);
@@ -260,22 +263,41 @@ SettingsWindow::SettingsWindow(
   root->addLayout(shortcuts_section);
 
   status_label_ = new QLabel(this);
+  status_label_->setObjectName(QStringLiteral("settingsStatusLabel"));
   status_label_->setWordWrap(true);
   status_label_->hide();
   root->addWidget(status_label_);
   root->addStretch(1);
 
+  auto* identity_row = new QHBoxLayout();
+  const auto source_time = QDateTime::fromString(
+      QString::fromLatin1(source_commit_timestamp().data(),
+                         static_cast<qsizetype>(source_commit_timestamp().size())), Qt::ISODate);
+  auto* identity_label = new QLabel(QStringLiteral("版本 %1 · 代码提交：%2%3")
+      .arg(QString::fromLatin1(product_version().data(), static_cast<qsizetype>(product_version().size())),
+           source_time.isValid() ? source_time.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'"))
+                                 : QStringLiteral("未知"),
+           source_modified() ? QStringLiteral(" · 含未提交修改") : QString()), this);
+  identity_label->setObjectName(QStringLiteral("buildIdentityLabel"));
+  identity_label->setWordWrap(true);
+  identity_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  identity_label->setToolTip(source_commit().empty()
+      ? QStringLiteral("未找到可信的源代码提交信息；不会以构建时间代替。")
+      : QStringLiteral("源代码提交：%1").arg(QString::fromLatin1(
+            source_commit().data(), static_cast<qsizetype>(source_commit().size()))));
+  identity_row->addWidget(identity_label, 1);
+  auto* releases = new QPushButton(QStringLiteral("查看发布版本 ↗"), this);
+  releases->setObjectName(QStringLiteral("openReleasesButton"));
+  releases->setFlat(true);
+  connect(releases, &QPushButton::clicked, this, [this] {
+    const QUrl url(QStringLiteral("https://github.com/OverDriveHuang/SeriousShot/releases"));
+    const bool opened = release_page_opener_ ? release_page_opener_(url) : QDesktopServices::openUrl(url);
+    if (!opened) show_status(QStringLiteral("无法打开浏览器，请稍后重试。"), true);
+  });
+  identity_row->addWidget(releases);
+  root->addLayout(identity_row);
+
   auto* actions = new QHBoxLayout();
-  const auto current_build_timestamp = build_timestamp();
-  auto* build_timestamp_label = new QLabel(
-      QStringLiteral("构建时间：%1")
-          .arg(QString::fromLatin1(
-              current_build_timestamp.data(),
-              static_cast<qsizetype>(current_build_timestamp.size()))),
-      this);
-  build_timestamp_label->setObjectName(QStringLiteral("buildTimestampLabel"));
-  build_timestamp_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  actions->addWidget(build_timestamp_label);
   actions->addStretch(1);
   detailed_logging_check_ = new QCheckBox(QStringLiteral("详细日志（调试）"), this);
   detailed_logging_check_->setObjectName(QStringLiteral("detailedLoggingCheckBox"));
@@ -316,6 +338,10 @@ SettingsWindow::SettingsWindow(
       [this] { persist_enter_completion_action(); });
   connect(double_click_completion_combo_, &QComboBox::currentIndexChanged, this,
       [this] { persist_double_click_completion_action(); });
+}
+
+void SettingsWindow::set_release_page_opener(std::function<bool(const QUrl&)> opener) {
+  release_page_opener_ = std::move(opener);
 }
 
 void SettingsWindow::set_applied(Applied callback) {

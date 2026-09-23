@@ -1,16 +1,23 @@
 #include "domain/analysis/engine.hpp"
+#include "domain/color/extended_p3_mapper.hpp"
 #include "test_support.hpp"
 #include "ui/qt/analyzer_layout.hpp"
+#include "ui/qt/analyzer_control_style.hpp"
 #include "ui/qt/analyzer_scope_plot.hpp"
+#include "ui/qt/analyzer_swatch_panel.hpp"
 #include "ui/qt/analyzer_window.hpp"
 
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
+#include <QCursor>
+#include <QGuiApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFrame>
+#include <QGraphicsOpacityEffect>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QEventLoop>
@@ -23,9 +30,12 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPushButton>
 #include <QNativeGestureEvent>
+#include <QTouchEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QPointingDevice>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -57,6 +67,12 @@ void events() {
   for (int i = 0; i < 5; ++i)
     QApplication::processEvents();
 }
+void wait_events(int milliseconds) {
+  QEventLoop loop;
+  QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+  loop.exec();
+  events();
+}
 void mouse(QWidget *target, QEvent::Type type, QPointF local,
            Qt::MouseButton button, Qt::MouseButtons buttons) {
   QMouseEvent e(type, local, QPointF(target->mapToGlobal(local.toPoint())),
@@ -65,10 +81,16 @@ void mouse(QWidget *target, QEvent::Type type, QPointF local,
   events();
 }
 void click(QWidget *target, QPointF local) {
+  const QPoint global = target->mapToGlobal(local.toPoint());
+  QPointer<QWidget> alive(target);
   mouse(target, QEvent::MouseButtonPress, local, Qt::LeftButton,
         Qt::LeftButton);
-  mouse(target, QEvent::MouseButtonRelease, local, Qt::LeftButton,
-        Qt::NoButton);
+  // A press handler can replace the card (pair creation does this on the next
+  // event turn). Never send a release through a stale test pointer.
+  target = alive ? alive.data() : QApplication::widgetAt(global);
+  if (target)
+    mouse(target, QEvent::MouseButtonRelease,
+          target->mapFromGlobal(global), Qt::LeftButton, Qt::NoButton);
 }
 void drag(QWidget *target, QPointF from, QPointF to) {
   mouse(target, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
@@ -501,10 +523,10 @@ void close_dialog_stays_dark_with_light_and_dark_application_palettes() {
     palette.setColor(QPalette::Button, dark ? QColor("#303030") : QColor("#eeeeee"));
     palette.setColor(QPalette::ButtonText, dark ? Qt::white : Qt::black);
     QApplication::setPalette(palette);
-    Fixture f;
-    f.window.set_close_confirmation({});
-    // Default/Enter and Escape both retain the analysis; only explicit Exit closes.
-    for (int action = 0; action < 3; ++action) {
+    // Escape/Continue retain analysis; Enter and explicit End close it.
+    for (int action = 0; action < 4; ++action) {
+      Fixture f;
+      f.window.set_close_confirmation({});
       std::exception_ptr failure;
       bool visited = false;
       QTimer::singleShot(0, &f.window, [&] {
@@ -513,18 +535,33 @@ void close_dialog_stays_dark_with_light_and_dark_application_palettes() {
           HDRSHOT_CHECK(box);
           visited = true;
           HDRSHOT_CHECK(box->testOption(QMessageBox::Option::DontUseNativeDialog));
-          HDRSHOT_CHECK(box->defaultButton()->text() == QStringLiteral("继续分析"));
-          HDRSHOT_CHECK(box->escapeButton() == box->defaultButton());
+          HDRSHOT_CHECK(box->defaultButton()->text() == QStringLiteral("结束分析 · Enter"));
+          HDRSHOT_CHECK(box->escapeButton()->text() == QStringLiteral("继续分析 · Esc"));
+          HDRSHOT_CHECK(box->escapeButton() != box->defaultButton());
           auto check_dark = [&] {
             const auto image = box->grab().toImage();
             HDRSHOT_CHECK(image.pixelColor(2, 2) == QColor("#202124"));
             auto *label = box->findChild<QLabel *>("qt_msgbox_label");
             HDRSHOT_CHECK(label);
             HDRSHOT_CHECK(label->palette().color(QPalette::WindowText) == QColor("#e9ebef"));
+            QPushButton *end = nullptr;
             for (auto *button : box->buttons()) {
-              HDRSHOT_CHECK(button->palette().color(QPalette::ButtonText) == QColor("#e9ebef"));
-              HDRSHOT_CHECK(button->palette().color(QPalette::Button) == QColor("#30343b"));
+              const bool destructive = box->buttonRole(button) == QMessageBox::DestructiveRole;
+              HDRSHOT_CHECK(button->palette().color(QPalette::ButtonText) == QColor(destructive ? analyzer_control_style::danger_foreground : "#e9ebef"));
+              HDRSHOT_CHECK(button->palette().color(QPalette::Button) == QColor(destructive ? analyzer_control_style::danger_normal : "#30343b"));
+              if (destructive) end = qobject_cast<QPushButton *>(button);
             }
+            HDRSHOT_CHECK(end && end == box->defaultButton());
+            auto *keep = box->escapeButton();
+            HDRSHOT_CHECK(end != keep);
+            const auto end_rect = QRect(end->mapTo(box, QPoint()), end->size());
+            const auto keep_rect = QRect(keep->mapTo(box, QPoint()), keep->size());
+            const int gap = std::max(end_rect.left() - keep_rect.right() - 1,
+                                     keep_rect.left() - end_rect.right() - 1);
+            HDRSHOT_CHECK(gap >= 16);
+            HDRSHOT_CHECK(end_rect.size() == keep_rect.size());
+            HDRSHOT_CHECK(end_rect.width() >= 184);
+            HDRSHOT_CHECK(end_rect.left() < keep_rect.left());
           };
           check_dark();
           if (action == 0) {
@@ -542,12 +579,16 @@ void close_dialog_stays_dark_with_light_and_dark_application_palettes() {
             check_dark();
             QWidget ordinary_window;
             HDRSHOT_CHECK(ordinary_window.palette().color(QPalette::Window) == changed.color(QPalette::Window));
-            key(box, Qt::Key_Return);
-          } else if (action == 1) {
             key(box, Qt::Key_Escape);
+          } else if (action == 1) {
+            box->escapeButton()->click();
+          } else if (action == 2) {
+            // Focusing Continue must not turn it into an implicit Enter default.
+            box->escapeButton()->setFocus();
+            key(box, Qt::Key_Return);
           } else {
             for (auto *button : box->buttons())
-              if (box->buttonRole(button) == QMessageBox::AcceptRole)
+              if (box->buttonRole(button) == QMessageBox::DestructiveRole)
                 button->click();
           }
         } catch (...) {
@@ -559,8 +600,8 @@ void close_dialog_stays_dark_with_light_and_dark_application_palettes() {
       const bool closed = f.window.close();
       if (failure) std::rethrow_exception(failure);
       HDRSHOT_CHECK(visited);
-      HDRSHOT_CHECK(closed == (action == 2));
-      HDRSHOT_CHECK(f.window.isVisible() == (action != 2));
+      HDRSHOT_CHECK(closed == (action >= 2));
+      HDRSHOT_CHECK(f.window.isVisible() == (action < 2));
     }
   }
 }
@@ -840,7 +881,69 @@ void native_surface_hover_and_interrupted_gesture_recover() {
   QNativeGestureEvent begin(Qt::BeginNativeGesture, QPointingDevice::primaryPointingDevice(), 2,
                             p, p, source->mapToGlobal(p.toPoint()), 0, {});
   QApplication::sendEvent(surface, &begin);
-  // A missing native End must not permanently gate a later physical click.
+  // A synthesized move during the active gesture must keep the picker hidden.
+  const QPointF next = source->local_at({105, 65});
+  QMouseEvent synthesized(QEvent::MouseMove, next, next,
+                          QPointF(surface->mapToGlobal(next.toPoint())),
+                          Qt::NoButton, Qt::NoButton, Qt::NoModifier,
+                          Qt::MouseEventSynthesizedByQt);
+  QApplication::sendEvent(surface, &synthesized);
+  HDRSHOT_CHECK(!source->transient_visible());
+  // A missing native End must recover on the next genuine no-button move,
+  // without requiring the click that used to restore hover.
+  const auto fixed_count = [&] {
+    const auto &samples = f.window.current_request().samples;
+    return std::count_if(samples.begin(), samples.end(),
+                         [](const auto &sample) { return sample.id != 0; });
+  };
+  const auto before_recovery = fixed_count();
+  mouse(surface, QEvent::MouseMove, next, Qt::NoButton, Qt::NoButton);
+  HDRSHOT_CHECK(source->transient_visible());
+  HDRSHOT_CHECK(fixed_count() == before_recovery);
+  QEventLoop recovery;
+  QTimer::singleShot(30, &recovery, &QEventLoop::quit);
+  recovery.exec();
+  const auto &recovered_samples = f.window.current_request().samples;
+  const QPointF recovered_source = source->source_at(next);
+  HDRSHOT_CHECK(std::any_of(recovered_samples.begin(), recovered_samples.end(),
+                            [&](const auto &sample) {
+                              return sample.id == 0 &&
+                                     sample.x == int(std::floor(recovered_source.x())) &&
+                                     sample.y == int(std::floor(recovered_source.y()));
+                            }));
+  HDRSHOT_CHECK(child<QLabel>(f.window, "analyzerHoverReadout")->text().contains("Y · nit"));
+  // Wheel streams can lose ScrollEnd by the same route.
+  phased_wheel(Qt::ScrollBegin);
+  HDRSHOT_CHECK(!source->transient_visible());
+  mouse(surface, QEvent::MouseMove, p, Qt::NoButton, Qt::NoButton);
+  HDRSHOT_CHECK(source->transient_visible());
+  // A real two-finger touch stream remains active through mouse moves until
+  // Qt delivers TouchEnd, even if its preceding native Begin lost End.
+  QApplication::sendEvent(surface, &begin);
+  const QList<QEventPoint> contacts{
+      {1, QEventPoint::State::Pressed, p, surface->mapToGlobal(p.toPoint())},
+      {2, QEventPoint::State::Pressed, p + QPointF(20, 0),
+       surface->mapToGlobal((p + QPointF(20, 0)).toPoint())}};
+  QTouchEvent touch_begin(QEvent::TouchBegin,
+                          QPointingDevice::primaryPointingDevice(),
+                          Qt::NoModifier, contacts);
+  QApplication::sendEvent(source, &touch_begin);
+  mouse(surface, QEvent::MouseMove, next, Qt::NoButton, Qt::NoButton);
+  HDRSHOT_CHECK(!source->transient_visible());
+  const QList<QEventPoint> released{
+      {1, QEventPoint::State::Released, p, surface->mapToGlobal(p.toPoint())},
+      {2, QEventPoint::State::Released, p + QPointF(20, 0),
+       surface->mapToGlobal((p + QPointF(20, 0)).toPoint())}};
+  QTouchEvent touch_end(QEvent::TouchEnd,
+                        QPointingDevice::primaryPointingDevice(),
+                        Qt::NoModifier, released);
+  QApplication::sendEvent(source, &touch_end);
+  // Directly injected QEventPoint positions default to (0,0) in the offscreen
+  // plugin, so the End itself may leave hover empty; the next ordinary move
+  // proves the touch gate has been released.
+  mouse(surface, QEvent::MouseMove, next, Qt::NoButton, Qt::NoButton);
+  HDRSHOT_CHECK(source->transient_visible());
+  // A click after recovery still adds exactly one pin.
   click(surface, p);
   const auto request = f.window.current_request();
   HDRSHOT_CHECK(std::count_if(request.samples.begin(), request.samples.end(), [](const auto &s) { return s.id != 0; }) == 1);
@@ -1489,6 +1592,745 @@ void vector_target_labels_stay_inside_visible_edges() {
   }
 }
 
+void swatch_pairs_use_real_clicks_and_local_updates() {
+  Fixture f;
+  const bool dpr2 = QApplication::primaryScreen()->devicePixelRatio() > 1.5;
+  f.window.resize(1280, dpr2 ? 1000 : 1400);
+  events();
+  f.add_samples();
+  const int requests_before = f.requests;
+  auto *handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  auto *card2 = child<QWidget>(f.window, "analyzerSwatch2");
+  mouse(card2, QEvent::MouseButtonPress, card2->rect().center(),
+        Qt::RightButton, Qt::RightButton);
+  mouse(card2, QEvent::MouseButtonRelease, card2->rect().center(),
+        Qt::RightButton, Qt::NoButton);
+  HDRSHOT_CHECK(f.window.findChildren<QWidget *>("analyzerSwatchPairRow1_2").empty());
+  click(card2, card2->rect().center());
+  events();
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow1_2"));
+
+  // Real pointer drag from #2's handle onto #3's card. The target card must
+  // receive the transient highlight while the drag is in progress.
+  if (dpr2) {
+    auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
+    auto *scroll = panel->findChild<QScrollArea *>("analyzerSwatchScroll");
+    HDRSHOT_CHECK(scroll);
+    scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+    events();
+  }
+  auto *handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  auto *card3 = child<QWidget>(f.window, "analyzerSwatch3");
+  const QPoint drop_global = card3->mapToGlobal(card3->rect().center());
+  const QPoint drop_local = handle2->mapFromGlobal(drop_global);
+  mouse(handle2, QEvent::MouseButtonPress, handle2->rect().center(),
+        Qt::LeftButton, Qt::LeftButton);
+  QCursor::setPos(drop_global);
+  mouse(handle2, QEvent::MouseMove, drop_local, Qt::NoButton, Qt::LeftButton);
+  HDRSHOT_CHECK(card3->property("swatchPairTarget").toBool());
+  mouse(handle2, QEvent::MouseButtonRelease, drop_local, Qt::LeftButton,
+        Qt::NoButton);
+  // The completed pair schedules a card rebuild. Reacquire its replacement
+  // after mouse() has processed queued events rather than reading the deleted
+  // pre-drop card pointer.
+  card3 = child<QWidget>(f.window, "analyzerSwatch3");
+  HDRSHOT_CHECK(!card3->property("swatchPairTarget").toBool());
+  HDRSHOT_CHECK(f.window.findChildren<QWidget *>("analyzerSwatchPairRow2_3").size() == 1);
+  events();
+
+  // Pair #1→#3 independently; all three explicit pairs coexist.
+  auto *handle1_again = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1_again, handle1_again->rect().center());
+  card3 = child<QWidget>(f.window, "analyzerSwatch3");
+  click(card3, card3->rect().center());
+  events();
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow2_3"));
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow1_3"));
+  HDRSHOT_CHECK(f.requests == requests_before);
+
+  auto *primary = child<QLabel>(f.window, "analyzerSwatchReadout1");
+  HDRSHOT_CHECK(primary->text().contains("Y · nit"));
+  HDRSHOT_CHECK(primary->text().contains("R / G / B · nit"));
+  child<QCheckBox>(f.window, "analyzerReading4")->setChecked(true);
+  primary = child<QLabel>(f.window, "analyzerSwatchReadout1");
+  HDRSHOT_CHECK(primary->text().contains("Hue / Chroma"));
+  QPointer<QWidget> stable_handle =
+      child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  const auto value_before = child<QLabel>(f.window, "analyzerSwatchPairValue1_2")->text();
+  auto refreshed = std::make_shared<analysis::ResultData>(*f.last_result);
+  refreshed->samples.front().mean.perceptual[0] += .1;
+  f.window.accept_result(refreshed);
+  events();
+  HDRSHOT_CHECK(child<QLabel>(f.window, "analyzerSwatchPairValue1_2")->text() != value_before);
+  HDRSHOT_CHECK(!stable_handle.isNull());
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairHandle1") == stable_handle.data());
+
+  // Save images while all three pairs are present, with immutable evidence
+  // names that describe the captured state.
+  const QString dir = qEnvironmentVariable("HDRSHOT_SWATCH_PAIR_SCREENSHOT_DIR");
+  if (!dir.isEmpty()) {
+    QDir().mkpath(dir);
+    const auto stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
+    HDRSHOT_CHECK(f.window.grab().save(dir + "/" + stamp + "_hdr_3pairs_before_unlink.png"));
+    auto *swatch_panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
+    auto *swatch_scroll = swatch_panel->findChild<QScrollArea *>("analyzerSwatchScroll");
+    HDRSHOT_CHECK(swatch_scroll);
+    swatch_scroll->verticalScrollBar()->setValue(
+        swatch_scroll->verticalScrollBar()->maximum());
+    events();
+    HDRSHOT_CHECK(f.window.grab().save(dir + "/" + stamp + "_window_swatches_3pairs_bottom.png"));
+    swatch_scroll->verticalScrollBar()->setValue(0);
+    const auto plan = f.window.report_plan();
+    QImage report(plan.underlay.rgba.data(), plan.underlay.size.width,
+                  plan.underlay.size.height, QImage::Format_RGBA8888);
+    HDRSHOT_CHECK(report.save(dir + "/" + stamp + "_report_3pairs.png"));
+    child<QComboBox>(f.window, "analyzerWorkingSpace")->setCurrentIndex(0);
+    events();
+    HDRSHOT_CHECK(f.window.grab().save(dir + "/" + stamp + "_sdr_3pairs.png"));
+  }
+
+  // Unordered duplicate leaves the original source direction and row count.
+  auto *handle3 = child<QToolButton>(f.window, "analyzerSwatchPairHandle3");
+  click(handle3, handle3->rect().center());
+  card2 = child<QWidget>(f.window, "analyzerSwatch2");
+  click(card2, card2->rect().center());
+  events();
+  HDRSHOT_CHECK(f.window.findChildren<QFrame *>("analyzerSwatchPairRow1_2").size() == 1);
+  auto *unlink = child<QToolButton>(f.window, "analyzerUnlinkSwatchPair1_2");
+  HDRSHOT_CHECK(unlink->text() == "解除" && !unlink->icon().isNull());
+  unlink->click();
+  events();
+  HDRSHOT_CHECK(f.window.findChildren<QWidget *>("analyzerSwatchPairRow1_2").empty());
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow1_3"));
+
+  auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
+  auto *pending_handle = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(pending_handle, pending_handle->rect().center());
+  const auto hidden_report = f.window.report_plan();
+  HDRSHOT_CHECK(panel->cancel_pair_gesture()); // The report hid only transients.
+  (void)hidden_report;
+  click(child<QToolButton>(f.window, "analyzerSwatchPairHandle1"),
+        child<QToolButton>(f.window, "analyzerSwatchPairHandle1")->rect().center());
+  key(child<QToolButton>(f.window, "analyzerSwatchPairHandle1"), Qt::Key_Escape);
+  click(child<QWidget>(f.window, "analyzerSwatch2"),
+        child<QWidget>(f.window, "analyzerSwatch2")->rect().center());
+  HDRSHOT_CHECK(f.window.findChildren<QWidget *>("analyzerSwatchPairRow1_2").empty());
+
+  click(child<QToolButton>(f.window, "analyzerSwatchPairHandle1"),
+        child<QToolButton>(f.window, "analyzerSwatchPairHandle1")->rect().center());
+  f.window.hide(); // Hiding cancels the live click-to-pair gesture.
+  HDRSHOT_CHECK(!panel->cancel_pair_gesture());
+  f.window.show();
+  events();
+  click(child<QWidget>(f.window, "analyzerSwatch2"),
+        child<QWidget>(f.window, "analyzerSwatch2")->rect().center());
+  HDRSHOT_CHECK(f.window.findChildren<QWidget *>("analyzerSwatchPairRow1_2").empty());
+  HDRSHOT_CHECK(f.window.findChildren<QWidget *>("analyzerSwatchPairRow1_3").size() == 1);
+}
+
+void swatch_handles_click_drag_and_curve() {
+  Fixture f;
+  const bool dpr2 = QApplication::primaryScreen()->devicePixelRatio() > 1.5;
+  f.window.resize(1280, dpr2 ? 1000 : 1400);
+  events();
+  f.add_samples();
+  const int requests_before = f.requests;
+  auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
+  auto *scroll = panel->findChild<QScrollArea *>("analyzerSwatchScroll");
+  const auto scroll_top = [&] {
+    scroll->verticalScrollBar()->setValue(0);
+    events();
+  };
+  const auto scroll_bottom = [&] {
+    scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+    events();
+  };
+  auto *handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  HDRSHOT_CHECK(handle1->toolTip().contains("Δ"));
+  HDRSHOT_CHECK(!handle1->icon().isNull());
+  click(handle1, handle1->rect().center());
+  auto *handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  click(handle2, handle2->rect().center());
+  events();
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow1_2"));
+
+  scroll_bottom();
+  handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  auto *handle3 = child<QToolButton>(f.window, "analyzerSwatchPairHandle3");
+  const QPoint destination = handle3->mapToGlobal(handle3->rect().center());
+  const QPoint local = handle2->mapFromGlobal(destination);
+  mouse(handle2, QEvent::MouseButtonPress, handle2->rect().center(),
+        Qt::LeftButton, Qt::LeftButton);
+  mouse(handle2, QEvent::MouseMove, local, Qt::NoButton, Qt::LeftButton);
+  mouse(handle2, QEvent::MouseButtonRelease, local, Qt::LeftButton, Qt::NoButton);
+  events();
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow2_3"));
+
+  scroll_top();
+  handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  scroll_bottom();
+  handle3 = child<QToolButton>(f.window, "analyzerSwatchPairHandle3");
+  click(handle3, handle3->rect().center());
+  events();
+  HDRSHOT_CHECK(child<QWidget>(f.window, "analyzerSwatchPairRow1_3"));
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 3);
+  HDRSHOT_CHECK(f.requests == requests_before);
+
+  // Reversed clicks must keep the existing pair count and direction.
+  handle3 = child<QToolButton>(f.window, "analyzerSwatchPairHandle3");
+  click(handle3, handle3->rect().center());
+  scroll_top();
+  handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 3);
+
+  // Hovering a result row paints a viewport clipped curved connection.
+  scroll_bottom();
+  auto *row = child<QWidget>(f.window, "analyzerSwatchPairRow2_3");
+  QEvent enter(QEvent::Enter);
+  QApplication::sendEvent(row, &enter);
+  events();
+  auto *overlay = child<QWidget>(f.window, "analyzerSwatchTransientOverlay");
+  const QImage curve = overlay->grab().toImage();
+  const QPoint source_port = overlay->mapFromGlobal(
+      child<QToolButton>(f.window, "analyzerSwatchPairHandle2")
+          ->mapToGlobal(QPoint(27, 14)));
+  bool bends_into_gutter = false;
+  for (int y = 0; y < curve.height(); ++y)
+    for (int x = int(std::lround((source_port.x() + 5) * curve.devicePixelRatio()));
+         x < curve.width(); ++x) {
+      const auto color = curve.pixelColor(x, y);
+      if (color.alpha() > 100 && color.blue() > 150 &&
+          color.green() > 130 && color.red() < 190)
+        bends_into_gutter = true;
+    }
+  HDRSHOT_CHECK(bends_into_gutter);
+  const auto report = f.window.report_plan();
+  (void)report;
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 3);
+}
+
+void deleted_swatches_leave_no_source_or_report_marks() {
+  Fixture f;
+  f.window.resize(1280, 1400);
+  events();
+  f.add_samples();
+  auto *source = f.window.source_widget();
+  QEvent leave(QEvent::Leave);
+  QApplication::sendEvent(source, &leave);
+  const double dpr = source->devicePixelRatioF();
+  const auto old_result = f.last_result;
+  analysis::SourceView presented;
+  int present_count = 0;
+  f.window.set_present_handler([&](analysis::SourceView view, std::uintptr_t) {
+    presented = std::move(view);
+    ++present_count;
+  });
+  const auto maximum_alpha = [&](const QImage &image, QPointF source_point) {
+    const QPointF local = source->local_at(source_point) * dpr;
+    int maximum = 0;
+    for (int dy = -2; dy <= 2; ++dy)
+      for (int dx = -2; dx <= 2; ++dx) {
+        const int x = int(std::lround(local.x())) + dx;
+        const int y = int(std::lround(local.y())) + dy;
+        if (x >= 0 && y >= 0 && x < image.width() && y < image.height())
+          maximum = std::max(maximum, image.pixelColor(x, y).alpha());
+      }
+    return maximum;
+  };
+  const std::array<std::pair<int, QPointF>, 3> marks{{
+      {2, {70, 42}}, {1, {20.5, 13.5}}, {3, {100, 90}}}};
+  for (const auto &[id, point] : marks) {
+    HDRSHOT_CHECK(maximum_alpha(source->retained_overlay(dpr), point) > 0);
+    auto *remove = child<QToolButton>(
+        f.window, QString("analyzerRemoveSwatch%1").arg(id).toUtf8().constData());
+    const QPointF center = remove->rect().center();
+    QMouseEvent press(QEvent::MouseButtonPress, center,
+                      QPointF(remove->mapToGlobal(center.toPoint())),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(remove, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, center,
+                        QPointF(remove->mapToGlobal(center.toPoint())),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(remove, &release);
+    events();
+    f.window.accept_result(old_result); // an older completed request cannot revive a pin
+    events();
+    const auto current = f.window.current_request();
+    HDRSHOT_CHECK(std::none_of(current.samples.begin(), current.samples.end(),
+                               [id](const auto &sample) { return sample.id == std::uint64_t(id); }));
+    HDRSHOT_CHECK(maximum_alpha(source->retained_overlay(dpr), point) == 0);
+    HDRSHOT_CHECK(maximum_alpha(source->presentation_overlay(dpr), point) == 0);
+    const auto report = f.window.report_plan();
+    QImage report_image(report.overlay.rgba.data(), report.overlay.size.width,
+                        report.overlay.size.height, QImage::Format_RGBA8888);
+    const QPointF report_point = source->local_at(point) * dpr +
+                                 QPointF(report.source_rect.x, report.source_rect.y);
+    HDRSHOT_CHECK(report_image.pixelColor(int(std::lround(report_point.x())),
+                                          int(std::lround(report_point.y()))).alpha() == 0);
+    QEventLoop delivery;
+    QTimer::singleShot(30, &delivery, &QEventLoop::quit);
+    delivery.exec();
+    HDRSHOT_CHECK(present_count > 0 && presented.operation_overlay);
+    QImage native_marks(presented.operation_overlay->rgba.data(),
+                        presented.operation_overlay->size.width,
+                        presented.operation_overlay->size.height,
+                        QImage::Format_RGBA8888);
+    HDRSHOT_CHECK(maximum_alpha(native_marks, point) == 0);
+  }
+}
+
+void swatch_rebuild_preserves_scroll_after_layout() {
+  Fixture themed_window;
+  analysis::Request request;
+  auto result = std::make_shared<analysis::ResultData>();
+  result->settings = request.settings;
+  for (std::uint64_t id = 1; id <= 12; ++id) {
+    analysis::SampleRequest sample{id, int(id * 3), 20, 3, false};
+    request.samples.push_back(sample);
+    analysis::SampleResult value;
+    value.request = sample;
+    value.mean.valid_count = 9;
+    value.mean.perceptual = {.2 * double(id), .02 * double(id), -.01 * double(id)};
+    value.mean.display_rgb = {.2f, .5f, .4f};
+    result->samples.push_back(value);
+  }
+  const auto full_request = request;
+  const auto full_result = *result;
+  for (const int width : {320, 480}) {
+  request = full_request;
+  *result = full_result;
+  AnalyzerSwatchPanel panel(&themed_window.window);
+  panel.setGeometry(0, 0, width, 360);
+  panel.set_samples_and_result(request, result);
+  panel.show();
+  panel.raise();
+  events();
+  auto *bar = panel.findChild<QScrollArea *>("analyzerSwatchScroll")->verticalScrollBar();
+  HDRSHOT_CHECK(bar->maximum() > 300);
+  const auto settle_at = [&](int value) {
+    bar->setValue(value);
+    events();
+    return bar->value();
+  };
+  const auto pair = [&](int source, int target) {
+    auto *first = panel.findChild<QToolButton *>(
+        "analyzerSwatchPairHandle" + QString::number(source));
+    click(first, first->rect().center());
+    auto *second = panel.findChild<QToolButton *>(
+        "analyzerSwatchPairHandle" + QString::number(target));
+    click(second, second->rect().center());
+    events();
+  };
+  const int middle = settle_at(bar->maximum() / 2);
+  pair(5, 6);
+  events();
+  HDRSHOT_CHECK(bar->value() == middle);
+  auto *unlink = panel.findChild<QToolButton *>("analyzerUnlinkSwatchPair5_6");
+  HDRSHOT_CHECK(unlink);
+  unlink->click();
+  events();
+  HDRSHOT_CHECK(bar->value() == middle);
+  const int bottom = settle_at(bar->maximum());
+  pair(10, 11);
+  events();
+  HDRSHOT_CHECK(bar->value() == bottom);
+  unlink = panel.findChild<QToolButton *>("analyzerUnlinkSwatchPair10_11");
+  HDRSHOT_CHECK(unlink);
+  unlink->click();
+  events();
+  HDRSHOT_CHECK(bar->value() == std::min(bottom, bar->maximum()));
+
+  // Replacing the card set can shorten the range; retain the nearest valid
+  // position after all posted layout work has run.
+  request.samples.resize(3);
+  result->samples.resize(3);
+  panel.set_samples_and_result(request, result);
+  events();
+  HDRSHOT_CHECK(bar->value() == std::min(bottom, bar->maximum()));
+
+  // A new user movement in the same turn wins over the queued restore.
+  request = full_request;
+  *result = full_result;
+  bool direct_scrolled = false;
+  const auto direct_connection = QObject::connect(
+      bar, &QScrollBar::rangeChanged, &panel, [&](int, int maximum) {
+        if (!direct_scrolled && maximum >= 37) {
+          direct_scrolled = true;
+          bar->setValue(37);
+        }
+      });
+  panel.set_samples_and_result(request, result);
+  events();
+  QObject::disconnect(direct_connection);
+  HDRSHOT_CHECK(direct_scrolled);
+  HDRSHOT_CHECK(bar->value() == 37);
+  request.samples.front().side = 5;
+  result->samples.front().request.side = 5;
+  int user_position = -1;
+  const auto wheel_connection = QObject::connect(
+      bar, &QScrollBar::rangeChanged, &panel, [&](int, int maximum) {
+        if (user_position >= 0 || maximum <= 37)
+          return;
+        auto *viewport = panel.findChild<QScrollArea *>("analyzerSwatchScroll")->viewport();
+        const QPoint local(10, 10);
+        QWheelEvent user_wheel(QPointF(local), QPointF(viewport->mapToGlobal(local)),
+                               {}, QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
+                               Qt::NoScrollPhase, false);
+        QApplication::sendEvent(viewport, &user_wheel);
+        user_position = bar->value();
+      });
+  panel.set_samples_and_result(request, result);
+  events();
+  QObject::disconnect(wheel_connection);
+  HDRSHOT_CHECK(user_position > 0 && user_position != 37);
+  HDRSHOT_CHECK(bar->value() == user_position);
+  }
+}
+
+void swatch_pair_success_feedback_lifecycle() {
+  Fixture f;
+  f.window.resize(1280, 1400);
+  events();
+  f.add_samples();
+  const int requests_before = f.requests;
+  auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
+  const QString directory = qEnvironmentVariable("HDRSHOT_PAIR_SUCCESS_SCREENSHOT_DIR");
+  const auto capture = [&](const QString &phase) {
+    if (directory.isEmpty())
+      return;
+    QDir().mkpath(directory);
+    const auto stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
+    HDRSHOT_CHECK(f.window.grab().save(directory + "/" + stamp + "_" + phase + ".png"));
+  };
+  const auto opacity = [&](const QString &suffix) {
+    auto *row = f.window.findChild<QFrame *>("analyzerSwatchPairRow" + suffix);
+    HDRSHOT_CHECK(row);
+    auto *effect = qobject_cast<QGraphicsOpacityEffect *>(row->graphicsEffect());
+    return effect ? effect->opacity() : 1.0;
+  };
+  auto *handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  auto *handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  click(handle2, handle2->rect().center());
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 1);
+  HDRSHOT_CHECK(opacity("1_2") < .2);
+  HDRSHOT_CHECK(f.requests == requests_before);
+  capture("click_hold");
+
+  wait_events(240);
+  HDRSHOT_CHECK(opacity("1_2") > .05 && opacity("1_2") < .9);
+  capture("click_mid");
+  auto *row = child<QFrame>(f.window, "analyzerSwatchPairRow1_2");
+  const QPoint row_point = row->mapTo(&f.window, QPoint(2, 2));
+  const auto report = f.window.report_plan();
+  QImage report_image(report.underlay.rgba.data(), report.underlay.size.width,
+                      report.underlay.size.height, QImage::Format_RGBA8888);
+  const int dpr = int(std::lround(f.window.devicePixelRatioF()));
+  HDRSHOT_CHECK(report_image.pixelColor(row_point.x() * dpr, row_point.y() * dpr) ==
+                QColor("#202328"));
+  wait_events(260);
+  HDRSHOT_CHECK_NEAR(opacity("1_2"), 1.0, .001);
+  capture("click_final");
+
+  // A second pair starts its own local feedback. Removing its endpoint while
+  // it runs must clear the row and its animation state.
+  if (f.window.devicePixelRatioF() > 1.5) {
+    auto *scroll = panel->findChild<QScrollArea *>("analyzerSwatchScroll");
+    scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+    events();
+  }
+  const int requests_before_second_pair = f.requests;
+  handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  auto *handle3 = child<QToolButton>(f.window, "analyzerSwatchPairHandle3");
+  click(handle2, handle2->rect().center());
+  click(handle3, handle3->rect().center());
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 2);
+  HDRSHOT_CHECK(opacity("2_3") < .2);
+  HDRSHOT_CHECK(f.requests == requests_before_second_pair);
+  capture("drag_hold");
+  child<QToolButton>(f.window, "analyzerRemoveSwatch3")->click();
+  events();
+  HDRSHOT_CHECK(f.window.findChildren<QFrame *>("analyzerSwatchPairRow2_3").empty());
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 1);
+  const int requests_after_deletion = f.requests;
+
+  // Self selection and reversed duplicate are unsuccessful: no new fade.
+  handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  click(handle2, handle2->rect().center());
+  handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 1);
+  HDRSHOT_CHECK_NEAR(opacity("1_2"), 1.0, .001);
+  HDRSHOT_CHECK(f.requests == requests_after_deletion);
+}
+
+void swatch_pair_rows_fit_narrow_viewports() {
+  const QString dir = qEnvironmentVariable("HDRSHOT_SWATCH_PAIR_SCREENSHOT_DIR");
+  Fixture themed_window;
+  themed_window.window.resize(1280, 1000);
+  themed_window.add_samples();
+  events();
+  analysis::Request request;
+  request.settings.working_space = analysis::WorkingSpace::display_p3_pq;
+  auto result = std::make_shared<analysis::ResultData>();
+  result->settings = request.settings;
+  for (const std::uint64_t id : {1ULL, 2ULL, 3ULL}) {
+    analysis::SampleRequest sample{id, int(id * 10), int(id * 5), 3, false};
+    request.samples.push_back(sample);
+    analysis::SampleResult value;
+    value.request = sample;
+    value.mean.valid_count = 9;
+    value.mean.y_nits = 18.0 + double(id);
+    value.mean.perceptual = {.25 * double(id), .01 * double(id), -.02 * double(id)};
+    value.mean.display_rgb = {float(id) / 3.f, .25f, .5f};
+    result->samples.push_back(value);
+  }
+  // Keep this panel under the production window: the broad QWidget and
+  // QToolButton rules must cascade exactly as they do in the application.
+  AnalyzerSwatchPanel panel(&themed_window.window);
+  panel.set_copy_icon(child<QToolButton>(themed_window.window,
+                                        "analyzerCopySwatch1")->icon());
+  panel.raise();
+  panel.set_reading_formatter([](const analysis::Readout &readout, bool) {
+    return QString("Y · nit   %1\nITP T / P   0.1234 / 0.5678  |  ICtCp Ct / Cp   0.2468 / 0.5678")
+        .arg(readout.y_nits, 0, 'f', 2);
+  });
+  panel.set_samples_and_result(request, result);
+  for (const auto size : {QSize(320, 820), QSize(480, 820), QSize(640, 820)}) {
+    panel.resize(size);
+    panel.show();
+    events();
+    if (qEnvironmentVariableIsSet("HDRSHOT_EXPECT_DPR2")) {
+      const double dpr = panel.devicePixelRatioF();
+      HDRSHOT_CHECK_NEAR(dpr, 2.0, .01);
+      const auto captured = panel.grab();
+      HDRSHOT_CHECK(captured.size() ==
+                    QSize(qRound(size.width() * dpr),
+                          qRound(size.height() * dpr)));
+    }
+    auto *handle1 = panel.findChild<QToolButton *>("analyzerSwatchPairHandle1");
+    auto *card2 = panel.findChild<QWidget *>("analyzerSwatch2");
+    click(handle1, handle1->rect().center());
+    click(card2, card2->rect().center());
+    auto *handle1_again = panel.findChild<QToolButton *>("analyzerSwatchPairHandle1");
+    auto *card3 = panel.findChild<QWidget *>("analyzerSwatch3");
+    click(handle1_again, handle1_again->rect().center());
+    click(card3, card3->rect().center());
+    auto *handle2 = panel.findChild<QToolButton *>("analyzerSwatchPairHandle2");
+    card3 = panel.findChild<QWidget *>("analyzerSwatch3");
+    click(handle2, handle2->rect().center());
+    click(card3, card3->rect().center());
+    events();
+    wait_events(500); // Stable-state pixel assertions below exclude success feedback.
+
+    auto *scroll = panel.findChild<QScrollArea *>("analyzerSwatchScroll");
+    HDRSHOT_CHECK(scroll);
+    HDRSHOT_CHECK(scroll->horizontalScrollBar()->maximum() == 0);
+    for (const std::uint64_t id : {1ULL, 2ULL, 3ULL}) {
+      auto *card = panel.findChild<QFrame *>("analyzerSwatch" + QString::number(id));
+      auto *readout = panel.findChild<QLabel *>("analyzerSwatchReadout" + QString::number(id));
+      auto *copy = panel.findChild<QToolButton *>("analyzerCopySwatch" + QString::number(id));
+      auto *handle = panel.findChild<QToolButton *>("analyzerSwatchPairHandle" + QString::number(id));
+      auto *remove = panel.findChild<QToolButton *>("analyzerRemoveSwatch" + QString::number(id));
+      HDRSHOT_CHECK(card && readout && copy && handle && remove);
+      HDRSHOT_CHECK(card->width() <= scroll->viewport()->width());
+      HDRSHOT_CHECK(readout->height() <= readout->fontMetrics().lineSpacing() * 2 + 3);
+      HDRSHOT_CHECK(readout->toolTip() == readout->text());
+      HDRSHOT_CHECK(copy->geometry().right() < handle->geometry().left());
+      const QSize button_size(analyzer_control_style::icon_button_side,
+                              analyzer_control_style::icon_button_side);
+      HDRSHOT_CHECK(copy->size() == button_size);
+      HDRSHOT_CHECK(handle->size() == button_size);
+      HDRSHOT_CHECK(remove->size() == button_size);
+      HDRSHOT_CHECK(copy->geometry().center().y() == handle->geometry().center().y());
+      HDRSHOT_CHECK(handle->geometry().center().y() == remove->geometry().center().y());
+      HDRSHOT_CHECK(!copy->accessibleName().isEmpty());
+    }
+    for (const auto *name : {"1_2", "1_3", "2_3"}) {
+      auto *pair_row = panel.findChild<QFrame *>("analyzerSwatchPairRow" + QString(name));
+      HDRSHOT_CHECK(pair_row && pair_row->isVisible());
+      HDRSHOT_CHECK(pair_row->width() <= scroll->viewport()->width());
+      HDRSHOT_CHECK(panel.findChild<QLabel *>("analyzerPairColorA_" + QString(name))->size() == QSize(20, 20));
+      HDRSHOT_CHECK(panel.findChild<QLabel *>("analyzerPairColorB_" + QString(name))->size() == QSize(20, 20));
+      HDRSHOT_CHECK(panel.findChild<QToolButton *>("analyzerUnlinkSwatchPair" + QString(name))->isVisible());
+      auto *line = panel.findChild<QWidget *>("analyzerSwatchPairResultLine" + QString(name));
+      auto *endpoints = panel.findChild<QWidget *>("analyzerSwatchPairEndpoints" + QString(name));
+      auto *metric = panel.findChild<QLabel *>("analyzerSwatchPairMetric" + QString(name));
+      auto *separator = panel.findChild<QLabel *>("analyzerSwatchPairSeparator" + QString(name));
+      auto *unlink = panel.findChild<QToolButton *>("analyzerUnlinkSwatchPair" + QString(name));
+      const auto top = unlink->mapTo(line, QPoint());
+      HDRSHOT_CHECK(unlink->height() == analyzer_control_style::icon_button_side);
+      const QImage unlink_image = unlink->grab().toImage();
+      int content_left = unlink_image.width();
+      int content_right = -1;
+      for (int y = 2; y < unlink_image.height() - 2; ++y)
+        for (int x = 2; x < unlink_image.width() - 2; ++x) {
+          const QColor pixel = unlink_image.pixelColor(x, y);
+          if (pixel.red() > 140 && pixel.red() > pixel.green() + 65 &&
+              pixel.red() > pixel.blue() + 65) {
+            content_left = std::min(content_left, x);
+            content_right = std::max(content_right, x);
+          }
+        }
+      HDRSHOT_CHECK(content_right >= content_left);
+      const int left_space = content_left;
+      const int right_space = unlink_image.width() - content_right - 1;
+      HDRSHOT_CHECK(std::abs(left_space - right_space) <=
+                    qRound(3 * unlink->devicePixelRatioF()));
+      HDRSHOT_CHECK(separator && separator->text() == QStringLiteral("│"));
+      HDRSHOT_CHECK(top.y() >= 0 && top.y() + unlink->height() <= line->height());
+      HDRSHOT_CHECK(std::abs(top.y() * 2 + unlink->height() - line->height()) <= 2);
+      HDRSHOT_CHECK(unlink->mapTo(pair_row, QPoint()).x() + unlink->width() <= pair_row->width());
+      if (size.width() >= 480) {
+        const int gap = separator->mapTo(pair_row, QPoint()).x() -
+                        (endpoints->geometry().right() + 1);
+        HDRSHOT_CHECK(gap >= 0 && gap <= 32);
+        HDRSHOT_CHECK(metric->mapTo(pair_row, QPoint()).x() <=
+                      separator->mapTo(pair_row, QPoint()).x() + separator->width() + 8);
+        HDRSHOT_CHECK(metric->mapTo(pair_row, QPoint()).y() <
+                      endpoints->geometry().bottom());
+      } else {
+        HDRSHOT_CHECK(metric->mapTo(pair_row, QPoint()).x() <= 32);
+        HDRSHOT_CHECK(separator->mapTo(pair_row, QPoint()).y() ==
+                      metric->mapTo(pair_row, QPoint()).y());
+        HDRSHOT_CHECK(metric->mapTo(pair_row, QPoint()).y() >=
+                      endpoints->geometry().bottom());
+      }
+      const QImage screenshot = panel.grab().toImage();
+      const auto pixel_at = [&](const QPoint &point) {
+        return screenshot.pixelColor(qRound(point.x() * panel.devicePixelRatioF()),
+                                     qRound(point.y() * panel.devicePixelRatioF()));
+      };
+      const QColor row_background = pixel_at(pair_row->mapTo(&panel, QPoint(2, 2)));
+      HDRSHOT_CHECK(row_background == QColor("#202328"));
+      for (auto *label : pair_row->findChildren<QLabel *>()) {
+        if (label->objectName().startsWith("analyzerPairColor"))
+          continue;
+        const QPoint corner = label->mapTo(&panel,
+                                          QPoint(label->width() - 1, label->height() - 1));
+        HDRSHOT_CHECK(pixel_at(corner) == row_background);
+      }
+    }
+    if (!dir.isEmpty()) {
+      QDir().mkpath(dir);
+      const auto stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
+      HDRSHOT_CHECK(panel.grab().save(dir + "/" + stamp + "_panel_" + QString::number(size.width()) + "px.png"));
+      HDRSHOT_CHECK(themed_window.window.grab().save(
+          dir + "/" + stamp + "_themed_window_" + QString::number(size.width()) + "px.png"));
+    }
+    panel.set_transient_hidden(true);
+    HDRSHOT_CHECK(panel.findChildren<QWidget *>("analyzerSwatchPairRow1_2").size() == 1);
+    panel.set_transient_hidden(false);
+    for (const auto *suffix : {"1_2", "1_3", "2_3"}) {
+      auto *unlink = panel.findChild<QToolButton *>(
+          "analyzerUnlinkSwatchPair" + QString(suffix));
+      HDRSHOT_CHECK(unlink);
+      unlink->click();
+      events();
+    }
+  }
+  panel.hide();
+}
+
+void swatch_itp_copy_and_danger_buttons() {
+  Fixture f;
+  f.add_samples();
+  auto *field = child<QCheckBox>(f.window, "analyzerReading4");
+  field->setChecked(true);
+  events();
+  auto *readout = child<QLabel>(f.window, "analyzerSwatchReadout1");
+  const auto &sample = f.last_result->samples.front().mean;
+  const QString expected = QString("ITP T / P   %1 / %2  |  ICtCp Ct / Cp   %3 / %4")
+      .arg(sample.perceptual[1], 0, 'f', 4)
+      .arg(sample.perceptual[2], 0, 'f', 4)
+      .arg(2 * sample.perceptual[1], 0, 'f', 4)
+      .arg(sample.perceptual[2], 0, 'f', 4);
+  HDRSHOT_CHECK(readout->text().contains(expected));
+  HDRSHOT_CHECK(readout->text().split('\n').filter("ITP T / P").size() == 1);
+  HDRSHOT_CHECK(readout->toolTip() == readout->text());
+  f.window.source_widget()->hover_changed(QPointF(20, 20));
+  events();
+  auto *hover = child<QLabel>(f.window, "analyzerHoverReadout");
+  HDRSHOT_CHECK(hover->text().contains("ITP T / P"));
+  HDRSHOT_CHECK(hover->text().contains("  |  ICtCp Ct / Cp   "));
+  HDRSHOT_CHECK(hover->toolTip() == hover->text());
+  auto *copy = child<QToolButton>(f.window, "analyzerCopySwatch1");
+  copy->click();
+  const QString copied = QGuiApplication::clipboard()->text();
+  HDRSHOT_CHECK(copied == child<QLabel>(f.window, "analyzerSwatchLabel1")->text() +
+                              "\n" + readout->text());
+  HDRSHOT_CHECK(copied.contains("#1 · 20, 20 · 1×1"));
+  HDRSHOT_CHECK(copied.contains(expected));
+  HDRSHOT_CHECK(QGuiApplication::clipboard()->mimeData()->hasText());
+  HDRSHOT_CHECK(!QGuiApplication::clipboard()->mimeData()->hasImage());
+  auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
+  auto *handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
+  click(handle1, handle1->rect().center());
+  auto *copy2 = child<QToolButton>(f.window, "analyzerCopySwatch2");
+  click(copy2, copy2->rect().center());
+  HDRSHOT_CHECK(panel->pair_model().pairs().empty());
+  HDRSHOT_CHECK(QGuiApplication::clipboard()->text().startsWith("#2 ·"));
+  auto *handle2 = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  click(handle2, handle2->rect().center());
+  HDRSHOT_CHECK(panel->pair_model().pairs().size() == 1);
+  HDRSHOT_CHECK(panel->pair_model().pairs().front().source_id == 1);
+  HDRSHOT_CHECK(panel->pair_model().pairs().front().target_id == 2);
+  auto *clear = child<QToolButton>(f.window, "analyzerClearSwatches");
+  auto *remove = child<QToolButton>(f.window, "analyzerRemoveSwatch1");
+  auto *current_copy = child<QToolButton>(f.window, "analyzerCopySwatch1");
+  auto *current_handle = child<QToolButton>(f.window, "analyzerSwatchPairHandle2");
+  const QSize expected_button(analyzer_control_style::icon_button_side,
+                       analyzer_control_style::icon_button_side);
+  HDRSHOT_CHECK(current_copy->size() == expected_button);
+  HDRSHOT_CHECK(current_handle->size() == expected_button);
+  HDRSHOT_CHECK(remove->size() == expected_button);
+  HDRSHOT_CHECK(current_copy->geometry().center().y() == current_handle->geometry().center().y());
+  HDRSHOT_CHECK(current_handle->geometry().center().y() == remove->geometry().center().y());
+  HDRSHOT_CHECK(clear->size() == expected_button);
+  for (auto *danger : {clear, remove,
+                       child<QToolButton>(f.window, "analyzerUnlinkSwatchPair1_2")}) {
+    HDRSHOT_CHECK(danger->property("analyzerDanger").toBool());
+    for (const auto *color : {analyzer_control_style::danger_normal,
+                              analyzer_control_style::danger_hover,
+                              analyzer_control_style::danger_pressed,
+                              analyzer_control_style::danger_border,
+                              analyzer_control_style::danger_foreground})
+      HDRSHOT_CHECK(danger->styleSheet().contains(color));
+  }
+  field->setChecked(false);
+  child<QComboBox>(f.window, "analyzerWorkingSpace")->setCurrentIndex(0);
+  field->setChecked(true);
+  events();
+  readout = child<QLabel>(f.window, "analyzerSwatchReadout1");
+  HDRSHOT_CHECK(readout->text().contains("Lab D65 L* / a* / b*"));
+  HDRSHOT_CHECK(!readout->text().contains("ICtCp Ct / Cp"));
+  child<QToolButton>(f.window, "analyzerCopySwatch1")->click();
+  HDRSHOT_CHECK(QGuiApplication::clipboard()->text().contains("Lab D65"));
+}
+
+void danger_palette_matches_linear_display_p3_reference() {
+  const QColor base(analyzer_control_style::danger_foreground);
+  const auto linear_p3 = ExtendedP3Mapper::annotation_linear_display_p3(
+      static_cast<std::uint32_t>(base.rgb() & 0x00FFFFFFU));
+  const std::array<float, 3> reference_p3{0.752F, 0.109F, 0.077F};
+  for (int i = 0; i < 3; ++i)
+    HDRSHOT_CHECK_NEAR(linear_p3[std::size_t(i)],
+                       reference_p3[std::size_t(i)],
+                       0.003F);
+  HDRSHOT_CHECK(QColor(analyzer_control_style::danger_normal) == QColor("#30343b"));
+  HDRSHOT_CHECK(QColor(analyzer_control_style::danger_hover) == QColor("#424750"));
+  HDRSHOT_CHECK(QColor(analyzer_control_style::danger_border) == QColor("#4b515c"));
+  HDRSHOT_CHECK(QColor(analyzer_control_style::danger_pressed).lightness() <
+                QColor(analyzer_control_style::danger_normal).lightness());
+}
+
 void visual_artifacts() {
   const QString directory =
       qEnvironmentVariable("HDRSHOT_ANALYZER_SCREENSHOT_DIR");
@@ -1508,6 +2350,8 @@ void visual_artifacts() {
   Fixture f;
   f.add_samples();
   save(f, "hdr_default_1280x720");
+  child<QCheckBox>(f.window, "analyzerReading4")->setChecked(true);
+  save(f, "hdr_itp_ct_cp_swatches_1280x720");
   const auto hdr_plan = f.window.report_plan();
   QImage hdr_report(hdr_plan.underlay.rgba.data(), hdr_plan.underlay.size.width,
                     hdr_plan.underlay.size.height, QImage::Format_RGBA8888);
@@ -1593,6 +2437,24 @@ int main(int argc, char **argv) {
   std::cout << "TEST_SCREEN logical=" << app.primaryScreen()->size().width()
             << 'x' << app.primaryScreen()->size().height()
             << " dpr=" << app.primaryScreen()->devicePixelRatio() << '\n';
+  if (qEnvironmentVariableIsSet("HDRSHOT_SWATCH_PAIR_ONLY"))
+    return hdrshot::test::run(
+        {{"swatch pairing uses real click events and local updates",
+          swatch_pairs_use_real_clicks_and_local_updates},
+         {"swatch handles click, drag and curved links",
+          swatch_handles_click_drag_and_curve},
+         {"deleted swatches clear source, native overlay and report marks",
+          deleted_swatches_leave_no_source_or_report_marks},
+         {"swatch rebuild keeps scroll and respects a new wheel event",
+          swatch_rebuild_preserves_scroll_after_layout},
+         {"swatch pair success feedback click drag report and deletion",
+          swatch_pair_success_feedback_lifecycle},
+         {"swatch pair rows fit 320/480/640 logical-pixel panels",
+          swatch_pair_rows_fit_narrow_viewports},
+         {"swatch HDR ITP copy and danger actions",
+          swatch_itp_copy_and_danger_buttons},
+         {"danger palette matches linear Display P3 reference",
+          danger_palette_matches_linear_display_p3_reference}});
   return hdrshot::test::run(
       {{"new source defaults and safe preference restore",
         new_inputs_and_preferences},
@@ -1651,5 +2513,21 @@ int main(int argc, char **argv) {
         rgb_histogram_overlap_is_order_independent_color},
        {"vector target edge text bounds without offscreen labels",
         vector_target_labels_stay_inside_visible_edges},
+       {"swatch pairing uses real click events and local updates",
+        swatch_pairs_use_real_clicks_and_local_updates},
+       {"swatch handles click, drag and curved links",
+        swatch_handles_click_drag_and_curve},
+       {"deleted swatches clear source, native overlay and report marks",
+        deleted_swatches_leave_no_source_or_report_marks},
+       {"swatch rebuild keeps scroll and respects a new wheel event",
+        swatch_rebuild_preserves_scroll_after_layout},
+       {"swatch pair success feedback click drag report and deletion",
+        swatch_pair_success_feedback_lifecycle},
+       {"swatch pair rows fit 320/480/640 logical-pixel panels",
+        swatch_pair_rows_fit_narrow_viewports},
+       {"swatch HDR ITP copy and danger actions",
+         swatch_itp_copy_and_danger_buttons},
+       {"danger palette matches linear Display P3 reference",
+         danger_palette_matches_linear_display_p3_reference},
        {"native production-window visual artifacts", visual_artifacts}});
 }

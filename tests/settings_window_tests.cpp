@@ -5,6 +5,8 @@
 #include "test_support.hpp"
 
 #include <QApplication>
+#include <QDateTime>
+#include <QUrl>
 #include <QEvent>
 #include <QGroupBox>
 #include <QKeyEvent>
@@ -239,7 +241,7 @@ void general_rows_are_wide_aligned_and_folder_actions_are_explicit() {
   auto* open_logs = fixture.window.findChild<QPushButton*>(
       QStringLiteral("openLogsFolderButton"));
   auto* build_timestamp = fixture.window.findChild<QLabel*>(
-      QStringLiteral("buildTimestampLabel"));
+      QStringLiteral("buildIdentityLabel"));
   auto* format = fixture.window.findChild<QComboBox*>(QStringLiteral("saveFormatCombo"));
   auto* diffuse_white = fixture.window.findChild<QComboBox*>(
       QStringLiteral("pqDiffuseWhiteCombo"));
@@ -308,11 +310,14 @@ void general_rows_are_wide_aligned_and_folder_actions_are_explicit() {
   HDRSHOT_CHECK(enter_action->currentText() == QStringLiteral("复制到剪贴板"));
   HDRSHOT_CHECK(double_click_action->currentText() == QStringLiteral("复制到剪贴板"));
   HDRSHOT_CHECK(folder->toolTip() == folder->text());
-  HDRSHOT_CHECK(build_timestamp->text().startsWith(QStringLiteral("构建时间：20")));
-  HDRSHOT_CHECK(build_timestamp->text().size() == 24);
-  HDRSHOT_CHECK(build_timestamp->text() == QStringLiteral("构建时间：") +
-      QString::fromUtf8(hdrshot::build_timestamp().data(),
-                        static_cast<qsizetype>(hdrshot::build_timestamp().size())));
+  HDRSHOT_CHECK(build_timestamp->text().startsWith(QStringLiteral("版本 ") +
+      QString::fromLatin1(hdrshot::product_version().data(), static_cast<qsizetype>(hdrshot::product_version().size()))));
+  HDRSHOT_CHECK(!build_timestamp->text().contains(QStringLiteral("构建时间")));
+  const auto timestamp = QDateTime::fromString(QString::fromLatin1(
+      hdrshot::source_commit_timestamp().data(), static_cast<qsizetype>(hdrshot::source_commit_timestamp().size())), Qt::ISODate);
+  HDRSHOT_CHECK(build_timestamp->text().contains(timestamp.isValid()
+      ? timestamp.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'")) : QStringLiteral("未知")));
+  HDRSHOT_CHECK(build_timestamp->text().contains(QStringLiteral("含未提交修改")) == hdrshot::source_modified());
   HDRSHOT_CHECK(
       build_timestamp->palette().color(QPalette::WindowText) ==
       fixture.window.palette().color(QPalette::WindowText));
@@ -509,11 +514,11 @@ void detailed_logging_applies_and_rolls_back_on_failure() {
   fixture.window.reload_and_show(); QApplication::processEvents();
   auto* check=fixture.window.findChild<QCheckBox*>("detailedLoggingCheckBox");
   auto* logs=fixture.window.findChild<QPushButton*>("openLogsFolderButton");
-  auto* build=fixture.window.findChild<QLabel*>("buildTimestampLabel");
+  auto* build=fixture.window.findChild<QLabel*>("buildIdentityLabel");
   HDRSHOT_CHECK(check && logs && build);
   HDRSHOT_CHECK(!check->isChecked());
   HDRSHOT_CHECK(check->geometry().right() < logs->geometry().left());
-  HDRSHOT_CHECK(build->geometry().right() < check->geometry().left());
+  HDRSHOT_CHECK(build->geometry().bottom() < check->geometry().top());
   check->click();
   HDRSHOT_CHECK(active && fixture.store.snapshot.detailed_logging && changes==1);
   fixture.window.reload_and_show();
@@ -523,6 +528,36 @@ void detailed_logging_applies_and_rolls_back_on_failure() {
   HDRSHOT_CHECK(check->isChecked() && active && changes==1);
   check->click();
   HDRSHOT_CHECK(!active && !fixture.store.snapshot.detailed_logging && changes==2);
+}
+void releases_open_only_on_click() {
+  Fixture fixture;
+  int calls = 0;
+  bool succeeds = true;
+  fixture.window.set_release_page_opener([&](const QUrl& url) {
+    ++calls;
+    HDRSHOT_CHECK(url == QUrl("https://github.com/OverDriveHuang/SeriousShot/releases"));
+    return succeeds;
+  });
+  fixture.window.reload_and_show();
+  QApplication::processEvents();
+  HDRSHOT_CHECK(calls == 0);
+  auto* releases = fixture.window.findChild<QPushButton*>("openReleasesButton");
+  auto* identity = fixture.window.findChild<QLabel*>("buildIdentityLabel");
+  HDRSHOT_CHECK(releases && identity);
+  HDRSHOT_CHECK(identity->geometry().right() < releases->geometry().left());
+  fixture.window.resize(fixture.window.minimumSize());
+  QApplication::processEvents();
+  HDRSHOT_CHECK(identity->geometry().right() < releases->geometry().left());
+  auto* close = fixture.window.findChild<QPushButton*>("closeSettingsButton");
+  HDRSHOT_CHECK(close && identity->geometry().bottom() < close->geometry().top());
+  releases->click();
+  HDRSHOT_CHECK(calls == 1);
+  succeeds = false;
+  releases->click();
+  HDRSHOT_CHECK(calls == 2);
+  auto* status = fixture.window.findChild<QLabel*>("settingsStatusLabel");
+  HDRSHOT_CHECK(status && status->isVisible());
+  HDRSHOT_CHECK(status->text().contains(QStringLiteral("无法打开浏览器")));
 }
 }  // namespace
 
@@ -564,6 +599,7 @@ int main(int argc, char** argv) {
       return 1;
   }
   return hdrshot::test::run({
+      {"releases opens fixed URL only on explicit click", releases_open_only_on_click},
       {"detailed log checkbox autosaves and restores on error", detailed_logging_applies_and_rolls_back_on_failure},
       {"fresh settings opens with either legacy flag and close stays closed", fresh_settings_window_ignores_legacy_presentation_flag_and_close_stays_closed},
       {"settings opens through injected platform activation", every_settings_open_uses_injected_window_activation},

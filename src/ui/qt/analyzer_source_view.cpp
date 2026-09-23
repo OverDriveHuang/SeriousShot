@@ -342,6 +342,16 @@ void AnalyzerSourceView::mousePressEvent(QMouseEvent *e) {
   e->accept();
 }
 void AnalyzerSourceView::mouseMoveEvent(QMouseEvent *e) {
+  // Some native trackpad and wheel streams omit their final End event. An
+  // ordinary mouse move is the next unambiguous pointer action and must
+  // restore picker hover; Qt's touch-synthesized moves are still part of the
+  // active multi-finger gesture.
+  if (multi_gesture_ && !multi_touch_active_ &&
+      e->source() == Qt::MouseEventNotSynthesized && !e->buttons()) {
+    finish_multi_gesture(e->position(), false);
+    e->accept();
+    return;
+  }
   if (pressed_ && !e->buttons().testFlag(Qt::LeftButton))
     finish_gesture(last_point_, true);
   if (pressed_ && !multi_gesture_) {
@@ -418,6 +428,7 @@ void AnalyzerSourceView::finish_multi_gesture(QPointF local, bool cancel) {
   if (cancel)
     transform_ = old_transform_;
   multi_gesture_ = false;
+  multi_touch_active_ = false;
   touch_distance_ = 0.;
   if (gesture_changed)
     gesture_changed(false);
@@ -519,6 +530,7 @@ bool AnalyzerSourceView::event(QEvent *event) {
     const auto &points = e->points();
     if (event->type() == QEvent::TouchCancel ||
         event->type() == QEvent::TouchEnd) {
+      multi_touch_active_ = false;
       finish_multi_gesture(touch_center_, event->type() == QEvent::TouchCancel);
       e->accept();
       return true;
@@ -534,6 +546,7 @@ bool AnalyzerSourceView::event(QEvent *event) {
         transform_.pan += center - touch_center_;
         notify_view();
       }
+      multi_touch_active_ = true;
       touch_center_ = center;
       last_point_ = center;
       touch_distance_ = std::max(1., distance);

@@ -108,6 +108,7 @@ private:
   bool pressed_{};
   bool moved_{};
   bool multi_gesture_{};
+  bool multi_touch_active_{};
   QPointF press_point_;
   QPointF press_source_;
   QPointF last_point_;

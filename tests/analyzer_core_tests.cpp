@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -13,6 +14,13 @@ using namespace hdrshot;
 using namespace hdrshot::analysis;
 using V = std::array<double, 3>;
 using M = std::array<V, 3>;
+constexpr std::string_view analyzer_metal_source = analysis_math::metal_source;
+static_assert(analyzer_metal_source.find("double") == std::string_view::npos);
+static_assert(analyzer_metal_source.find("template") == std::string_view::npos);
+static_assert(analyzer_metal_source.find("ANALYSIS_LITERAL") ==
+              std::string_view::npos);
+static_assert(analyzer_metal_source.find("0.4123907992659595f") !=
+              std::string_view::npos);
 // Independent binary64 oracle: separate rational D65 matrices and explicit
 // XYZ->2020->LMS route, never the production merged P3->LMS or math helpers.
 V mul(M m, V v) {
@@ -35,13 +43,31 @@ M xyz2020{{{1.716651187971268, -.355670783776392, -.253366281373660},
 M xyzsrgb{{{3.2409699419045226, -1.537383177570094, -.4986107602930034},
            {-.9692436362808796, 1.8759675015077202, .0415550574071756},
            {.0556300796969937, -.2039769588889765, 1.0569715142428786}}};
+M bt2020xyz{{{.6369580483012914, .1446169035862083, .1688809751641721},
+             {.2627002120112671, .6779980715188708, .0593017164698620},
+             {0, .0280726930490874, 1.0609850577107910}}};
 double pq(double n) {
   double t = std::pow(n / 10000, 2610. / 16384);
   return std::pow((3424. / 4096 + 2413. / 128 * t) / (1 + 2392. / 128 * t),
                   2523. / 32);
 }
+double pq_decode_oracle(double code) {
+  double p = std::pow(std::clamp(code, 0., 1.), 32. / 2523);
+  return 10000 * std::pow(std::clamp(p - 3424. / 4096, 0., 1.) /
+                              (2413. / 128 - 2392. / 128 * p),
+                          16384. / 2610);
+}
 double srgb(double v) {
   return v <= .0031308 ? 12.92 * v : 1.055 * std::pow(v, 1 / 2.4) - .055;
+}
+V oracle_lab(V work, int space) {
+  V xyz = mul(space == 0 ? srgbxyz : p3xyz, work);
+  xyz[0] /= .9504559270516716;
+  xyz[2] /= 1.0890577507598784;
+  for (double &v : xyz)
+    v = v > 216. / 24389 ? std::cbrt(v) : (24389. / 27 * v + 16) / 116;
+  return {116 * xyz[1] - 16, 500 * (xyz[0] - xyz[1]),
+          200 * (xyz[1] - xyz[2])};
 }
 V oracle_work(V source, int space, double white) {
   if (space < 2)
@@ -154,6 +180,81 @@ void range_and_mean_order() {
   auto hdr = analysis_math::working_rgb({120, -1, 2}, 2, 100);
   HDRSHOT_CHECK_NEAR(hdr.x, 100, 0);
   HDRSHOT_CHECK_NEAR(hdr.y, 0, 0);
+}
+void double_mean_flows_through_readout() {
+  const FloatImage source{{.1f, .2f, .3f, 1.f}, {.2f, .3f, .4f, 1.f}};
+  const FloatImage work{{.1f, .2f, .3f, 1.f}, {.2f, .3f, .4f, 1.f}};
+  const SampleRequest sample{1, 0, 0, 2, false};
+  const V mean{(double(source[0][0]) + double(source[1][0])) / 2,
+               (double(source[0][1]) + double(source[1][1])) / 2,
+               (double(source[0][2]) + double(source[1][2])) / 2};
+  for (unsigned space = 0; space < 4; ++space)
+    for (double white : {100., 203.}) {
+      Request request;
+      request.settings = {static_cast<WorkingSpace>(space), white, 0};
+      const auto summary = summarize_sample({2, 1}, sample, request,
+                                            {0, 0, 2, 1}, source, work);
+      HDRSHOT_CHECK(summary.mean.valid_count == 2);
+      for (std::size_t c = 0; c < 3; ++c)
+        HDRSHOT_CHECK(summary.mean.work_rgb_edr[c] == mean[c]);
+      const auto direct = make_readout(mean, mean, 2, 0, request.settings);
+      HDRSHOT_CHECK(summary.mean.signal_rgb == direct.signal_rgb);
+      HDRSHOT_CHECK(summary.mean.perceptual == direct.perceptual);
+      HDRSHOT_CHECK(summary.mean.chroma_plane == direct.chroma_plane);
+      HDRSHOT_CHECK(summary.mean.ycbcr == direct.ycbcr);
+      if (space >= 2) {
+        const V expected = oracle_itp(mean, int(space), white);
+        for (std::size_t c = 0; c < 3; ++c)
+          HDRSHOT_CHECK_NEAR(direct.perceptual[c], expected[c], 5e-9);
+        HDRSHOT_CHECK_NEAR(direct.intensity_nits,
+                           pq_decode_oracle(direct.intensity), 2e-9);
+      } else {
+        const V expected = oracle_lab(mean, int(space));
+        for (std::size_t c = 0; c < 3; ++c) {
+          HDRSHOT_CHECK_NEAR(direct.perceptual[c], expected[c], 5e-11);
+          HDRSHOT_CHECK_NEAR(direct.signal_rgb[c], srgb(mean[c]), 2e-15);
+        }
+      }
+      const M &rgb_to_xyz = space == 0 ? srgbxyz
+                            : space == 3 ? bt2020xyz
+                                         : p3xyz;
+      V expected_signal{};
+      for (std::size_t c = 0; c < 3; ++c) {
+        expected_signal[c] = space >= 2 ? pq(mean[c] * white) : srgb(mean[c]);
+        HDRSHOT_CHECK_NEAR(direct.signal_rgb[c], expected_signal[c], 2e-15);
+        HDRSHOT_CHECK_NEAR(direct.work_rgb_nits[c], mean[c] * white, 0);
+      }
+      const double expected_y =
+          (rgb_to_xyz[1][0] * mean[0] + rgb_to_xyz[1][1] * mean[1] +
+           rgb_to_xyz[1][2] * mean[2]) * white;
+      HDRSHOT_CHECK_NEAR(direct.y_nits, expected_y, 2e-13);
+      const double signal_y = rgb_to_xyz[1][0] * expected_signal[0] +
+                              rgb_to_xyz[1][1] * expected_signal[1] +
+                              rgb_to_xyz[1][2] * expected_signal[2];
+      HDRSHOT_CHECK_NEAR(direct.ycbcr[0],
+                         (expected_signal[2] - signal_y) /
+                             (2 * (1 - rgb_to_xyz[1][2])),
+                         2e-14);
+      HDRSHOT_CHECK_NEAR(direct.ycbcr[1],
+                         (expected_signal[0] - signal_y) /
+                             (2 * (1 - rgb_to_xyz[1][0])),
+                         2e-14);
+      const double expected_chroma =
+          std::hypot(direct.perceptual[1], direct.perceptual[2]);
+      HDRSHOT_CHECK_NEAR(direct.chroma, expected_chroma, 2e-15);
+      HDRSHOT_CHECK(direct.hue_degrees.has_value());
+      double expected_hue =
+          std::atan2(direct.perceptual[2], direct.perceptual[1]) * 180 / std::acos(-1.);
+      if (expected_hue < 0)
+        expected_hue += 360;
+      HDRSHOT_CHECK_NEAR(*direct.hue_degrees, expected_hue, 2e-13);
+    }
+
+  const Rgb neutral{.375, .375, .375};
+  const auto gray = make_readout(neutral, neutral, 1, 0,
+                                 {WorkingSpace::display_p3_sdr, 203, 0});
+  HDRSHOT_CHECK(std::abs(gray.perceptual[1]) < 1e-12);
+  HDRSHOT_CHECK(std::abs(gray.perceptual[2]) < 1e-12);
 }
 void existing_transfer_path_equivalence() {
   std::uint64_t finite_cases = 0;
@@ -547,6 +648,8 @@ int main() {
        {"existing transfer paths retain numeric equivalence",
         existing_transfer_path_equivalence},
        {"range policy and nonlinear mean order", range_and_mean_order},
+       {"double ROI means feed the precision color readout",
+        double_mean_flows_through_readout},
        {"Gaussian weights, edges and mask independence",
         gaussian_and_mask_independence},
        {"invalid values and pixel-center masks", invalid_and_mask_counts},

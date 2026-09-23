@@ -100,15 +100,19 @@ add_library(hdrshot_core STATIC
 target_include_directories(hdrshot_core PUBLIC src)
 hdrshot_enable_warnings(hdrshot_core)
 
-# One compiled build identity for headless exports and Qt Settings alike.
+# Separate reproducible source identity from diagnostic build time.
+option(HDRSHOT_RELEASE_BUILD "Require known, clean source identity for distribution" OFF)
 set(HDRSHOT_BUILD_TIMESTAMP_SOURCE
     "${CMAKE_CURRENT_BINARY_DIR}/generated/hdrshot_build_timestamp.cpp")
 add_custom_target(hdrshot_generate_build_timestamp
   COMMAND "${CMAKE_COMMAND}"
     "-DOUTPUT_FILE=${HDRSHOT_BUILD_TIMESTAMP_SOURCE}"
+    "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DPRODUCT_VERSION=${PROJECT_VERSION}"
+    "-DREQUIRE_CLEAN_SOURCE=${HDRSHOT_RELEASE_BUILD}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateBuildTimestamp.cmake"
   BYPRODUCTS "${HDRSHOT_BUILD_TIMESTAMP_SOURCE}"
-  COMMENT "Generating SeriousShot build timestamp"
+  COMMENT "Generating SeriousShot source identity and build timestamp"
   VERBATIM
 )
 set_source_files_properties("${HDRSHOT_BUILD_TIMESTAMP_SOURCE}" PROPERTIES GENERATED TRUE)
@@ -209,18 +213,23 @@ hdrshot_enable_warnings(hdrshot_analysis_application)
 
 add_library(hdrshot_analysis_core STATIC
   src/domain/analysis/math.cpp src/domain/analysis/engine.cpp
+  src/domain/analysis/color_difference.cpp src/domain/analysis/swatch_pairs.cpp
   src/domain/analysis/gamut_boundary.cpp)
 # Generated reference geometry must not silently drift from the shared math.
 # Normalize Git CRLF checkouts so this gate is identical on Windows and macOS.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/domain/analysis/portable_math.inc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/domain/analysis/portable_color_math.inc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/domain/analysis/gamut_boundary_data.inc")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/domain/analysis/portable_math.inc" HDRSHOT_GAMUT_MATH)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/domain/analysis/portable_color_math.inc" HDRSHOT_GAMUT_COLOR_MATH)
 string(REPLACE "\r\n" "\n" HDRSHOT_GAMUT_MATH "${HDRSHOT_GAMUT_MATH}")
-string(SHA256 HDRSHOT_GAMUT_MATH_SHA "${HDRSHOT_GAMUT_MATH}")
+string(REPLACE "\r\n" "\n" HDRSHOT_GAMUT_COLOR_MATH "${HDRSHOT_GAMUT_COLOR_MATH}")
+string(CONCAT HDRSHOT_GAMUT_MATH_INPUTS "${HDRSHOT_GAMUT_MATH}" "${HDRSHOT_GAMUT_COLOR_MATH}")
+string(SHA256 HDRSHOT_GAMUT_MATH_SHA "${HDRSHOT_GAMUT_MATH_INPUTS}")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/domain/analysis/gamut_boundary_data.inc"
-  HDRSHOT_GAMUT_DATA_SHA REGEX "portable_math.inc SHA-256:")
-if(NOT HDRSHOT_GAMUT_DATA_SHA STREQUAL "// portable_math.inc SHA-256: ${HDRSHOT_GAMUT_MATH_SHA}")
+  HDRSHOT_GAMUT_DATA_SHA REGEX "portable color math inputs SHA-256:")
+if(NOT HDRSHOT_GAMUT_DATA_SHA STREQUAL "// portable color math inputs SHA-256: ${HDRSHOT_GAMUT_MATH_SHA}")
   message(FATAL_ERROR "Analyzer gamut tables are stale: run scripts/generate_analyzer_gamut.py and apply its patch")
 endif()
 target_link_libraries(hdrshot_analysis_core PUBLIC hdrshot_core hdrshot_color)
@@ -237,6 +246,11 @@ if(BUILD_TESTING)
   target_include_directories(hdrshot_analyzer_core_tests PRIVATE tests)
   hdrshot_enable_warnings(hdrshot_analyzer_core_tests)
   add_test(NAME hdrshot_analyzer_core_tests COMMAND hdrshot_analyzer_core_tests)
+  add_executable(hdrshot_swatch_pair_tests tests/swatch_pair_tests.cpp)
+  target_link_libraries(hdrshot_swatch_pair_tests PRIVATE hdrshot_analysis_core)
+  target_include_directories(hdrshot_swatch_pair_tests PRIVATE tests)
+  hdrshot_enable_warnings(hdrshot_swatch_pair_tests)
+  add_test(NAME hdrshot_swatch_pair_tests COMMAND hdrshot_swatch_pair_tests)
   add_executable(hdrshot_analyzer_gamut_tests tests/analyzer_gamut_tests.cpp)
   target_link_libraries(hdrshot_analyzer_gamut_tests PRIVATE hdrshot_analysis_core)
   target_include_directories(hdrshot_analyzer_gamut_tests PRIVATE tests)
@@ -348,7 +362,8 @@ if(HDRSHOT_ENABLE_QT_HOST)
 
   add_library(hdrshot_qt_analyzer_ui STATIC
     src/ui/qt/analyzer_layout.cpp src/ui/qt/analyzer_source_view.cpp
-    src/ui/qt/analyzer_scope_plot.cpp src/ui/qt/analyzer_window.cpp)
+    src/ui/qt/analyzer_scope_plot.cpp src/ui/qt/analyzer_swatch_panel.cpp
+    src/ui/qt/analyzer_window.cpp)
   target_link_libraries(hdrshot_qt_analyzer_ui PUBLIC hdrshot_analysis_core Qt6::Widgets)
   target_include_directories(hdrshot_qt_analyzer_ui PUBLIC src)
   hdrshot_enable_warnings(hdrshot_qt_analyzer_ui)
@@ -784,8 +799,8 @@ if(APPLE)
       MACOSX_BUNDLE TRUE
       MACOSX_BUNDLE_BUNDLE_NAME "SeriousShot"
       MACOSX_BUNDLE_GUI_IDENTIFIER "dev.hdrshot.desktop"
-      MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
-      MACOSX_BUNDLE_BUNDLE_VERSION "0.1.0"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       MACOSX_BUNDLE_INFO_PLIST
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/macos/HDRShotInfo.plist.in"
       OUTPUT_NAME "SeriousShot"
@@ -867,6 +882,13 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(hdrshot_headless_capture_tests tests/headless_capture_tests.cpp)
+  # Python is optional for test tooling, never a runtime/build requirement.
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME hdrshot_source_identity_tests
+      COMMAND "${CMAKE_COMMAND}" -E env "HDRSHOT_TEST_CMAKE=${CMAKE_COMMAND}"
+        "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/source_identity_tests.py")
+  endif()
   target_link_libraries(hdrshot_headless_capture_tests PRIVATE hdrshot_headless_capture)
   target_include_directories(hdrshot_headless_capture_tests PRIVATE tests)
   hdrshot_enable_warnings(hdrshot_headless_capture_tests)

@@ -20,6 +20,7 @@ class QPushButton;
 class QComboBox;
 class QFormLayout;
 class QCheckBox;
+class QUrl;
 
 namespace hdrshot {
 
@@ -38,6 +39,7 @@ class SettingsWindow final : public QWidget {
 
   void reload_and_show();
   void set_applied(Applied callback);
+  void set_release_page_opener(std::function<bool(const QUrl&)> opener);
   void set_window_activation_port(QtWindowActivationPort* port) { activation_ = port; }
 
  protected:
@@ -70,6 +72,7 @@ class SettingsWindow final : public QWidget {
   std::string diagnostics_folder_;
   SettingsSnapshot snapshot_{};
   Applied applied_;
+  std::function<bool(const QUrl&)> release_page_opener_;
   QKeySequenceEdit* hotkey_edit_{};
   QPushButton* customize_hotkey_button_{};
   QComboBox* enter_completion_combo_{};

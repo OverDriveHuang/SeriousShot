@@ -1,8 +1,10 @@
 #include "ui/qt/analyzer_window.hpp"
+#include "ui/qt/analyzer_control_style.hpp"
 #include "domain/analysis/engine.hpp"
 #include "domain/analysis/math.hpp"
 #include "ui/qt/analyzer_layout.hpp"
 #include "ui/qt/analyzer_scope_plot.hpp"
+#include "ui/qt/analyzer_swatch_panel.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -10,6 +12,7 @@
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QDialogButtonBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -326,6 +329,10 @@ AnalyzerWindow::~AnalyzerWindow() {
   for (auto *pane : split_)
     if (pane)
       pane->changed = {};
+  if (swatches_) {
+    swatches_->removeSwatch = {};
+    swatches_->set_reading_formatter({});
+  }
 }
 void AnalyzerWindow::set_request_handler(
     std::function<void(analysis::Request)> h) {
@@ -381,7 +388,7 @@ void AnalyzerWindow::build_ui() {
       "height:22px;} QMenu{background:#30343b;border:1px solid #626873;} "
       "QMenu::item{padding:5px 20px;} QMenu::item:selected{background:#526e85;color:#ffffff;} "
       "QFrame#analyzerReferencePopup{background:#30343b;border:1px solid "
-      "#626873;border-radius:7px;}");
+      "#626873;border-radius:7px;}" + analyzer_control_style::danger_qss());
   auto *root = new QVBoxLayout(this);
   root->setContentsMargins(12, 10, 12, 10);
   root->setSpacing(7);
@@ -734,24 +741,31 @@ void AnalyzerWindow::build_ui() {
   auto *swatch_head = header(swatch_panel_);
   add(swatch_head, new QLabel("<b>Swatches</b>"));
   auto *clear = button("", "analyzerClearSwatches", swatch_head, 8);
+  clear->setIcon(analyzer_control_style::danger_glyph(true));
   clear->setToolTip("清空 Swatches");
   clear->setAccessibleName("清空 Swatches");
+  analyzer_control_style::set_icon_button(clear, true);
   add(right_group(swatch_head), clear);
   connect(clear, &QToolButton::clicked, this, [this] { clear_swatches(); });
   add(swatch_panel_, swatch_head);
-  swatch_scroll_ = new QScrollArea(swatch_panel_);
-  swatch_scroll_->setObjectName("analyzerSwatchScroll");
-  swatch_scroll_->setWidgetResizable(true);
-  swatch_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  swatch_content_ = new QWidget;
-  swatch_content_->setStyleSheet("background:#292b2f;");
-  swatch_layout_ = new QVBoxLayout(swatch_content_);
-  swatch_layout_->setContentsMargins(7, 7, 7, 7);
-  swatch_layout_->setSpacing(6);
-  swatch_layout_->addStretch();
-  swatch_scroll_->setWidget(swatch_content_);
+  swatches_ = new AnalyzerSwatchPanel(swatch_panel_);
+  swatches_->set_copy_icon(icon(7));
+  swatch_scroll_ = swatches_->findChild<QScrollArea *>("analyzerSwatchScroll");
+  swatches_->removeSwatch = [this](std::uint64_t id) {
+    request_.samples.erase(
+        std::remove_if(request_.samples.begin(), request_.samples.end(),
+                       [id](const auto &sample) { return sample.id == id; }),
+        request_.samples.end());
+    refresh_swatches();
+    apply_layout();
+    schedule_request();
+  };
+  swatches_->set_reading_formatter(
+      [this](const analysis::Readout &readout, bool fallback) {
+        return reading_text(readout, fallback);
+      });
   static_cast<QVBoxLayout *>(swatch_panel_->layout())
-      ->addWidget(swatch_scroll_, 1);
+      ->addWidget(swatches_, 1);
   status_ = new QLabel(this);
   status_->setObjectName("analyzerStatus");
   status_->setWordWrap(true);
@@ -1202,18 +1216,6 @@ void AnalyzerWindow::accept_result(analysis::ResultRef result) {
       result_->vectorscope.height != result->vectorscope.height ||
       result_->vector_grid_x_extent != result->vector_grid_x_extent ||
       result_->vector_grid_y_extent != result->vector_grid_y_extent;
-  bool rebuild_swatches = source_work_changed;
-  const auto fixed_samples = [](const auto &samples) {
-    std::vector<std::array<std::uint64_t, 5>> output;
-    for (const auto &sample : samples)
-      if (sample.request.id)
-        output.push_back({sample.request.id, std::uint64_t(sample.request.x),
-                          std::uint64_t(sample.request.y), sample.request.side,
-                          std::uint64_t(sample.request.respect_mask)});
-    return output;
-  };
-  if (result_)
-    rebuild_swatches = rebuild_swatches || fixed_samples(result_->samples) != fixed_samples(result->samples);
   result_ = std::move(result);
   // Each plot compares immutable payload identity, including its fine grid.
   // A Vector refinement must not force all Waveform bitmaps to regenerate.
@@ -1226,8 +1228,11 @@ void AnalyzerWindow::accept_result(analysis::ResultRef result) {
     plot->set_pending(false);
   }
   refresh_readouts();
-  if (rebuild_swatches)
-    refresh_swatches();
+  // Snapshot values can change while fixed sample identities remain the same.
+  // Update existing cards on every accepted result; the panel rebuilds only
+  // when sample or pair structure changes.
+  if (swatches_)
+    swatches_->set_samples_and_result(request_, result_);
   if (source_work_changed && false_color_)
     present();
   // The true data-domain extent is only known after the first statistics pass.
@@ -1355,8 +1360,10 @@ QString AnalyzerWindow::reading_text(const analysis::Readout &r,
   if (readings_[4]) {
     if (hdr) {
       rows << QString("I · nit（等效）   %1").arg(r.intensity_nits, 0, 'f', 2);
-      rows << QString("ITP T / P   %1 / %2")
+      rows << QString("ITP T / P   %1 / %2  |  ICtCp Ct / Cp   %3 / %4")
                   .arg(r.perceptual[1], 0, 'f', 4)
+                  .arg(r.perceptual[2], 0, 'f', 4)
+                  .arg(2 * r.perceptual[1], 0, 'f', 4)
                   .arg(r.perceptual[2], 0, 'f', 4);
     } else
       rows << "Lab D65 L* / a* / b*   " + rgb(r.perceptual, 2);
@@ -1399,6 +1406,7 @@ void AnalyzerWindow::refresh_readouts() {
                                          ? reading_text(hover_result->mean)
                                          : "—")
                                   : QString());
+  readout_->setToolTip(readout_->text());
   const auto size = input_.source ? input_.source->size_px() : PixelSize{};
   coordinate_->setText(hover_visible && hover_result && mask_current
                            ? QString("Linear P3 · EDR　 %1, %2 · %3×%3 / %4 px")
@@ -1440,73 +1448,16 @@ void AnalyzerWindow::clear_swatches() {
   schedule_request();
 }
 void AnalyzerWindow::refresh_swatches() {
-  const int scroll = swatch_scroll_->verticalScrollBar()->value();
-  while (swatch_layout_->count() > 1) {
-    auto *item = swatch_layout_->takeAt(0);
-    delete item->widget();
-    delete item;
-  }
+  if (!swatches_)
+    return;
   std::vector<AnalyzerSourcePin> pins;
   for (const auto &sample : request_.samples) {
     if (!sample.id)
       continue;
     pins.push_back({sample.id, QPointF(sample.x, sample.y), int(sample.side)});
-    const analysis::SampleResult *data = nullptr;
-    if (result_)
-      for (const auto &result : result_->samples)
-        if (result.request.id == sample.id) {
-          data = &result;
-          break;
-        }
-    auto *chip = new QFrame(swatch_content_);
-    chip->setObjectName("analyzerSwatch" + QString::number(sample.id));
-    chip->setStyleSheet("QFrame{border:1px solid "
-                        "#424750;border-radius:5px;background:#292b2f;}");
-    auto *row = new QHBoxLayout(chip);
-    row->setContentsMargins(7, 6, 7, 6);
-    row->setSpacing(8);
-    auto *color = new QLabel;
-    color->setFixedSize(44, 44);
-    color->setObjectName("analyzerSwatchColor");
-    if (data && data->mean.valid_count) {
-      const auto c = data->mean.display_rgb;
-      color->setStyleSheet(
-          QString("background:rgb(%1,%2,%3);border-radius:4px;")
-              .arg(int(std::clamp(c[0], 0.f, 1.f) * 255))
-              .arg(int(std::clamp(c[1], 0.f, 1.f) * 255))
-              .arg(int(std::clamp(c[2], 0.f, 1.f) * 255)));
-    }
-    row->addWidget(color);
-    auto *text = new QLabel(
-        QString("#%1 · %2, %3 · %4×%4\n%5")
-            .arg(sample.id)
-            .arg(sample.x)
-            .arg(sample.y)
-            .arg(sample.side)
-            .arg(data ? reading_text(data->mean, true) : "—"));
-    text->setWordWrap(true);
-    text->setStyleSheet("font-size:11px;");
-    row->addWidget(text, 1);
-    auto *remove =
-        button("×", "analyzerRemoveSwatch" + QString::number(sample.id), chip);
-    remove->setAccessibleName("删除色样 " + QString::number(sample.id));
-    remove->setFixedSize(25, 25);
-    row->addWidget(remove, 0, Qt::AlignTop);
-    const auto id = sample.id;
-    connect(remove, &QToolButton::clicked, this, [this, id] {
-      request_.samples.erase(
-          std::remove_if(request_.samples.begin(), request_.samples.end(),
-                         [id](const auto &s) { return s.id == id; }),
-          request_.samples.end());
-      refresh_swatches();
-      apply_layout();
-      schedule_request();
-    });
-    swatch_layout_->insertWidget(swatch_layout_->count() - 1, chip);
   }
   source_->set_pins(std::move(pins));
-  swatch_content_->adjustSize();
-  swatch_scroll_->verticalScrollBar()->setValue(scroll);
+  swatches_->set_samples_and_result(request_, result_);
   apply_layout();
 }
 
@@ -1752,6 +1703,8 @@ bool AnalyzerWindow::cancel_transient() {
   for (auto *plot : {wave_, hist_, vector_})
     if (plot && plot->cancel_gesture())
       return true;
+  if (swatches_ && swatches_->cancel_pair_gesture())
+    return true;
   bool menus = false;
   for (auto &editor : ref_editors_)
     if (editor.frame && editor.frame->isVisible())
@@ -1800,6 +1753,8 @@ bool AnalyzerWindow::eventFilter(QObject *object, QEvent *event) {
     for (auto *plot : {wave_, hist_, vector_})
       if (plot)
         plot->cancel_gesture();
+    if (swatches_)
+      swatches_->cancel_pair_gesture();
   }
   if (event->type() == QEvent::MouseButtonPress) {
     for (int i = 0; i < 2; ++i) {
@@ -1823,14 +1778,26 @@ void AnalyzerWindow::closeEvent(QCloseEvent *e) {
     confirmed = confirm_close_();
   else {
     QMessageBox box(QMessageBox::Question, "关闭分析窗口",
-                    "确定退出这个分析窗口吗？", QMessageBox::NoButton, this);
+                    "确定结束这个分析窗口吗？", QMessageBox::NoButton, this);
     // The analyzer is always dark, including its confirmation dialog. A native
     // dialog can otherwise mix the system light background with inherited QSS.
     box.setObjectName("analyzerCloseConfirmation");
     box.setOption(QMessageBox::Option::DontUseNativeDialog);
-    auto *keep = box.addButton("继续分析", QMessageBox::RejectRole);
-    auto *leave = box.addButton("退出分析", QMessageBox::AcceptRole);
-    box.setDefaultButton(keep);
+    auto *keep = box.addButton("继续分析 · Esc", QMessageBox::RejectRole);
+    auto *leave = new QPushButton("结束分析 · Enter");
+    leave->setObjectName("analyzerEndAnalysis");
+    analyzer_control_style::set_danger(leave);
+    box.addButton(leave, QMessageBox::DestructiveRole);
+    // Keep the approved equal-width layout; shortcut hints are part of the
+    // button labels rather than a separate row below the dialog.
+    const int button_width = std::max({184, keep->sizeHint().width(),
+                                      leave->sizeHint().width()});
+    keep->setFixedWidth(button_width);
+    leave->setFixedWidth(button_width);
+    if (auto *buttons = box.findChild<QDialogButtonBox *>())
+      buttons->layout()->setSpacing(16);
+    keep->setAutoDefault(false);
+    box.setDefaultButton(leave);
     box.setEscapeButton(keep);
     box.exec();
     confirmed = box.clickedButton() == leave;
@@ -1904,6 +1871,8 @@ analysis::ReportPlan AnalyzerWindow::report_plan() {
       int(std::lround(origin.x() * dpr)), int(std::lround(origin.y() * dpr)),
       plan.source_view.target_size.width, plan.source_view.target_size.height};
   report_mode_ = true;
+  if (swatches_)
+    swatches_->set_transient_hidden(true);
   const QString gain_draft = gain_->text();
   const QString gain_style = gain_->styleSheet();
   gain_->setText(QString::number(scope_gain_, 'g', 8));
@@ -1936,6 +1905,8 @@ analysis::ReportPlan AnalyzerWindow::report_plan() {
   gain_->setStyleSheet(gain_style);
   source_->set_report_mode(false);
   report_mode_ = false;
+  if (swatches_)
+    swatches_->set_transient_hidden(false);
   refresh_readouts();
   return plan;
 }

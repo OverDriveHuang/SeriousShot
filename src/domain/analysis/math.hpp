@@ -14,15 +14,51 @@ inline float a_copysign(float x, float y) { return std::copysign(x, y); }
 inline bool a_finite(float x) {
   return (std::bit_cast<std::uint32_t>(x) & 0x7f800000u) != 0x7f800000u;
 }
+#define ANALYSIS_REAL float
+#define ANALYSIS_LITERAL(x) x##f
 #define ANALYSIS_MATH_SOURCE(...) __VA_ARGS__
 #include "domain/analysis/portable_math.inc"
 #undef ANALYSIS_MATH_SOURCE
+#undef ANALYSIS_LITERAL
+#undef ANALYSIS_REAL
 inline constexpr char metal_source[] =
-#define ANALYSIS_MATH_SOURCE(...) #__VA_ARGS__
+#define ANALYSIS_STRINGIFY_EXPANDED(...) #__VA_ARGS__
+#define ANALYSIS_MATH_SOURCE(...) ANALYSIS_STRINGIFY_EXPANDED(__VA_ARGS__)
+#define ANALYSIS_REAL float
+#define ANALYSIS_LITERAL(x) x##f
 #include "domain/analysis/portable_math.inc"
 #undef ANALYSIS_MATH_SOURCE
+#undef ANALYSIS_STRINGIFY_EXPANDED
+#undef ANALYSIS_LITERAL
+#undef ANALYSIS_REAL
     ;
 } // namespace hdrshot::analysis_math
+
+namespace hdrshot::analysis_math_double {
+struct A3 { double x; double y; double z; };
+inline A3 a3(double x, double y, double z) { return A3{x, y, z}; }
+inline A3 scale3(A3 a, double s) { return a3(a.x * s, a.y * s, a.z * s); }
+inline double dot3(A3 a, A3 b) { return (a.x * b.x + a.y * b.y) + a.z * b.z; }
+inline bool finite3(A3 v) {
+  return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+inline double bound(double x, double lo, double hi) {
+  return x < lo ? lo : (x > hi ? hi : x);
+}
+inline double a_pow(double x, double y) { return std::pow(x, y); }
+inline double a_sqrt(double x) { return std::sqrt(x); }
+inline double a_atan2(double y, double x) { return std::atan2(y, x); }
+inline double a_log2(double x) { return std::log2(x); }
+inline double a_copysign(double x, double y) { return std::copysign(x, y); }
+inline bool a_finite(double x) { return std::isfinite(x); }
+#define ANALYSIS_REAL double
+#define ANALYSIS_LITERAL(x) x
+#define ANALYSIS_MATH_SOURCE(...) __VA_ARGS__
+#include "domain/analysis/portable_color_math.inc"
+#undef ANALYSIS_MATH_SOURCE
+#undef ANALYSIS_LITERAL
+#undef ANALYSIS_REAL
+} // namespace hdrshot::analysis_math_double
 
 namespace hdrshot::analysis {
 bool is_hdr(WorkingSpace space);

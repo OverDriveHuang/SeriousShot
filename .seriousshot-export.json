@@ -1,13 +1,17 @@
 {
   "schema": 1,
-  "source_commit": "51d71a746856958bba8213140423c951875c5ce1",
+  "source_commit": "6be7e6905c55736c41eadb0ceff0f085a47d7409",
+  "code_identity": {
+    "commit": "6be7e6905c55736c41eadb0ceff0f085a47d7409",
+    "timestamp": "2026-09-23T17:07:12+08:00"
+  },
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "f6e2f872a3e31213f54fa478f055f216065c94c41a72c4f6c7991ee659dce563",
+      "sha256": "af3961199d0f65464fec07602d669474cd7fbf7d53cc354013e5ce547285f26b",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -55,7 +59,15 @@
       "mode": 420
     },
     "cmake/GenerateBuildTimestamp.cmake": {
-      "sha256": "2ac181dc49f715eba64062b0cc76602608368845f569db78cfbc51aa9ef1073e",
+      "sha256": "872082a013f43d2a971c421f59f4550b880a118255a7b45e10c07c37608172c7",
+      "mode": 420
+    },
+    "cmake/SourceIdentity.cmake": {
+      "sha256": "7c5f15ca7376658174008062872ed1c5061ac65ada19594a79de993dc96bb9a8",
+      "mode": 420
+    },
+    "cmake/SourceIdentityPaths.txt": {
+      "sha256": "20d24376e8d5d10cf2847f7fa51decabfc3620ba940e9358e18127f59e1775a8",
       "mode": 420
     },
     "cmake/display_p3_icc_profile.cpp.in": {
@@ -87,7 +99,7 @@
       "mode": 420
     },
     "docs/BUILDING.md": {
-      "sha256": "504ef0ff40ab4373e4232cb04d91e517db0accab8cb24e3fcc4ebb5bb352a2cc",
+      "sha256": "0cd8c8c7128e4c3ba8c26437fe08d7a582845d5fe9083db1e03fa8ec2e97ebac",
       "mode": 420
     },
     "docs/images/analyzer-2026-09-20.png": {
@@ -111,7 +123,7 @@
       "mode": 420
     },
     "scripts/generate_analyzer_gamut.py": {
-      "sha256": "3e6578ef1ad0af755a550b45453b1390414ebca39b3f697107c8a7749f2dbb09",
+      "sha256": "aadbf600488fc2920793d433fa295f6baa70dac5b04ce108f2bf2021d68d1e03",
       "mode": 420
     },
     "scripts/install-windows-qt.py": {
@@ -251,7 +263,7 @@
       "mode": 420
     },
     "src/core/build_metadata.hpp": {
-      "sha256": "965244f901f9ea95aa39fd00738cb28a6dd197ccdd4f161885912f302f7e4010",
+      "sha256": "06d07a4d191d9856fc119154544d68762d52cc613ae4cdfa35e1d9b8b90297ed",
       "mode": 420
     },
     "src/core/byte_sink.hpp": {
@@ -294,6 +306,14 @@
       "sha256": "907d813f07805dbcc9c7db56f9b564ca866096234ce737a9a85055d21db3a9f4",
       "mode": 420
     },
+    "src/domain/analysis/color_difference.cpp": {
+      "sha256": "4da1937a05f2ee10547cf536788c3a7154f76af9a9239ec7983a6fa0094aff8c",
+      "mode": 420
+    },
+    "src/domain/analysis/color_difference.hpp": {
+      "sha256": "c3a9829e8699c857a3e1e429aeaffe5cd530d73a84bde7c79d544b233bc38f61",
+      "mode": 420
+    },
     "src/domain/analysis/engine.cpp": {
       "sha256": "fb77ff6175ad130e6dc65f9e5e418684ea630d051d13d14aa05cd4bace0d56d8",
       "mode": 420
@@ -311,19 +331,31 @@
       "mode": 420
     },
     "src/domain/analysis/gamut_boundary_data.inc": {
-      "sha256": "c59b3562f091dc8845467bb0f645e3b386a38cdb014fdd4e76625149ff09f4ea",
+      "sha256": "e10fa7fda64b0d192bc10b8e5705368de9885342ab99ec9efa0af2af7bb07c74",
       "mode": 420
     },
     "src/domain/analysis/math.cpp": {
-      "sha256": "fe4090834182608e2d11246e4c059e3baed6c8f2197c49276d8476e2cf8ee7e5",
+      "sha256": "31b98b7eb6cad250d43145ef5a847edba87977cd4468ae94b78f9b658e24fba9",
       "mode": 420
     },
     "src/domain/analysis/math.hpp": {
-      "sha256": "c119c738bb082defc5108fd6685cf6406a0a813fdb355323bc50d65d4128f0fa",
+      "sha256": "fcaadc290d59385057c369529a514517ec0af52daf614c3c2ab063975d5c9d0c",
+      "mode": 420
+    },
+    "src/domain/analysis/portable_color_math.inc": {
+      "sha256": "344847499c23fa4923d167792e39c713830625663f9d3ed39ce561be9fb276b8",
       "mode": 420
     },
     "src/domain/analysis/portable_math.inc": {
-      "sha256": "c51003e1a1ca235e17ce1ec2833356fe591fbc14a4ac14813aa23fe0331e18c0",
+      "sha256": "9512dff3e786f2c5257cf71707f100d8ac88d2849717f96d6c4cc9dca2a75a84",
+      "mode": 420
+    },
+    "src/domain/analysis/swatch_pairs.cpp": {
+      "sha256": "cf20a8189c6316abda8d62d7d4ee9485a91ac8208a2f80a646b8592ca875ff2d",
+      "mode": 420
+    },
+    "src/domain/analysis/swatch_pairs.hpp": {
+      "sha256": "09ce16cce1f4536832d0deca10b794a1713d9d39d24f250bc177368ac7fa17cf",
       "mode": 420
     },
     "src/domain/analysis/types.hpp": {
@@ -790,6 +822,10 @@
       "sha256": "6f53da0bb268e25967bea91204a818a742de5e3cf443a3f3f79d211cb90596d1",
       "mode": 420
     },
+    "src/ui/qt/analyzer_control_style.hpp": {
+      "sha256": "980a8709b33e5c38547bcc4ae8757eb48f17b7beff2a0d9051615393961d230d",
+      "mode": 420
+    },
     "src/ui/qt/analyzer_layout.cpp": {
       "sha256": "84a4308f1c8fd73e47246298ca95cd4dcce1fc0c9c41c0acddebceabced4b79f",
       "mode": 420
@@ -807,19 +843,27 @@
       "mode": 420
     },
     "src/ui/qt/analyzer_source_view.cpp": {
-      "sha256": "7131bc42eea74b65562863bf80f915a7c24769f7b43c67ae168a10e0d22ef137",
+      "sha256": "5875072d98a5ccb450f3c1ec8fe7b2e53d1e37958bcc27fc8d7f4fc0afa3ecf2",
       "mode": 420
     },
     "src/ui/qt/analyzer_source_view.hpp": {
-      "sha256": "7cfc96ab748424af329cfed7084eab1f5f38e95a2f4f43b839ce0ce487ac07cc",
+      "sha256": "39332a0fd912dcbbf54c1a38d1107f9701f700c43fc97b35bef26df185d82664",
+      "mode": 420
+    },
+    "src/ui/qt/analyzer_swatch_panel.cpp": {
+      "sha256": "b472125cf644e7ce48a385ddf774d1644e3c6bdd76af2ecfc3c3bf45c47bfb93",
+      "mode": 420
+    },
+    "src/ui/qt/analyzer_swatch_panel.hpp": {
+      "sha256": "fe68081164958bd588cd4e921b38983dc80f633354d21de601f811cc66d4ed9f",
       "mode": 420
     },
     "src/ui/qt/analyzer_window.cpp": {
-      "sha256": "08cc566d8a4746bd4e9718c8106075be891e79a6071e3498a4e04c5b6cd92c39",
+      "sha256": "e9b5c22b428fb7cd3463414528702fd3f32d6259b94bd1e9ae1b7ac2af9aaf19",
       "mode": 420
     },
     "src/ui/qt/analyzer_window.hpp": {
-      "sha256": "8884f704c770667dfa1f5644a3cc6488fefab1bc5a9e811b4a46efc09547af6e",
+      "sha256": "95243b310de411b300c29b5acef2b2334376e77281b2d23c1f701cdfab1558ff",
       "mode": 420
     },
     "src/ui/qt/capture_error_message.hpp": {
@@ -851,11 +895,11 @@
       "mode": 420
     },
     "src/ui/qt/settings_window.cpp": {
-      "sha256": "d8312efbc54716087ea5afd23311cd2efa626a17176916a07d088760b7d978f4",
+      "sha256": "d6f760191a21ded597ff5beff972bd9b05a0d8904871472595f0689d516a8c3c",
       "mode": 420
     },
     "src/ui/qt/settings_window.hpp": {
-      "sha256": "c0ed695a63faf4d2489bef150f0376ffeccc2a6990f9520d3f2335c0fca5acba",
+      "sha256": "ccbb9e4415ac20f6d9b95bc555333eb1ee7fe3ac124df54eef98042254636348",
       "mode": 420
     },
     "tests/analysis_application_tests.cpp": {
@@ -863,7 +907,7 @@
       "mode": 420
     },
     "tests/analyzer_core_tests.cpp": {
-      "sha256": "831ea6b2306e392deaf9d98e2d7f2bf1dd71dd31f174b5ab23a4b9f78918745e",
+      "sha256": "63a50870c4bc35c13ba5a55c538e98d7bbcd58b336f88540b6a353b79c4d3413",
       "mode": 420
     },
     "tests/analyzer_gamut_tests.cpp": {
@@ -879,7 +923,7 @@
       "mode": 420
     },
     "tests/analyzer_ui_tests.cpp": {
-      "sha256": "b410cc49cb2d2c26db3238e99d8b5652a3799e5a2e105a348d28f809500543cb",
+      "sha256": "76460889ec62c7a292a2c713b073706a39b708beba23611cde3dc8b2eb7ccfba",
       "mode": 420
     },
     "tests/annotation_antialiasing_tests.cpp": {
@@ -1063,7 +1107,7 @@
       "mode": 420
     },
     "tests/settings_window_tests.cpp": {
-      "sha256": "7fdb0582170d9910e43b27121c15ec1b56dfa710f434dfeb12677a6e60cb23df",
+      "sha256": "d87f5ed6ebbbfe1d73cbc571818725a44a15603def95f21095a82d4eaf6fcab3",
       "mode": 420
     },
     "tests/settings_workflow_tests.cpp": {
@@ -1078,8 +1122,16 @@
       "sha256": "903d068cd4a7b58ac32fb5d301ccbdcf259a756715602cd161d7a564e0155eb0",
       "mode": 420
     },
+    "tests/source_identity_tests.py": {
+      "sha256": "5364aa35dcfc1f932949ccb00b902f64d187dd7d205f35d2eef756649bc560f1",
+      "mode": 420
+    },
     "tests/source_range_probe_tests.cpp": {
       "sha256": "e419a082bf952f15a79d9b73e90b6ec8b553e229f1e6d8839e1618497b484c16",
+      "mode": 420
+    },
+    "tests/swatch_pair_tests.cpp": {
+      "sha256": "9e737fb38ea74d268f66a8716bb08af09ebece80253adb478684f2a94ea5c0d2",
       "mode": 420
     },
     "tests/test_support.hpp": {

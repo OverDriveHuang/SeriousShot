@@ -20,6 +20,7 @@ class QStyle;
 namespace hdrshot {
 class AnalyzerSplitPane;
 class AnalyzerScopePlot;
+class AnalyzerSwatchPanel;
 
 class AnalyzerWindow final : public QWidget {
 public:
@@ -141,9 +142,8 @@ private:
   QWidget *hist_panel_{};
   QWidget *vector_panel_{};
   QWidget *swatch_panel_{};
+  AnalyzerSwatchPanel *swatches_{};
   QScrollArea *swatch_scroll_{};
-  QWidget *swatch_content_{};
-  QVBoxLayout *swatch_layout_{};
   QLabel *readout_{};
   QLabel *coordinate_{};
   QLabel *mask_readout_{};

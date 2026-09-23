@@ -1,0 +1,8 @@
+CMakeLists.txt
+CMakePresets.json
+src
+cmake
+assets
+tools
+scripts
+artifacts/2026-09-19_analyzer_interaction_fixes/checks/interaction_probe.mm

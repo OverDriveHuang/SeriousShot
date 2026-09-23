@@ -338,17 +338,18 @@ Readout make_readout(const Rgb &source, const Rgb &work, std::uint64_t valid,
     return r;
   r.source_rgb_edr = source;
   r.work_rgb_edr = work;
-  auto v = analysis_math::signals_from_work(
-      triple(work), unsigned(s.working_space), float(s.reference_white_nits));
-  r.signal_rgb = rgb(v.encoded);
+  auto v = analysis_math_double::signals_from_work(
+      analysis_math_double::a3(work[0], work[1], work[2]),
+      unsigned(s.working_space), double(s.reference_white_nits));
+  r.signal_rgb = {v.encoded.x, v.encoded.y, v.encoded.z};
   r.y_nits = v.y_nit;
   r.intensity = v.intensity;
   r.intensity_nits =
-      is_hdr(s.working_space) ? analysis_math::pq_decode(v.intensity) : 0;
+      is_hdr(s.working_space) ? analysis_math_double::pq_decode(v.intensity) : 0;
   for (int i = 0; i < 3; ++i)
     r.work_rgb_nits[std::size_t(i)] =
         work[std::size_t(i)] * s.reference_white_nits;
-  r.perceptual = rgb(v.perceptual);
+  r.perceptual = {v.perceptual.x, v.perceptual.y, v.perceptual.z};
   r.chroma_plane = {v.perceptual.y, v.perceptual.z};
   r.ycbcr = {v.ncl.y, v.ncl.z};
   r.chroma = v.chroma;
