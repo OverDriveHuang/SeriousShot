@@ -64,6 +64,7 @@ void clli_carry_and_partial_workgroup() {
 }
 void uhdr_aa_ownership_and_invalid_source() {
   auto source=frame({0.5F,2.0F,std::numeric_limits<float>::quiet_NaN()});
+  source.display_dynamic_range=DisplayDynamicRange::hdr;
   auto roi=FrameCropper::view(source);
   AnnotationPixelPlan coverage{0,{3,1},{{0,0,1}},
       {{0,1,1,ObjectId{1},0xff0000,{{{0.4F,0,0,0.5F}}}}, {0,2,1,ObjectId{2},0xffffff,{}}}};
@@ -78,6 +79,61 @@ void uhdr_aa_ownership_and_invalid_source() {
   roi.encoding.transfer=TransferFunction::extended_srgb;
   HDRSHOT_CHECK(!gpu->render({&roi,&coverage}));
 }
+void frozen_sdr_jpeg_clamps_output_and_statistics() {
+  for (const float excursion : {1.0040311F, 1.5F}) {
+    CanonicalFrameView source{};
+    source.size_px={2,1};
+    source.encoding=WindowsColor::linear_p3_encoding();
+    source.display_dynamic_range=DisplayDynamicRange::sdr;
+    source.rgba_float.assign({1.0F,1.0F,excursion,1.0F,
+                              2.0F,2.0F,2.0F,1.0F});
+    const auto before=source.rgba_float;
+    auto roi=FrameCropper::view(source);
+    AnnotationPixelPlan coverage{0,{2,1},{{0,0,1}},
+        {{0,1,1,ObjectId{1},0xff0000,{{{0.4F,0,0,0.5F}}}}}};
+    const auto jpeg=gpu->render({&roi,&coverage});
+    HDRSHOT_CHECK(jpeg.has_value());
+    HDRSHOT_CHECK(jpeg_output_kind(jpeg.value())==JpegOutputKind::display_p3_sdr);
+    HDRSHOT_CHECK_NEAR(jpeg.value().maximum_linear_component,1.0,0);
+    HDRSHOT_CHECK_NEAR(*jpeg.value().source_visible_maximum_linear_component,1.0,0);
+    for(std::size_t p=0;p<2;++p) for(std::size_t c=0;c<3;++c)
+      HDRSHOT_CHECK(ExtendedP3Mapper::decode_binary16(jpeg.value().rgba_half[p*4+c]).value()<=1.0F);
+    HDRSHOT_CHECK(source.rgba_float==before);
+    // The PNG path independently clips the same frozen SDR source.
+    const auto png=gpu->process({&roi,&coverage,{},PqDiffuseWhite::nits_203,HdrPqPrecision::bits_10});
+    HDRSHOT_CHECK(png && !png.value().content_light);
+    HDRSHOT_CHECK(png.value().rgb_u16[2]==65535U);
+    HDRSHOT_CHECK(source.rgba_float==before);
+  }
+  CanonicalFrameView rounded{};
+  rounded.size_px={1,1};
+  rounded.encoding=WindowsColor::linear_p3_encoding();
+  rounded.display_dynamic_range=DisplayDynamicRange::sdr;
+  rounded.rgba_float.assign({0.9999F,0.0F,-0.2F,1.0F});
+  auto roi=FrameCropper::view(rounded);
+  auto ownership=plan(rounded.size_px);
+  const auto quantized=gpu->render({&roi,&ownership});
+  HDRSHOT_CHECK(quantized.has_value());
+  const auto stored=ExtendedP3Mapper::decode_binary16(quantized.value().rgba_half[0]).value();
+  HDRSHOT_CHECK_NEAR(quantized.value().maximum_linear_component,stored,0);
+  HDRSHOT_CHECK_NEAR(*quantized.value().source_visible_maximum_linear_component,stored,0);
+  HDRSHOT_CHECK(stored>0.0F && stored<=1.0F);
+  HDRSHOT_CHECK(quantized.value().rgba_half[2]==0U);
+}
+void captured_hdr_jpeg_threshold() {
+  auto source=frame({1.0F});
+  source.display_dynamic_range=DisplayDynamicRange::hdr;
+  auto coverage=plan(source.size_px);
+  auto roi=FrameCropper::view(source);
+  const auto white=gpu->render({&roi,&coverage});
+  HDRSHOT_CHECK(white && jpeg_output_kind(white.value())==JpegOutputKind::display_p3_sdr);
+  source=frame({1.25F});
+  source.display_dynamic_range=DisplayDynamicRange::hdr;
+  roi=FrameCropper::view(source);
+  const auto extended=gpu->render({&roi,&coverage});
+  HDRSHOT_CHECK(extended && jpeg_output_kind(extended.value())==JpegOutputKind::ultra_hdr);
+  HDRSHOT_CHECK_NEAR(*extended.value().source_visible_maximum_linear_component,1.25,0);
+}
 }
 int main() {
   auto result=WindowsD3DExportPixelProcessor::create();
@@ -89,5 +145,7 @@ int main() {
   return hdrshot::test::run({{"SDR transfer and no cLLI",sdr_encoding_and_no_clli},
       {"HDR precision and clipping",hdr_pq_precision_and_clli},
       {"cLLI 64-bit carry and partial group",clli_carry_and_partial_workgroup},
-      {"UHDR AA coverage and nonfinite rejection",uhdr_aa_ownership_and_invalid_source}});
+      {"UHDR AA coverage and nonfinite rejection",uhdr_aa_ownership_and_invalid_source},
+      {"frozen SDR JPEG range and PNG consistency",frozen_sdr_jpeg_clamps_output_and_statistics},
+      {"captured HDR JPEG threshold",captured_hdr_jpeg_threshold}});
 }

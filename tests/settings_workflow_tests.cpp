@@ -2,6 +2,7 @@
 #include "test_support.hpp"
 
 #include <optional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,6 +58,7 @@ class RecordingSettingsStore final : public SettingsStorePort {
     if (patch.pq_diffuse_white.has_value()) {
       snapshot.pq_diffuse_white = *patch.pq_diffuse_white;
     }
+    if (patch.windows_scrgb_gain) snapshot.windows_scrgb_gain = *patch.windows_scrgb_gain;
     if (patch.hdr_pq_precision.has_value()) {
       snapshot.hdr_pq_precision = *patch.hdr_pq_precision;
     }
@@ -197,6 +199,20 @@ void diffuse_white_persists_independently() {
   HDRSHOT_CHECK(!settings.patches.front().save_format.has_value());
 }
 
+void windows_gain_is_bounded_and_independent() {
+  RecordingSettingsStore settings;
+  HDRSHOT_CHECK(settings.snapshot.windows_scrgb_gain == 1.0);
+  for (const double invalid : {-0.1, 3.1, std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    HDRSHOT_CHECK(!SettingsWorkflow::change_windows_scrgb_gain(invalid, settings));
+  HDRSHOT_CHECK(settings.patches.empty());
+  for (const double valid : {0.0, 0.5, 1.0, 3.0}) {
+    HDRSHOT_CHECK(SettingsWorkflow::change_windows_scrgb_gain(valid, settings).has_value());
+    HDRSHOT_CHECK(settings.snapshot.windows_scrgb_gain == valid);
+    HDRSHOT_CHECK(!settings.patches.back().pq_diffuse_white);
+  }
+}
+
 void hdr_pq_precision_persists_independently() {
   RecordingSettingsStore settings;
   const auto result = SettingsWorkflow::change_hdr_pq_precision(
@@ -289,6 +305,7 @@ int main() {
       {"rollback failure is explicit", failed_rollback_is_explicit_inconsistent_state},
       {"invalid values do not touch ports", invalid_values_do_not_touch_ports},
       {"diffuse white persists independently", diffuse_white_persists_independently},
+      {"Windows gain validation and independent persistence", windows_gain_is_bounded_and_independent},
       {"HDR PQ precision persists independently", hdr_pq_precision_persists_independently},
       {"invalid HDR PQ precision is rejected", invalid_hdr_pq_precision_is_rejected},
       {"Ultra HDR format and quality persist", ultra_hdr_format_and_quality_persist_independently},

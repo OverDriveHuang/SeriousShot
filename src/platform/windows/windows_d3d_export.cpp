@@ -8,6 +8,76 @@
 
 namespace hdrshot {
 namespace {
+class WindowsCleanSamples final : public LinearSampleStorage {
+ public:
+  explicit WindowsCleanSamples(std::vector<std::array<float, 4>> samples)
+      : samples_(std::move(samples)) {}
+  std::size_t sample_count() const override { return samples_.size(); }
+  Result<bool, Error> wait_until_ready() const override {
+    return Result<bool, Error>::success(true);
+  }
+  Result<std::vector<std::array<float, 4>>, Error> read_samples(
+      std::size_t offset, std::size_t count) const override {
+    if (offset > samples_.size() || count > samples_.size() - offset)
+      return Result<std::vector<std::array<float, 4>>, Error>::failure(
+          {ErrorCode::invalid_input, "WindowsCleanSamples", Retryability::never, {}});
+    return Result<std::vector<std::array<float, 4>>, Error>::success(
+        std::vector<std::array<float, 4>>(
+            samples_.begin() + static_cast<std::ptrdiff_t>(offset),
+            samples_.begin() + static_cast<std::ptrdiff_t>(offset + count)));
+  }
+ private:
+  std::vector<std::array<float, 4>> samples_;
+};
+class WindowsCleanComposition final : public CleanCompositionPort {
+ public:
+  Result<std::vector<std::array<float, 4>>, Error> compose(
+      std::span<const CleanCompositionSample> samples) override {
+    return cpu_.compose(samples);
+  }
+  Result<LinearSampleRef, Error> compose_native(
+      LinearSourceRef source, std::span<const PositionedCleanSample> samples) override {
+    if (!source) return Result<LinearSampleRef, Error>::failure(
+        {ErrorCode::invalid_input, "WindowsCleanComposition", Retryability::never, {}});
+    int left = source->size_px().width, top = source->size_px().height, right = 0, bottom = 0;
+    for (const auto& sample : samples) {
+      if (sample.x >= static_cast<unsigned>(source->size_px().width) ||
+          sample.y >= static_cast<unsigned>(source->size_px().height))
+        return Result<LinearSampleRef, Error>::failure(
+            {ErrorCode::invalid_input, "WindowsCleanComposition", Retryability::never, {}});
+      if (sample.annotation[3] > 0) {
+        left = std::min(left, static_cast<int>(sample.x));
+        top = std::min(top, static_cast<int>(sample.y));
+        right = std::max(right, static_cast<int>(sample.x) + 1);
+        bottom = std::max(bottom, static_cast<int>(sample.y) + 1);
+      }
+    }
+    LinearFloatPixels source_region;
+    if (right > left && bottom > top) {
+      auto region = source->read_region({left, top, right - left, bottom - top});
+      if (!region) return Result<LinearSampleRef, Error>::failure(region.error());
+      source_region = std::move(region.value());
+    }
+    std::vector<CleanCompositionSample> work;
+    work.reserve(samples.size());
+    for (const auto& sample : samples) {
+      CleanCompositionSample item{sample.annotation, {}};
+      if (sample.annotation[3] > 0) {
+        const auto p = (static_cast<std::size_t>(sample.y - static_cast<unsigned>(top)) *
+            static_cast<std::size_t>(right - left) +
+            static_cast<std::size_t>(sample.x - static_cast<unsigned>(left))) * 4U;
+        for (std::size_t c = 0; c < 3U; ++c) item.source[c] = source_region[p + c];
+      }
+      work.push_back(item);
+    }
+    auto composed = cpu_.compose(work);
+    if (!composed) return Result<LinearSampleRef, Error>::failure(composed.error());
+    return Result<LinearSampleRef, Error>::success(
+        std::make_shared<WindowsCleanSamples>(std::move(composed.value())));
+  }
+ private:
+  CpuCleanComposition cpu_;
+};
 // The source texture is already Linear Extended Display P3 in EDR units.
 // These kernels never perform a platform/source gamma conversion.
 constexpr const char* shader=R"HLSL(
@@ -47,10 +117,13 @@ void main(uint3 group:SV_GroupID,uint lane:SV_GroupIndex) {
       p3+=sample.a*max(underlying,0.0);
     }
     uint4 result=uint4(0,0,0,0x3c00);
-    if(mode==2) {
-      p3=min(p3,10000.0/203.0);
+    if(mode==2 || mode==3) {
+      // Mode 3 prepares the temporary JPEG image captured on an SDR display.
+      // Reduce the actual output samples after clipping, in this same dispatch.
+      p3=mode==3 ? clamp(p3,0.0,1.0) : min(p3,10000.0/203.0);
       result=uint4(f32tof16(p3.r),f32tof16(p3.g),f32tof16(p3.b),0x3c00);
-      float maximum=max(p3.r,max(p3.g,p3.b));
+      float3 measured=mode==3 ? float3(f16tof32(result.r),f16tof32(result.g),f16tof32(result.b)) : p3;
+      float maximum=max(measured.r,max(measured.g,measured.b));
       InterlockedMax(stats[6],asuint(maximum));
       if(index==0) InterlockedMax(stats[7],asuint(maximum));
     } else {
@@ -101,6 +174,9 @@ struct Output {
   std::array<std::uint32_t,8> stats{};
 };
 }
+std::shared_ptr<CleanCompositionPort> windows_clean_composition() {
+  return std::make_shared<WindowsCleanComposition>();
+}
 struct WindowsD3DExportPixelProcessor::Impl {
   WindowsD3DDevice gpu;
   winrt::com_ptr<ID3D11ComputeShader> compute;
@@ -112,20 +188,33 @@ struct WindowsD3DExportPixelProcessor::Impl {
   Result<Output,Error> run(const SelectionRoiView& source,const AnnotationPixelPlan& plan,
                           UINT mode,float white,UINT max_code) {
     const std::scoped_lock lock(mutex);
-    if(!WindowsColor::valid_linear_p3_roi(source) || source.size_px!=plan.output_size_px ||
+    CanonicalFrameView cpu_source;
+    SelectionRoiView source_view = source;
+    if (source.linear_source) {
+      auto read = FrameCropper::read_cpu_region(source);
+      if (!read) return Result<Output,Error>::failure(read.error());
+      cpu_source = std::move(read.value());
+      source_view = FrameCropper::view(cpu_source);
+    }
+    auto cpu_plan = materialize_annotation_plan(plan);
+    if (!cpu_plan) return Result<Output,Error>::failure(cpu_plan.error());
+    if(!WindowsColor::valid_linear_p3_roi(source_view) ||
+        source_view.size_px!=plan.output_size_px ||
         source.size_px.width>16384 || source.size_px.height>16384) return Result<Output,Error>::failure(invalid("invalid_linear_p3_roi"));
     const auto count=static_cast<std::size_t>(source.size_px.width)*source.size_px.height;
     if(count>std::numeric_limits<UINT>::max()/16U || source.row_stride_samples>std::numeric_limits<UINT>::max()/2U)
       return Result<Output,Error>::failure(invalid("gpu_resource_size_overflow"));
-    const auto upload=prepare_annotation_gpu_upload(plan);
+    const auto upload=prepare_annotation_gpu_upload(cpu_plan.value());
     if(!upload) return Result<Output,Error>::failure(upload.error());
     if(upload.value().samples.size()>std::numeric_limits<UINT>::max()/16U) return Result<Output,Error>::failure(invalid("annotation_upload_overflow"));
     try {
       D3D11_TEXTURE2D_DESC desc{};
-      desc.Width=source.size_px.width; desc.Height=source.size_px.height;
-      desc.MipLevels=1; desc.ArraySize=1; desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
+      desc.Width=source_view.size_px.width; desc.Height=source_view.size_px.height;
+      desc.MipLevels=1; desc.ArraySize=1;
+      desc.Format=source_view.rgba_float.empty() ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R32G32B32A32_FLOAT;
       desc.SampleDesc.Count=1; desc.Usage=D3D11_USAGE_IMMUTABLE; desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
-      const D3D11_SUBRESOURCE_DATA input{source.rgba_half.data()+source.first_sample_offset,static_cast<UINT>(source.row_stride_samples*2U),0};
+      const D3D11_SUBRESOURCE_DATA input{source_view.sample_data(source_view.first_sample_offset),
+          static_cast<UINT>(source_view.row_stride_samples*source_view.sample_bytes()),0};
       winrt::com_ptr<ID3D11Texture2D> texture;
       winrt::check_hresult(gpu.device->CreateTexture2D(&desc,&input,texture.put()));
       const auto indices=gpu.buffer(static_cast<UINT>(count*4U),D3D11_BIND_SHADER_RESOURCE,4,upload.value().indices.data());
@@ -136,9 +225,9 @@ struct WindowsD3DExportPixelProcessor::Impl {
       struct Params { UINT width,height,mode; float white; UINT max_code; UINT padding[3]; };
       const Params params{desc.Width,desc.Height,mode,white,max_code,{}};
       const auto constants=gpu.buffer(sizeof(params),D3D11_BIND_CONSTANT_BUFFER,0,&params);
-      const auto source_view=gpu.srv(texture), index_view=gpu.srv(indices), color_view=gpu.srv(samples);
+      const auto source_srv=gpu.srv(texture), index_view=gpu.srv(indices), color_view=gpu.srv(samples);
       const auto output_view=gpu.uav(result), stats_view=gpu.uav(stats);
-      ID3D11ShaderResourceView* resources[]{source_view.get(),index_view.get(),color_view.get()};
+      ID3D11ShaderResourceView* resources[]{source_srv.get(),index_view.get(),color_view.get()};
       ID3D11UnorderedAccessView* outputs[]{output_view.get(),stats_view.get()};
       ID3D11Buffer* constant_buffers[]{constants.get()};
       gpu.context->CSSetShader(compute.get(),nullptr,0);
@@ -197,7 +286,8 @@ Result<ExportPixelProcessResult,Error> WindowsD3DExportPixelProcessor::process(c
 Result<LinearDisplayP3HalfImage,Error> WindowsD3DExportPixelProcessor::render(const UltraHdrInputRenderRequest& request) {
   if(!request.source || !request.pixel_plan || request.reference_white_nits!=kUltraHdrReferenceWhiteNits)
     return Result<LinearDisplayP3HalfImage,Error>::failure(invalid("invalid_uhdr_request"));
-  const auto pixels=impl_->run(*request.source,*request.pixel_plan,2U,203.0F,65535U);
+  const auto mode=request.source->display_dynamic_range==DisplayDynamicRange::sdr ? 3U : 2U;
+  const auto pixels=impl_->run(*request.source,*request.pixel_plan,mode,203.0F,65535U);
   if(!pixels) return Result<LinearDisplayP3HalfImage,Error>::failure(pixels.error());
   LinearDisplayP3HalfImage out;
   out.size_px=request.source->size_px;

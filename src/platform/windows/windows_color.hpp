@@ -3,6 +3,7 @@
 #include "core/frame.hpp"
 #include "core/error.hpp"
 #include "core/result.hpp"
+#include "application/export_workflow.hpp"
 #include "ports/source_range_probe_port.hpp"
 
 #include <array>
@@ -40,4 +41,10 @@ class WindowsLinearP3RangeProbe final : public SourceRangeProbePort {
       const SelectionRoiView& source, const AnnotationPixelPlan& plan,
       RangeProbeOptimization optimization) override;
 };
+
+// Restore the physical display range captured before AnalysisWorkflow creates
+// its independent compact original/report source. Copies snapshot metadata and
+// retains the same immutable pixel resource.
+Result<ExportSnapshot, Error> windows_snapshot_with_capture_range(
+    const ExportSnapshot& compact, DisplayDynamicRange captured_range);
 }  // namespace hdrshot

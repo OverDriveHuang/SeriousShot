@@ -1,4 +1,5 @@
 #include "application/capture_interaction_session.hpp"
+#include "application/headless_capture.hpp"
 #include "application/capture_session.hpp"
 #include "application/export_completion_coordinator.hpp"
 #include "application/multi_display_preview_presenter.hpp"
@@ -7,6 +8,9 @@
 #include "platform/windows/windows_d3d_export.hpp"
 #include "platform/windows/windows_d3d_presenter.hpp"
 #include "platform/windows/windows_qt_ports.hpp"
+#include "platform/windows/windows_window_catalog.hpp"
+#include "platform/windows/windows_qt_analyzer_controller.hpp"
+#include "platform/windows/windows_capture_cli.hpp"
 #include "platform/windows/windows_application_icon.hpp"
 #include "platform/freetype/freetype_text_rasterizer_port.hpp"
 #include "platform/qt/qt_export_task_executor.hpp"
@@ -23,6 +27,7 @@
 #include <QFontDatabase>
 #include <QIcon>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QScreen>
 #include <QStandardPaths>
@@ -32,6 +37,7 @@
 #include <QWindow>
 #include <atomic>
 #include <iostream>
+#include <string_view>
 
 namespace {
 using namespace hdrshot;
@@ -56,6 +62,7 @@ class WindowsApplicationShell {
        clipboard_(smoke_folder_.isEmpty()?std::string{}:(smoke_folder_+QStringLiteral("/clipboard")).toStdString()),executor_(app){}
   ~WindowsApplicationShell() {
     finish_capture();
+    if(analyzer_) analyzer_->shutdown();
     executor_.drain();
     delete settings_window_;
     delete tray_menu_;
@@ -78,6 +85,22 @@ class WindowsApplicationShell {
     if(!loaded) { record_diagnostic_failure(diagnostics_.get(),"startup",loaded.error());print_error(loaded.error());return false; }
     settings_=loaded.value();
     diagnostics_->set_detailed_logging(settings_.detailed_logging);
+    const auto capability=windows_check_capture_runtime_capabilities(diagnostics_.get());
+    if(!capability) {
+      record_diagnostic_failure(diagnostics_.get(),"startup",capability.error());
+      print_error(capability.error());
+      if(smoke_folder_.isEmpty()) {
+        const auto reason=capability.error().safe_context.find("reason");
+        const QString detail=reason==capability.error().safe_context.end()?QString{}:
+            QString::fromStdString(reason->second);
+        QString message=QStringLiteral("当前 Windows 会话未提供所需的截图能力。");
+        if(detail==QStringLiteral("cursor_exclusion_unavailable"))
+          message=QStringLiteral("当前系统不支持排除光标的截图，无法启动截图功能。");
+        QMessageBox::critical(nullptr,QStringLiteral("SeriousShot 无法截图"),
+            message+QStringLiteral("\n\n详细原因：")+detail);
+      }
+      return false;
+    }
     const auto font=QCoreApplication::applicationDirPath()+QStringLiteral("/assets/fonts/NotoSansSC-VF.ttf");
     rasterizer_=std::make_shared<FreeTypeTextRasterizerPort>(font.toStdString(),
         "NotoSansSC-VF.ttf@f8d1575;wght=450;hinting=native#d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964");
@@ -96,6 +119,16 @@ class WindowsApplicationShell {
         [this](bool active,DisplayId owner) {
           for(auto& overlay:overlays_) if(overlay.host) overlay.host->set_system_dialog_active(active,!active && overlay.display==owner);
         },ExportCompletionCoordinator::Event{},diagnostics_.get());
+    analyzer_=std::make_unique<WindowsQtAnalyzerController>(app_,
+        [this](auto command,auto snapshot,auto completed) {
+          return completion_->submit(command,std::move(snapshot),std::move(completed));
+        },[this] {return settings_;},[this](std::string preferences) {
+          SettingsPatch patch;
+          patch.analyzer_preferences_json=std::move(preferences);
+          const auto saved=store_->save(patch);
+          if(saved) {const auto current=store_->load();if(current) settings_=current.value();}
+          else record_diagnostic_failure(diagnostics_.get(),"analysis.preferences",saved.error());
+        },diagnostics_);
     tray_=new QSystemTrayIcon(app_.windowIcon(),&app_);
     tray_->setToolTip(QStringLiteral("SeriousShot"));
     tray_menu_=new QMenu;
@@ -118,20 +151,16 @@ class WindowsApplicationShell {
     if(!smoke_folder_.isEmpty()) {
       QTimer::singleShot(100,&app_,[this] {start_capture();});
       QTimer::singleShot(smoke_sequence_?45000:15000,&app_,[this] {if(!smoke_exported_) {std::cerr<<"smoke timeout\n";shutdown(1);}});
-    } else if(!settings_.initial_settings_presented) {
-      QTimer::singleShot(0,&app_,[this] {
-        show_settings();
-        const auto marked=SettingsWorkflow::mark_initial_settings_presented(*store_);
-        if(!marked) print_error(marked.error());
-      });
-    }
+    } else show_settings();
     std::cout<<"appShellReady=1 windowsBuild="<<windows_build_number()<<" hotkey="<<settings_.global_capture_hotkey<<'\n';
     return true;
   }
   void shutdown(int code=0) {
+    if(analyzer_ && !analyzer_->close_windows()) return;
     (void)hotkey_.unregister_hotkey();
     if(tray_) tray_->hide();
     finish_capture();
+    if(analyzer_) analyzer_->shutdown();
     executor_.drain();
     app_.exit(code);
   }
@@ -159,6 +188,7 @@ class WindowsApplicationShell {
       settings_window_->set_window_activation_port(&activation_);
       settings_window_->set_applied([this](const SettingsSnapshot& settings){
         settings_=settings;
+        if(capture_) capture_->set_gain(settings_.windows_scrgb_gain);
         diagnostics_->set_detailed_logging(settings_.detailed_logging);
         update_capture_action_text();
       });
@@ -176,9 +206,10 @@ class WindowsApplicationShell {
     if(settings_window_) {
       settings_window_->hide();
     }
-    const auto native=windows_enumerate_displays();
+    const auto native=windows_enumerate_displays(diagnostics_.get());
     if(!native) {report(native.error());return;}
     auto displays=std::make_shared<const std::vector<WindowsDisplayInfo>>(native.value());
+    window_catalog_->set_displays(displays);
     const SessionId session{next_session_++};
     if(!lifecycle_.begin(session)) return;
     const SelectionSnapshot initial{1,{}};
@@ -197,8 +228,13 @@ class WindowsApplicationShell {
       host->prepare_hidden_native_surface();
       host->windowHandle()->setScreen(qt_screen);
       host->set_text_rasterizer(rasterizer_,font_family_);
+      host->set_clean_composition(windows_clean_composition());
+      host->set_diagnostics(diagnostics_);
       host->set_finished([this,session] {finish_capture(session);});
       host->set_interaction_allowed([this,session](DisplayId id){return lifecycle_.allows(session,id);});
+      host->set_initial_gesture_changed([this,session](DisplayId id,bool begin) {
+        return lifecycle_.initial_gesture(session,id,begin);
+      });
       host->set_selection_established([this,session](DisplayId id) {
         if(!lifecycle_.lock(session,id)) return;
         for(auto& overlay:overlays_) if(overlay.host && overlay.display!=id) overlay.host->set_interaction_locked(true);
@@ -216,16 +252,19 @@ class WindowsApplicationShell {
           completed(std::move(result));
         });
       },settings_);
-      auto presenter=WindowsD3DPreviewPresenter::create(host->native_surface(),display);
+      host->set_analysis_requested([this](auto snapshot,auto completed) {
+        analyzer_->open(std::move(snapshot),std::move(completed));
+      });
+      auto presenter=WindowsD3DPreviewPresenter::create(host->native_surface(),display,diagnostics_);
       if(!presenter) {host->deleteLater();report(presenter.error());finish_capture();return;}
       targets.push_back(display.snapshot.id);
       endpoints.push_back({display.snapshot.id,presenter.value()});
       overlays_.push_back({display.snapshot.id,host,presenter.value()});
     }
     catalog_=std::make_shared<WindowsDisplayCatalogPort>(displays);
-    capture_=std::make_shared<WindowsCapturePort>(displays);
+    capture_=std::make_shared<WindowsCapturePort>(displays,settings_.windows_scrgb_gain,diagnostics_);
     preview_=std::make_shared<MultiDisplayPreviewPresenterPort>(std::move(endpoints));
-    session_=std::make_shared<CaptureSession>(catalog_,capture_,preview_);
+    session_=std::make_shared<CaptureSession>(catalog_,capture_,preview_,window_catalog_,diagnostics_);
     session_->begin({session,OperationId{1},FrameId{session.value},std::move(targets),initial},
         [this,session](Result<CaptureReadyPayload,Error> result) mutable {
       QMetaObject::invokeMethod(&app_,[this,session,result=std::move(result)]() mutable {
@@ -303,7 +342,7 @@ class WindowsApplicationShell {
   QtFolderOpenerPort folders_;
   std::unique_ptr<QtSettingsStorePort> store_;
   SettingsSnapshot settings_;
-  std::unique_ptr<DiagnosticsPort> diagnostics_;
+  std::shared_ptr<DiagnosticsPort> diagnostics_;
   std::string diagnostics_folder_;
   std::shared_ptr<FreeTypeTextRasterizerPort> rasterizer_;
   std::string font_family_;
@@ -312,10 +351,12 @@ class WindowsApplicationShell {
   LibUltraHdrEncoder encoder_;
   QtExportTaskExecutor executor_;
   std::unique_ptr<ExportCompletionCoordinator> completion_;
+  std::unique_ptr<WindowsQtAnalyzerController> analyzer_;
   CaptureInteractionSession lifecycle_;
   std::uint64_t next_session_{1};
   std::vector<Overlay> overlays_;
   std::shared_ptr<WindowsDisplayCatalogPort> catalog_;
+  std::shared_ptr<WindowsWindowCatalogPort> window_catalog_=std::make_shared<WindowsWindowCatalogPort>();
   std::shared_ptr<WindowsCapturePort> capture_;
   std::shared_ptr<MultiDisplayPreviewPresenterPort> preview_;
   std::shared_ptr<CaptureSession> session_;
@@ -323,6 +364,16 @@ class WindowsApplicationShell {
 }
 int main(int argc,char** argv) {
   std::cout<<std::unitbuf;std::cerr<<std::unitbuf;
+  const bool smoke_argument=argc>=2 &&
+      (std::string_view(argv[1])=="--smoke" || std::string_view(argv[1])=="--smoke-copy" ||
+       std::string_view(argv[1])=="--smoke-sequence");
+  std::vector<std::string_view> arguments;
+  if(!smoke_argument) for(int index=1;index<argc;++index) arguments.emplace_back(argv[index]);
+  const auto command=parse_capture_command(arguments);
+  if(!command) {print_error(command.error());std::cerr<<capture_command_help();return 2;}
+  if(command.value().mode==CaptureCommandMode::help) {
+    std::cout<<capture_command_help();return 0;
+  }
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   QApplication app(argc,argv);
   app.setOrganizationName(QStringLiteral("Overdrive"));
@@ -330,6 +381,8 @@ int main(int argc,char** argv) {
   app.setApplicationDisplayName(QStringLiteral("SeriousShot"));
   app.setWindowIcon(windows_application_icon());
   app.setQuitOnLastWindowClosed(false);
+  if(command.value().mode!=CaptureCommandMode::gui)
+    return run_windows_capture_cli(app,command.value());
   const bool smoke_copy=argc==3 && std::string_view(argv[1])=="--smoke-copy";
   const bool smoke_sequence=argc==3 && std::string_view(argv[1])=="--smoke-sequence";
   const bool smoke=smoke_copy || smoke_sequence || (argc==3 && std::string_view(argv[1])=="--smoke");

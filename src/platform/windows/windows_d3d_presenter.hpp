@@ -5,7 +5,9 @@
 namespace hdrshot {
 class WindowsD3DPreviewPresenter final : public PreviewPresenterPort {
  public:
-  static Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error> create(void* hwnd,WindowsDisplayInfo display);
+  static Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error> create(
+      void* hwnd, WindowsDisplayInfo display,
+      std::shared_ptr<DiagnosticsPort> diagnostics = {});
   // Native GPU fixture: a null HWND creates an offscreen FP16 surface. This
   // reads the same shader output used by the HWND path, before DWM composition.
   Result<std::vector<std::uint16_t>,Error> render_offscreen(const PresentPreviewRequest& request);

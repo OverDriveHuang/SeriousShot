@@ -6,14 +6,18 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QKeyEvent>
+#include <QImage>
 #include <QMouseEvent>
+#include <QPixmap>
 #include <QPointer>
 #include <QScreen>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QUuid>
 #include <QWindow>
+#include <QTimer>
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -164,9 +168,69 @@ bool WindowsGlobalHotkeyPort::nativeEventFilter(const QByteArray&,void* message,
 struct WindowsQtOverlayWindow::NativeInput {
   QPointer<QWidget> host;
   QPointer<QWidget> grabbed;
-  void update_cursor(QWidget* target) const {
+  QPointer<QWidget> hovered;
+  std::function<void()> interrupted;
+  bool releasing_capture{};
+  bool tracking_leave{};
+  HCURSOR custom_cursor{};
+  qint64 custom_key{};
+  ~NativeInput() {if(custom_cursor) DestroyCursor(custom_cursor);}
+  void track_leave(HWND hwnd) {
+    if (tracking_leave) return;
+    TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+    tracking_leave = TrackMouseEvent(&tracking) != FALSE;
+  }
+  void leave_if_outside(HWND hwnd) {
+    POINT point{};
+    RECT bounds{};
+    if (!hovered || !GetCursorPos(&point) || !GetWindowRect(hwnd, &bounds) ||
+        PtInRect(&bounds, point)) return;
+    // The HDR underlay and its Qt controls form one logical window. Crossing
+    // their alpha boundary is not leaving the overlay or losing input focus.
+    auto target = hovered;
+    hovered = nullptr;
+    while (target) {
+      const bool is_host = target == host;
+      const QPointer<QWidget> parent = target->parentWidget();
+      QEvent leave(QEvent::Leave);
+      QApplication::sendEvent(target, &leave);
+      if (is_host) break;
+      target = parent;
+    }
+  }
+  void update_cursor(QWidget* target) {
     const auto* override_cursor=QApplication::overrideCursor();
-    const auto shape=override_cursor ? override_cursor->shape() : target->cursor().shape();
+    const auto& cursor=override_cursor ? *override_cursor : target->cursor();
+    const auto shape=cursor.shape();
+    if(shape==Qt::BitmapCursor && !cursor.pixmap().isNull()) {
+      const auto pixmap=cursor.pixmap();
+      if(!custom_cursor || custom_key!=pixmap.cacheKey()) {
+        const auto bitmap=pixmap.toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        BITMAPV5HEADER header{};header.bV5Size=sizeof(header);
+        header.bV5Width=bitmap.width();header.bV5Height=-bitmap.height();
+        header.bV5Planes=1;header.bV5BitCount=32;header.bV5Compression=BI_BITFIELDS;
+        header.bV5RedMask=0x00FF0000;header.bV5GreenMask=0x0000FF00;
+        header.bV5BlueMask=0x000000FF;header.bV5AlphaMask=0xFF000000;
+        void* bits=nullptr;
+        HDC dc=GetDC(nullptr);
+        HBITMAP color=CreateDIBSection(dc,reinterpret_cast<BITMAPINFO*>(&header),DIB_RGB_COLORS,&bits,nullptr,0);
+        ReleaseDC(nullptr,dc);
+        HBITMAP mask=CreateBitmap(bitmap.width(),bitmap.height(),1,1,nullptr);
+        if(color && mask && bits) {
+          for(int y=0;y<bitmap.height();++y)
+            std::memcpy(static_cast<std::byte*>(bits)+y*bitmap.width()*4,bitmap.constScanLine(y),bitmap.width()*4);
+          ICONINFO icon{};icon.fIcon=FALSE;icon.xHotspot=cursor.hotSpot().x();
+          icon.yHotspot=cursor.hotSpot().y();icon.hbmMask=mask;icon.hbmColor=color;
+          if(auto created=CreateIconIndirect(&icon)) {
+            if(custom_cursor) DestroyCursor(custom_cursor);
+            custom_cursor=created;custom_key=pixmap.cacheKey();
+          }
+        }
+        if(color) DeleteObject(color);
+        if(mask) DeleteObject(mask);
+      }
+      if(custom_cursor) {SetCursor(custom_cursor);return;}
+    }
     LPCWSTR resource=IDC_ARROW;
     switch(shape) {
       case Qt::CrossCursor: resource=IDC_CROSS;break;
@@ -192,6 +256,22 @@ struct WindowsQtOverlayWindow::NativeInput {
       SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(create->lpCreateParams));
     }
     auto* self=reinterpret_cast<NativeInput*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
+    // WS_EX_NOACTIVATE alone does not prevent mouse queue activation. The Qt
+    // host owns keyboard focus; activating this raw HWND interrupts its editor.
+    if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    if (self && message == WM_MOUSELEAVE) {
+      self->tracking_leave = false;
+      self->leave_if_outside(hwnd);
+      return 0;
+    }
+    if(self && (message==WM_CAPTURECHANGED || message==WM_CANCELMODE)) {
+      if(self->grabbed && !self->releasing_capture) {
+        self->grabbed=nullptr;
+        if(self->interrupted) self->interrupted();
+      }
+      if(message==WM_CANCELMODE) ReleaseCapture();
+      return 0;
+    }
     if(self && self->host && message==WM_SETCURSOR && LOWORD(lparam)==HTCLIENT) {
       POINT point{};GetCursorPos(&point);ScreenToClient(hwnd,&point);
       const auto scale=self->host->devicePixelRatioF();
@@ -210,6 +290,8 @@ struct WindowsQtOverlayWindow::NativeInput {
       const QPointF local(static_cast<short>(LOWORD(lparam))/scale,static_cast<short>(HIWORD(lparam))/scale);
       auto* target=self->grabbed ? self->grabbed.data() : host->childAt(local.toPoint());
       if(!target) target=host;
+      self->hovered = target;
+      self->track_leave(hwnd);
       const bool down=message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_LBUTTONDBLCLK;
       const bool up=message==WM_LBUTTONUP || message==WM_RBUTTONUP;
       const auto button=message==WM_MOUSEMOVE ? Qt::NoButton :
@@ -221,14 +303,27 @@ struct WindowsQtOverlayWindow::NativeInput {
       if(wparam&MK_SHIFT) modifiers|=Qt::ShiftModifier;
       if(wparam&MK_CONTROL) modifiers|=Qt::ControlModifier;
       if(GetKeyState(VK_MENU)&0x8000) modifiers|=Qt::AltModifier;
-      if(down) {self->grabbed=target;SetCapture(hwnd);host->activateWindow();target->setFocus(Qt::MouseFocusReason);}
+      if(down) {
+        // Complete the sibling HWND activation before the synthetic press;
+        // otherwise delayed Qt focus-out events can cancel the new gesture.
+        const auto host_hwnd = reinterpret_cast<HWND>(host->winId());
+        if (GetActiveWindow() != host_hwnd) SetActiveWindow(host_hwnd);
+        host->activateWindow();
+        target->setFocus(Qt::MouseFocusReason);
+        self->grabbed=target;
+        SetCapture(hwnd);
+      }
       const auto type=message==WM_LBUTTONDBLCLK ? QEvent::MouseButtonDblClick :
           (down ? QEvent::MouseButtonPress : (up ? QEvent::MouseButtonRelease:QEvent::MouseMove));
       const auto global=QPointF(host->mapToGlobal(local.toPoint()));
       QMouseEvent event(type,QPointF(target->mapFromGlobal(global.toPoint())),global,button,buttons,modifiers);
       QApplication::sendEvent(target,&event);
       self->update_cursor(target);
-      if(up && buttons==Qt::NoButton) {self->grabbed=nullptr;ReleaseCapture();}
+      if(up && buttons==Qt::NoButton) {
+        self->grabbed=nullptr;self->releasing_capture=true;
+        ReleaseCapture();self->releasing_capture=false;
+        self->leave_if_outside(hwnd);
+      }
       return 0;
     }
     return DefWindowProcW(hwnd,message,wparam,lparam);
@@ -263,6 +358,7 @@ void WindowsQtOverlayWindow::configure(QWidget& host,bool order_front) {
       display_.snapshot.capture_size_px.width,display_.snapshot.capture_size_px.height,
       SWP_NOACTIVATE | (order_front?SWP_SHOWWINDOW:0));
   if(order_front) {
+    presented_=true;
     host.show();
     SetWindowPos(static_cast<HWND>(host_handle_),HWND_TOPMOST,display_.physical_x,display_.physical_y,
         display_.snapshot.capture_size_px.width,display_.snapshot.capture_size_px.height,SWP_SHOWWINDOW);
@@ -273,13 +369,34 @@ void WindowsQtOverlayWindow::resize(QWidget&) {}
 WindowsQtOverlayWindow::~WindowsQtOverlayWindow() { if(surface_) DestroyWindow(static_cast<HWND>(surface_)); }
 bool WindowsQtOverlayWindow::eventFilter(QObject*,QEvent* event) {
   if(surface_ && event->type()==QEvent::Hide) ShowWindow(static_cast<HWND>(surface_),SW_HIDE);
+  if(event->type()==QEvent::WindowDeactivate && presented_ && !system_dialog_active_) {
+    const QPointer<WindowsQtOverlayWindow> guard(this);
+    QTimer::singleShot(0,input_->host,[guard] {
+      if(!guard || !guard->presented_ || guard->system_dialog_active_ ||
+         !guard->input_->host || !guard->input_->host->isVisible() ||
+         QApplication::activePopupWidget() || QApplication::activeModalWidget()) return;
+      for(auto* top:QApplication::topLevelWidgets())
+        if(top->isVisible() && top->property("seriousshotCaptureOverlay").toBool() && top->isActiveWindow()) return;
+      if(guard->input_interrupted_) guard->input_interrupted_();
+    });
+  }
   return false;
 }
 void WindowsQtOverlayWindow::set_system_dialog_active(QWidget& host,bool active,bool restore_focus) {
   if(!surface_) return;
+  system_dialog_active_=active;
   SetWindowPos(static_cast<HWND>(surface_),active?HWND_NOTOPMOST:HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
   SetWindowPos(static_cast<HWND>(host_handle_),active?HWND_NOTOPMOST:HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
   if(restore_focus) { host.raise(); host.activateWindow(); SetForegroundWindow(static_cast<HWND>(host_handle_)); }
+}
+void WindowsQtOverlayWindow::set_input_interrupted(std::function<void()> callback) {
+  input_interrupted_=std::move(callback);
+  if(input_) input_->interrupted=input_interrupted_;
+}
+void WindowsQtOverlayWindow::restore_input_focus(QWidget& host) {
+  if(!host.isVisible() || system_dialog_active_) return;
+  SetForegroundWindow(static_cast<HWND>(host_handle_));
+  host.activateWindow();host.setFocus(Qt::MouseFocusReason);
 }
 Result<bool,Error> WindowsFileStorePort::prepare_directory(const std::string& folder) {
   if(folder.empty()) return Result<bool,Error>::failure(file_error(ERROR_PATH_NOT_FOUND));

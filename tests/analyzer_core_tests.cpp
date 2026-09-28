@@ -141,7 +141,10 @@ void independent_color_oracle() {
             << " signal=" << max_signal << " perceptual=" << max_percept
             << '\n';
   HDRSHOT_CHECK_NEAR(analysis_math::pq_encode(203), .58068888104161, 1e-5);
-  HDRSHOT_CHECK_NEAR(analysis_math::pq_decode(.5f), 92.245708994, 1e-3);
+  // This oracle checks the binary64 measurement path. The FP32 PQ path has
+  // its own cross-precision characterization below, including cancellation
+  // around code 0.5 on some Windows math libraries.
+  HDRSHOT_CHECK_NEAR(analysis_math_double::pq_decode(.5), 92.245708994, 1e-3);
   auto red = make_readout({1, 0, 0}, {1, 0, 0}, 1, 0,
                           {WorkingSpace::display_p3_pq, 203, 0});
   HDRSHOT_CHECK_NEAR(red.y_nits, 46.481836506, 1e-5);

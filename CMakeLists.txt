@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.1 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.2 LANGUAGES CXX)
 
 if(MSVC)
   include(cmake/windows_msvc.cmake)
@@ -1254,6 +1254,12 @@ endif()
 
 if(WIN32)
   include(cmake/windows.cmake)
+  if(BUILD_TESTING AND TARGET hdrshot_analyzer_ui_tests)
+    # The offscreen plugin cannot discover Windows fonts by itself. Without
+    # these real glyphs, visual fixtures measure missing-glyph rectangles.
+    set_property(TEST hdrshot_analyzer_ui_tests hdrshot_analyzer_scope_regression_tests
+      APPEND PROPERTY ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
+  endif()
 endif()
 
 if(BUILD_TESTING)

@@ -41,13 +41,15 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
     return Result<CanonicalFrameSegment, Error>::failure(
         frame_error(ErrorCode::invalid_input, "SourceColorInterpreter", frame.display_id));
   }
-  if (frame.pixel_format != PixelFormat::rgba16_float) {
+  const bool native_linear_input = static_cast<bool>(frame.linear_source);
+  if (frame.pixel_format != (native_linear_input ? PixelFormat::rgba32_float : PixelFormat::rgba16_float)) {
     return Result<CanonicalFrameSegment, Error>::failure(frame_error(
         ErrorCode::unsupported_pixel_format, "SourceColorInterpreter", frame.display_id));
   }
   const auto width = static_cast<std::size_t>(frame.size_px.width);
   const auto height = static_cast<std::size_t>(frame.size_px.height);
-  if (height != 0 && width > std::numeric_limits<std::size_t>::max() / height / 4U) {
+  if (height != 0 && width > std::numeric_limits<std::size_t>::max() / height /
+      (native_linear_input ? 16U : 4U)) {
     return Result<CanonicalFrameSegment, Error>::failure(
         frame_error(ErrorCode::invalid_input, "SourceColorInterpreter", frame.display_id));
   }
@@ -57,14 +59,19 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
       frame.encoding.transfer != TransferFunction::extended_srgb ||
       (frame.encoding.primaries == ColorPrimaries::display_p3 &&
        frame.encoding.source_reference_white_nits == 0.0);
-  if (frame.rgba_half.size() != width * height * 4U ||
+  if ((native_linear_input && (!frame.rgba_half.empty() || frame.source_normalizer ||
+          frame.encoding != ColorEncoding{ColorPrimaries::display_p3, TransferFunction::linear,
+              AlphaMode::opaque, 0.0} ||
+          frame.linear_source->size_px() != frame.size_px ||
+          frame.linear_source->byte_count() != width * height * 4U * sizeof(float))) ||
+      (!native_linear_input && frame.rgba_half.size() != width * height * 4U) ||
       !valid_pq || !valid_extended_p3) {
     return Result<CanonicalFrameSegment, Error>::failure(frame_error(
         ErrorCode::invalid_color_contract, "SourceColorInterpreter", frame.display_id));
   }
   LinearFloatPixels linear{AlignedPixelAllocator<float>{std::move(frame.linear_storage)}};
-  LinearSourceRef native_linear;
-  if (frame.encoding.transfer == TransferFunction::extended_srgb && frame.source_normalizer) {
+  LinearSourceRef native_linear = std::move(frame.linear_source);
+  if (!native_linear && frame.encoding.transfer == TransferFunction::extended_srgb && frame.source_normalizer) {
     auto normalized = frame.source_normalizer->normalize_extended_p3(
         frame.size_px, std::move(frame.rgba_half));
     if (!normalized) return Result<CanonicalFrameSegment, Error>::failure(normalized.error());
@@ -76,7 +83,7 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
     frame.pixel_format = PixelFormat::rgba32_float;
     frame.encoding.transfer = TransferFunction::linear;
     frame.encoding.alpha = AlphaMode::opaque;
-  } else if (frame.encoding.transfer == TransferFunction::extended_srgb) {
+  } else if (!native_linear && frame.encoding.transfer == TransferFunction::extended_srgb) {
     // A table is exact for every finite binary16 input, with FP32 inverse math.
     // This is source normalization, not a half-precision linear cache.
     static const auto inverse = [] {
@@ -116,7 +123,7 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
       display.dynamic_range,
       std::move(frame.rgba_half),
       std::move(linear),
-      frame.pixel_format == PixelFormat::rgba32_float ? 1U : 0U,
+      native_linear_input ? 0U : (frame.pixel_format == PixelFormat::rgba32_float ? 1U : 0U),
       std::move(native_linear),
   });
 }

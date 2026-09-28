@@ -8,11 +8,22 @@ function(hdrshot_source_identity source_dir)
   find_package(Git QUIET)
   set(receipt "${source_dir}/.seriousshot-export.json")
   if(EXISTS "${receipt}")
-    # A public synchronization commit is NOT the source-code commit. Legacy or
-    # malformed receipts remain unknown rather than inventing a newer identity.
+    # Schema 2 carries only public content hashes and source time. Its digest is
+    # a snapshot identity usable in both Git clones and source archives.
     file(READ "${receipt}" metadata)
-    string(JSON commit ERROR_VARIABLE commit_error GET "${metadata}" code_identity commit)
-    string(JSON timestamp ERROR_VARIABLE time_error GET "${metadata}" code_identity timestamp)
+    string(JSON schema ERROR_VARIABLE schema_error GET "${metadata}" schema)
+    if(NOT schema_error AND schema EQUAL 2)
+      file(SHA256 "${receipt}" commit)
+      set(commit_error NOTFOUND)
+      string(JSON timestamp ERROR_VARIABLE time_error GET "${metadata}" timestamp)
+    elseif(schema_error OR schema EQUAL 1)
+      # Read existing schema 1 receipts for compatibility; never generate them.
+      string(JSON commit ERROR_VARIABLE commit_error GET "${metadata}" code_identity commit)
+      string(JSON timestamp ERROR_VARIABLE time_error GET "${metadata}" code_identity timestamp)
+    else()
+      set(commit_error "Unsupported receipt schema")
+      set(time_error "Unsupported receipt schema")
+    endif()
     if(commit_error OR time_error)
       set(commit "")
       set(timestamp "")

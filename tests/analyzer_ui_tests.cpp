@@ -1598,6 +1598,9 @@ void swatch_pairs_use_real_clicks_and_local_updates() {
   f.window.resize(1280, dpr2 ? 1000 : 1400);
   events();
   f.add_samples();
+  // The DPR-dependent resize schedules a 160 ms scope refinement. Let its
+  // follow-up result settle before asserting that pair gestures add no work.
+  wait_events(500);
   const int requests_before = f.requests;
   auto *handle1 = child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
   click(handle1, handle1->rect().center());
@@ -1657,9 +1660,16 @@ void swatch_pairs_use_real_clicks_and_local_updates() {
   HDRSHOT_CHECK(primary->text().contains("Hue / Chroma"));
   QPointer<QWidget> stable_handle =
       child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
-  const auto value_before = child<QLabel>(f.window, "analyzerSwatchPairValue1_2")->text();
+  const auto value_before =
+      child<QLabel>(f.window, "analyzerSwatchPairValue1_2")->text();
   auto refreshed = std::make_shared<analysis::ResultData>(*f.last_result);
-  refreshed->samples.front().mean.perceptual[0] += .1;
+  // A pointer gesture may insert the transient hover sample (id 0) first.
+  // Change the fixed source of this pair, regardless of result ordering.
+  const auto fixed =
+      std::find_if(refreshed->samples.begin(), refreshed->samples.end(),
+                   [](const auto &sample) { return sample.request.id == 1; });
+  HDRSHOT_CHECK(fixed != refreshed->samples.end());
+  fixed->mean.perceptual[0] += .1;
   f.window.accept_result(refreshed);
   events();
   HDRSHOT_CHECK(child<QLabel>(f.window, "analyzerSwatchPairValue1_2")->text() != value_before);
@@ -1735,6 +1745,7 @@ void swatch_handles_click_drag_and_curve() {
   f.window.resize(1280, dpr2 ? 1000 : 1400);
   events();
   f.add_samples();
+  wait_events(500);
   const int requests_before = f.requests;
   auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
   auto *scroll = panel->findChild<QScrollArea *>("analyzerSwatchScroll");
@@ -2418,12 +2429,14 @@ void visual_artifacts() {
 }
 } // namespace
 int main(int argc, char **argv) {
+  std::cout << std::unitbuf;
+  std::cerr << std::unitbuf;
   // Qt's offscreen default is only 800×800 physical pixels. At scale 2 that
   // becomes a 400×400 logical screen and silently changes these UI fixtures.
   // Configure real room for a 1280×720 logical window at both tested DPRs,
   // plus a second smaller screen for an independent restoration/clamp test.
   // Qt source: src/plugins/platforms/offscreen/qoffscreenintegration.cpp.
-  QTemporaryFile platform_config;
+  QTemporaryFile platform_config(QDir::currentPath() + "/analyzer-screen-XXXXXX.json");
   if (!platform_config.open())
     qFatal("Cannot create offscreen test-screen configuration");
   platform_config.write(R"({"screens":[
@@ -2431,7 +2444,10 @@ int main(int argc, char **argv) {
     {"name":"analyzer-small","x":3840,"y":0,"width":1920,"height":1440,"dpr":1}
   ]})");
   platform_config.flush();
-  qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" + platform_config.fileName().toUtf8());
+  // Qt splits platform arguments on ':'. A Windows drive prefix would be
+  // interpreted as another option, so use a same-directory relative filename.
+  qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" +
+      QDir::current().relativeFilePath(platform_config.fileName()).toUtf8());
   QApplication app(argc, argv);
   app.setFont(QFont("Arial", 10));
   std::cout << "TEST_SCREEN logical=" << app.primaryScreen()->size().width()

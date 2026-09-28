@@ -8,6 +8,7 @@
 #include "domain/input/completion_action.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -158,6 +159,7 @@ struct SettingsSnapshot {
   bool initial_settings_presented{};
   bool detailed_logging{};
   std::string analyzer_preferences_json{}; // UI options only, no pixels/masks/sample positions
+  double windows_scrgb_gain{1.0}; // Source normalization, captured once per Windows frame.
 
   friend bool operator==(const SettingsSnapshot&, const SettingsSnapshot&) = default;
 };
@@ -174,7 +176,12 @@ struct SettingsPatch {
   std::optional<bool> initial_settings_presented;
   std::optional<bool> detailed_logging;
   std::optional<std::string> analyzer_preferences_json;
+  std::optional<double> windows_scrgb_gain;
 };
+
+[[nodiscard]] inline bool valid_windows_scrgb_gain(const double gain) noexcept {
+  return std::isfinite(gain) && gain >= 0.0 && gain <= 3.0;
+}
 
 struct SettingsReceipt {
   std::uint64_t revision{};

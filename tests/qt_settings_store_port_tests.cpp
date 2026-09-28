@@ -5,6 +5,7 @@
 #include <QTemporaryDir>
 
 #include <string>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -36,6 +37,7 @@ void defaults_and_patches_persist_across_instances() {
       hdrshot::CompletionAction::copy_to_clipboard);
   HDRSHOT_CHECK(!defaults.value().initial_settings_presented);
   HDRSHOT_CHECK(!defaults.value().detailed_logging);
+  HDRSHOT_CHECK(defaults.value().windows_scrgb_gain == 1.0);
 
   hdrshot::SettingsPatch hotkey;
   hotkey.global_capture_hotkey = "Command+Option+2";
@@ -58,6 +60,9 @@ void defaults_and_patches_persist_across_instances() {
   format.double_click_completion_action = hdrshot::CompletionAction::save_as;
   format.initial_settings_presented = true;
   format.detailed_logging = true;
+#ifdef Q_OS_WIN
+  format.windows_scrgb_gain = 0.5;
+#endif
   const auto third_saved = first.save(format);
   HDRSHOT_CHECK(third_saved.has_value());
   HDRSHOT_CHECK(third_saved.value().revision == 3);
@@ -81,10 +86,34 @@ void defaults_and_patches_persist_across_instances() {
       loaded.value().double_click_completion_action == hdrshot::CompletionAction::save_as);
   HDRSHOT_CHECK(loaded.value().initial_settings_presented);
   HDRSHOT_CHECK(loaded.value().detailed_logging);
+#ifdef Q_OS_WIN
+  HDRSHOT_CHECK(loaded.value().windows_scrgb_gain == 0.5);
+#endif
   hdrshot::SettingsPatch quiet;
   quiet.detailed_logging = false;
   HDRSHOT_CHECK(reopened.save(quiet).has_value());
   HDRSHOT_CHECK(!first.load().value().detailed_logging);
+}
+
+void invalid_windows_gain_never_commits() {
+#ifdef Q_OS_WIN
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  const auto path = directory.filePath("settings.ini").toStdString();
+  hdrshot::QtSettingsStorePort store(path, "Control+Shift+2", "/Pictures");
+  auto before = store.load().value();
+  for (const double invalid : {-0.01, 3.01, std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::quiet_NaN()}) {
+    hdrshot::SettingsPatch patch;
+    patch.windows_scrgb_gain = invalid;
+    HDRSHOT_CHECK(!store.save(patch));
+    HDRSHOT_CHECK(store.load().value() == before);
+  }
+  QSettings damaged(QString::fromStdString(path), QSettings::IniFormat);
+  damaged.setValue("windowsScRgbGain", "nan");
+  damaged.sync();
+  HDRSHOT_CHECK(!store.load());
+#endif
 }
 
 void schema_one_migrates_old_format_and_defaults_diffuse_white() {
@@ -204,6 +233,7 @@ int main() {
   return hdrshot::test::run(std::vector<TestCase>{
       {"Analyzer preferences independent and bounded", analyzer_preferences_are_independent_bounded_and_preserved},
       {"Qt settings defaults and persistence", defaults_and_patches_persist_across_instances},
+      {"Qt settings rejects invalid Windows gain", invalid_windows_gain_never_commits},
       {"Qt settings migrates schema one", schema_one_migrates_old_format_and_defaults_diffuse_white},
       {"Qt settings migrates schema two", schema_two_defaults_hdr_pq_precision},
       {"Qt settings rejects unsupported schema", unsupported_schema_fails_explicitly},

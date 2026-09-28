@@ -54,6 +54,7 @@ class SettingsWindow final : public QWidget {
   void persist_hotkey(const std::string& canonical_hotkey);
   void persist_save_format();
   void persist_pq_diffuse_white();
+  void persist_windows_scrgb_gain();
   void persist_hdr_pq_precision();
   void persist_ultra_hdr_jpeg_quality();
   void persist_enter_completion_action();
@@ -80,6 +81,7 @@ class SettingsWindow final : public QWidget {
   QLineEdit* folder_edit_{};
   QComboBox* save_format_combo_{};
   QComboBox* pq_diffuse_white_combo_{};
+  QLineEdit* windows_scrgb_gain_edit_{};
   QComboBox* hdr_pq_precision_combo_{};
   QComboBox* ultra_hdr_jpeg_quality_combo_{};
   QFormLayout* general_form_{};

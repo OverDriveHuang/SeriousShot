@@ -62,6 +62,7 @@ struct NativeCaptureFrame {
   std::vector<std::uint16_t> rgba_half;
   std::shared_ptr<LinearStoragePort> linear_storage;
   std::shared_ptr<SourceNormalizerPort> source_normalizer{};
+  LinearSourceRef linear_source{}; // Already normalized FP32 Linear Display P3.
 };
 
 struct NativeFrameBatch {

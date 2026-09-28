@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QPointingDevice>
 #include <QWheelEvent>
@@ -205,6 +206,13 @@ void vector_reference_lines_stop_at_nominal_domain() {
           if (std::abs(x - rect.center().x()) <= half_w + 80 &&
               std::abs(y - rect.center().y()) <= half_h + 40) continue;
           const auto color = img.pixelColor(int(x * dpr), int(y * dpr));
+          if(color.red()>6 || color.green()>6 || color.blue()>6) {
+            std::cerr << "reference boundary pixel x=" << x << " y=" << y
+                      << " color=" << color.name().toStdString()
+                      << " mode=" << int(mode) << " zoom=" << zoom
+                      << " dpr=" << dpr << " half=" << half_w << ',' << half_h << '\n';
+            if(!dir.isEmpty()) img.save(dir+"/reference-boundary-failure.png");
+          }
           HDRSHOT_CHECK(color.red() <= 6 && color.green() <= 6 && color.blue() <= 6);
         }
       if (!dir.isEmpty()) {
@@ -463,6 +471,72 @@ void vector_trackpad_pan_keeps_tiles_and_fit() {
     HDRSHOT_CHECK((observed.vector_pan == std::array<double, 2>{}));
   }
 }
+void vector_left_drag_matches_wheel_and_cancels() {
+  for (double zoom : {1., 4., 5., 10., 20.}) {
+    auto result = std::make_shared<analysis::ResultData>();
+    result->valid_count = 1;
+    result->settings.working_space = analysis::WorkingSpace::display_p3_pq;
+    result->vector_grid_x_extent = 1.2;
+    result->vector_grid_y_extent = .8;
+    AnalyzerScopePlot p(AnalyzerScopePlot::Kind::vectorscope);
+    show(p, result);
+    auto initial = result->scopes;
+    initial.vector_zoom = zoom;
+    initial.vector_pan = {.14, -.12};
+    p.set_options(initial);
+    auto observed = initial;
+    p.options_changed = [&](const auto &next) { observed = next; };
+
+    const QPointF start = p.plot_rect().center();
+    const QPointF first = start + QPointF(16, -9);
+    const QPointF last = start + QPointF(55, -30);
+    auto mouse = [&](QEvent::Type type, QPointF position, Qt::MouseButton button,
+                     Qt::MouseButtons buttons) {
+      QMouseEvent event(type, position, QPointF(p.mapToGlobal(position.toPoint())),
+                        button, buttons, Qt::NoModifier);
+      QApplication::sendEvent(&p, &event);
+    };
+    // The existing wheel path is the reference for the same pixel translation.
+    QWheelEvent scroll(start, start, QPoint(55, -30), {}, Qt::NoButton,
+                       Qt::NoModifier, Qt::ScrollUpdate, false);
+    QApplication::sendEvent(&p, &scroll);
+    const auto wheel_pan = observed.vector_pan;
+    p.set_options(initial);
+    observed = initial;
+
+    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseMove, first, Qt::NoButton, Qt::LeftButton);
+    HDRSHOT_CHECK(observed.vector_pan[0] < initial.vector_pan[0]);
+    HDRSHOT_CHECK(observed.vector_pan[1] < initial.vector_pan[1]);
+    mouse(QEvent::MouseMove, last, Qt::NoButton, Qt::LeftButton);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[0], wheel_pan[0], 1e-12);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[1], wheel_pan[1], 1e-12);
+    mouse(QEvent::MouseMove, last, Qt::NoButton, Qt::LeftButton);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[0], wheel_pan[0], 1e-12);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[1], wheel_pan[1], 1e-12);
+    mouse(QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton);
+    mouse(QEvent::MouseMove, last + QPointF(30, 20), Qt::NoButton, Qt::NoButton);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[0], wheel_pan[0], 1e-12);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[1], wheel_pan[1], 1e-12);
+
+    p.set_options(initial);
+    observed = initial;
+    mouse(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseMove, last, Qt::NoButton, Qt::LeftButton);
+    QWheelEvent notch(start, start, QPoint(), QPoint(0, 120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&p, &notch);
+    HDRSHOT_CHECK(observed.vector_zoom > zoom);
+    QEvent deactivate(QEvent::WindowDeactivate);
+    QApplication::sendEvent(&p, &deactivate);
+    HDRSHOT_CHECK_NEAR(observed.vector_zoom, zoom, 1e-12);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[0], initial.vector_pan[0], 1e-12);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[1], initial.vector_pan[1], 1e-12);
+    mouse(QEvent::MouseMove, last + QPointF(20, 15), Qt::NoButton, Qt::NoButton);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[0], initial.vector_pan[0], 1e-12);
+    HDRSHOT_CHECK_NEAR(observed.vector_pan[1], initial.vector_pan[1], 1e-12);
+  }
+}
 void artifact() {
   const auto dir = qEnvironmentVariable("HDRSHOT_ANALYZER_SCOPE_ARTIFACTS");
   if (dir.isEmpty()) return;
@@ -609,6 +683,7 @@ int main(int argc, char **argv) {
       {"full domain texture pans and zooms without a new result", full_domain_pan_and_zoom},
       {"trackpad translation and actual pinch are distinct", trackpad_pan_and_native_pinch},
       {"vectorscope high-zoom pan retains old detail then replaces at its new center", vector_trackpad_pan_keeps_tiles_and_fit},
+      {"vector left drag is incremental, releasable and cancellable", vector_left_drag_matches_wheel_and_cancels},
       {"shared gain changes wave/parade/vector base and detail, not histogram", gain_only_changes_scope_presentation},
       {"vector references stop at nominal axes even in a wide zoomed-out view", vector_reference_lines_stop_at_nominal_domain},
       {"uniform columns have no resampling gaps", full_columns_remain_visible_after_resample},

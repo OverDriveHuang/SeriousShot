@@ -69,12 +69,14 @@ Result<std::vector<std::uint16_t>, Error> WindowsColor::normalize_capture(
 bool WindowsColor::valid_linear_p3_roi(const SelectionRoiView& source) noexcept {
   if (source.encoding != linear_p3_encoding() || source.size_px.width <= 0 ||
       source.size_px.height <= 0) return false;
+  if (source.linear_source) return source.valid_storage();
+  if (!source.valid_storage()) return false;
   const auto w = static_cast<std::size_t>(source.size_px.width);
   const auto h = static_cast<std::size_t>(source.size_px.height);
   if (w > std::numeric_limits<std::size_t>::max() / h / 4U ||
       source.row_stride_samples < w * 4U ||
-      source.first_sample_offset > source.rgba_half.size()) return false;
-  const auto available = source.rgba_half.size() - source.first_sample_offset;
+      source.first_sample_offset > source.sample_count()) return false;
+  const auto available = source.sample_count() - source.first_sample_offset;
   return available >= w * 4U &&
       h - 1U <= (available - w * 4U) / source.row_stride_samples;
 }
@@ -89,15 +91,29 @@ Result<RangeFitResult, Error> WindowsLinearP3RangeProbe::probe(
   RangeFitResult out{true, 0, 0, 0, "windows_linear_p3_source_scan"};
   for (const auto& span : plan.source_visible_spans) out.source_visible_pixel_count += span.length;
   for (const auto& span : plan.annotation_owned_spans) out.skipped_annotation_pixel_count += span.length;
-  // No display-headroom fast path: the whole supported Windows matrix is not
-  // proven yet. All annotation-owned pixels (including AA) skip classification.
+  // The captured physical display's frozen SDR state determines this class.
+  // Keep the structural checks above, but do not read any source pixels.
+  if (source.display_dynamic_range == DisplayDynamicRange::sdr) {
+    out.provenance = "windows_frozen_sdr_display";
+    return Result<RangeFitResult, Error>::success(std::move(out));
+  }
+  CanonicalFrameView cpu_source;
+  SelectionRoiView source_view = source;
+  if (source.linear_source) {
+    auto read = FrameCropper::read_cpu_region(source);
+    if (!read) return Result<RangeFitResult, Error>::failure(read.error());
+    cpu_source = std::move(read.value());
+    source_view = FrameCropper::view(cpu_source);
+  }
+  // On a captured HDR display, only source-visible pixels select the class.
+  // All annotation-owned pixels (including AA) skip classification.
   for (const auto& span : plan.source_visible_spans) {
     for (std::int32_t x = span.x; x < span.x + span.length; ++x) {
-      const auto p = source.first_sample_offset +
-          static_cast<std::size_t>(span.y) * source.row_stride_samples +
+      const auto p = source_view.first_sample_offset +
+          static_cast<std::size_t>(span.y) * source_view.row_stride_samples +
           static_cast<std::size_t>(x) * 4U;
       for (std::size_t c = 0; c < 3U; ++c) {
-        const auto decoded = ExtendedP3Mapper::decode_binary16(source.rgba_half[p + c]);
+        const auto decoded = source_view.sample(p + c);
         ++out.scanned_component_count;
         if (!decoded) return Result<RangeFitResult, Error>::failure(decoded.error());
         if (decoded.value() > 1.0F) out.fits_sdr = false;
@@ -105,5 +121,24 @@ Result<RangeFitResult, Error> WindowsLinearP3RangeProbe::probe(
     }
   }
   return Result<RangeFitResult, Error>::success(std::move(out));
+}
+
+Result<ExportSnapshot, Error> windows_snapshot_with_capture_range(
+    const ExportSnapshot& compact, const DisplayDynamicRange captured_range) {
+  if (!compact.frozen_desktop || compact.frozen_desktop->canonical_segments.size() != 1U ||
+      compact.frozen_desktop->canonical_segments.front().display_id != compact.target_display_id ||
+      !compact.frozen_desktop->canonical_segments.front().linear_source ||
+      !compact.clean_content || compact.clean_content->source != compact.frozen_desktop ||
+      compact.clean_content->display_id != compact.target_display_id) {
+    return Result<ExportSnapshot, Error>::failure(color_error("invalid_compact_analysis_snapshot"));
+  }
+  auto desktop = std::make_shared<FrozenDesktop>(*compact.frozen_desktop);
+  desktop->canonical_segments.front().display_dynamic_range = captured_range;
+  auto clean = std::make_shared<CleanContentSnapshot>(*compact.clean_content);
+  clean->source = desktop;
+  auto restored = compact;
+  restored.frozen_desktop = std::move(desktop);
+  restored.clean_content = std::move(clean);
+  return Result<ExportSnapshot, Error>::success(std::move(restored));
 }
 }  // namespace hdrshot

@@ -30,6 +30,9 @@ class SettingsWorkflow {
       PqDiffuseWhite pq_diffuse_white,
       SettingsStorePort& settings_store);
 
+  [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_windows_scrgb_gain(
+      double gain, SettingsStorePort& settings_store);
+
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_hdr_pq_precision(
       HdrPqPrecision hdr_pq_precision,
       SettingsStorePort& settings_store);

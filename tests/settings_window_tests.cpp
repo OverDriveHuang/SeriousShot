@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QUrl>
 #include <QEvent>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QKeyEvent>
 #include <QKeySequenceEdit>
@@ -58,6 +59,7 @@ class MemorySettingsStore final : public SettingsStorePort {
     if (patch.pq_diffuse_white.has_value()) {
       snapshot.pq_diffuse_white = *patch.pq_diffuse_white;
     }
+    if (patch.windows_scrgb_gain) snapshot.windows_scrgb_gain = *patch.windows_scrgb_gain;
     if (patch.hdr_pq_precision.has_value()) {
       snapshot.hdr_pq_precision = *patch.hdr_pq_precision;
     }
@@ -364,6 +366,57 @@ void completion_actions_and_precision_apply_immediately() {
   HDRSHOT_CHECK(fixture.store.snapshot.hdr_pq_precision == HdrPqPrecision::bits_16);
 }
 
+void windows_gain_is_visible_and_transactional() {
+#ifdef Q_OS_WIN
+  Fixture fixture;
+  fixture.window.reload_and_show();
+  QApplication::processEvents();
+  auto* gain = fixture.window.findChild<QLineEdit*>("windowsScRgbGainEdit");
+  auto* white = fixture.window.findChild<QComboBox*>("pqDiffuseWhiteCombo");
+  auto* format = fixture.window.findChild<QComboBox*>("saveFormatCombo");
+  auto* group = fixture.window.findChild<QGroupBox*>("generalSettingsContainer");
+  HDRSHOT_CHECK(gain && white && format && group);
+  auto* form = qobject_cast<QFormLayout*>(group->layout());
+  HDRSHOT_CHECK(form);
+  int white_row = -1, gain_row = -1;
+  QFormLayout::ItemRole role{};
+  form->getWidgetPosition(white, &white_row, &role);
+  form->getWidgetPosition(gain, &gain_row, &role);
+  HDRSHOT_CHECK(gain_row == white_row + 1);
+  HDRSHOT_CHECK(gain->isVisible());
+  HDRSHOT_CHECK(gain->text() == "1.0");
+  format->setCurrentIndex(format->findData(static_cast<int>(SaveFormat::ultra_hdr_jpeg)));
+  QApplication::processEvents();
+  HDRSHOT_CHECK(gain->isVisible());
+  HDRSHOT_CHECK(!white->isVisible());
+  const auto prior_revision = fixture.store.snapshot.revision;
+  gain->setFocus();
+  gain->setText("0.");
+  QKeyEvent digit(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, QStringLiteral("5"));
+  QApplication::sendEvent(gain, &digit);
+  HDRSHOT_CHECK(gain->text() == "0.5");
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.0);
+  format->setFocus();
+  QApplication::processEvents();
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 0.5);
+  HDRSHOT_CHECK(fixture.store.snapshot.revision == prior_revision + 1);
+  gain->setFocus();
+  gain->setText("nan");
+  format->setFocus();
+  QApplication::processEvents();
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 0.5);
+  gain->setFocus();
+  gain->setText("2.5");
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(gain, &escape);
+  HDRSHOT_CHECK(gain->text() == "0.5");
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 0.5);
+#else
+  Fixture fixture;
+  HDRSHOT_CHECK(fixture.window.findChild<QLineEdit*>("windowsScRgbGainEdit") == nullptr);
+#endif
+}
+
 void failed_auto_apply_restores_the_last_valid_snapshot() {
   Fixture fixture;
   fixture.window.reload_and_show();
@@ -608,6 +661,7 @@ int main(int argc, char** argv) {
       {"custom button gates hotkey recording", custom_button_is_the_only_entry_to_recording_and_command_round_trips},
       {"settings general rows are wide and aligned", general_rows_are_wide_aligned_and_folder_actions_are_explicit},
       {"completion actions and precision auto apply", completion_actions_and_precision_apply_immediately},
+      {"Windows gain UI persists only valid commits", windows_gain_is_visible_and_transactional},
       {"save format switches relevant rows", save_format_switches_only_the_relevant_quality_rows},
       {"ISO JPEG label preserves stored format and quality", iso_jpeg_label_preserves_existing_format_and_quality},
       {"failed auto apply restores snapshot", failed_auto_apply_restores_the_last_valid_snapshot},

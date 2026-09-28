@@ -2,6 +2,7 @@
 #include "test_support.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,68 @@ NativeCaptureFrame native_frame(const std::uint64_t id, const PixelSize pixels) 
       std::vector<std::uint16_t>(
           static_cast<std::size_t>(pixels.width * pixels.height * 4), 0x3800),
   };
+}
+
+class TestLinearSource final : public LinearSource {
+public:
+  PixelSize size{2, 2};
+  std::size_t bytes{2U * 2U * 4U * sizeof(float)};
+  PixelSize size_px() const override { return size; }
+  std::size_t byte_count() const override { return bytes; }
+  Result<bool, Error> wait_until_ready() const override {
+    return Result<bool, Error>::success(true);
+  }
+  Result<LinearFloatPixels, Error> read_region(PixelRect rect) const override {
+    return Result<LinearFloatPixels, Error>::success(LinearFloatPixels(
+        static_cast<std::size_t>(rect.width) * rect.height * 4U, 1.0F));
+  }
+};
+
+void interpreter_accepts_only_unambiguous_native_linear_source() {
+  const auto snapshot = display(7, LogicalRect{}, {2, 2});
+  auto native = [] {
+    NativeCaptureFrame frame{};
+    frame.display_id = DisplayId{7};
+    frame.size_px = {2, 2};
+    frame.pixel_format = PixelFormat::rgba32_float;
+    frame.encoding = {ColorPrimaries::display_p3, TransferFunction::linear,
+                      AlphaMode::opaque, 0.0};
+    frame.linear_source = std::make_shared<TestLinearSource>();
+    return frame;
+  };
+  auto valid = SourceColorInterpreter::interpret(native(), snapshot);
+  HDRSHOT_CHECK(valid.has_value());
+  HDRSHOT_CHECK(static_cast<bool>(valid.value().linear_source));
+  HDRSHOT_CHECK(valid.value().rgba_half.empty() &&
+                valid.value().rgba_float.empty());
+  auto wrong = native();
+  wrong.rgba_half = {0x3c00};
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  wrong.pixel_format = PixelFormat::rgba16_float;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  wrong.encoding.transfer = TransferFunction::extended_srgb;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  wrong.encoding.primaries = ColorPrimaries::srgb_bt709;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  wrong.encoding.alpha = AlphaMode::straight;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  wrong.encoding.source_reference_white_nits = 80.0;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  auto sized_source = std::make_shared<TestLinearSource>();
+  sized_source->size = {1, 2};
+  wrong.linear_source = sized_source;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
+  wrong = native();
+  auto short_source = std::make_shared<TestLinearSource>();
+  short_source->bytes -= sizeof(float);
+  wrong.linear_source = short_source;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));
 }
 
 void interpreter_preserves_explicit_source_semantics() {
@@ -100,6 +163,7 @@ int main() {
   return hdrshot::test::run(std::vector<TestCase>{
       {"interpreter preserves source semantics", interpreter_preserves_explicit_source_semantics},
       {"interpreter rejects invalid frame", interpreter_rejects_size_and_color_mismatch},
+      {"interpreter validates native linear source", interpreter_accepts_only_unambiguous_native_linear_source},
       {"assembler preserves segments and signed bounds", assembler_preserves_segments_and_signed_bounds},
       {"assembler rejects generation mismatch", assembler_rejects_generation_and_geometry_mismatch},
   });

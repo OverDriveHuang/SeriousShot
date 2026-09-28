@@ -1018,7 +1018,7 @@ void AnalyzerScopePlot::wheelEvent(QWheelEvent *e) {
   e->accept();
 }
 void AnalyzerScopePlot::mousePressEvent(QMouseEvent *e) {
-  if (e->button() != Qt::LeftButton || kind_ == Kind::vectorscope)
+  if (e->button() != Qt::LeftButton)
     return;
   dragging_ = true;
   drag_start_ = e->position();
@@ -1030,6 +1030,13 @@ void AnalyzerScopePlot::mousePressEvent(QMouseEvent *e) {
 void AnalyzerScopePlot::mouseMoveEvent(QMouseEvent *e) {
   if (!dragging_)
     return;
+  if (kind_ == Kind::vectorscope) {
+    const QPointF delta = e->position() - drag_start_;
+    drag_start_ = e->position();
+    pan_by(delta);
+    e->accept();
+    return;
+  }
   auto &v = kind_ == Kind::waveform ? options_.amplitude_view
                                     : options_.histogram_view;
   const auto old = kind_ == Kind::waveform ? old_options_.amplitude_view

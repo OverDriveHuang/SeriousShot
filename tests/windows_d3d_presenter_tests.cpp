@@ -27,7 +27,7 @@ PresentPreviewRequest request() {
 }
 std::shared_ptr<WindowsD3DPreviewPresenter> presenter(WindowsSourceWhite white={false,80}) {
   WindowsDisplayInfo display;display.snapshot.id=DisplayId{1};display.snapshot.capture_size_px={8,4};
-  display.source_white=white;
+  display.source_white=white;display.advanced_color_mode=white.hdr_active?2:1;
   auto result=WindowsD3DPreviewPresenter::create(nullptr,display);
   HDRSHOT_CHECK(result.has_value());return result.value();
 }
@@ -87,7 +87,7 @@ void first_frame_commits_while_window_hidden() {
   HDRSHOT_CHECK(hwnd!=nullptr);
   {
     WindowsDisplayInfo display;display.snapshot.id=DisplayId{1};display.snapshot.capture_size_px={8,4};
-    display.source_white={false,80};
+    display.source_white={false,80};display.advanced_color_mode=1;
     auto p=WindowsD3DPreviewPresenter::create(hwnd,display);HDRSHOT_CHECK(p.has_value());
     std::promise<Result<PresentReceipt,Error>> done;auto ready=done.get_future();
     p.value()->present(request(),[&](auto result){done.set_value(std::move(result));});

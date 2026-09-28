@@ -1,6 +1,6 @@
 # 从源码构建 SeriousShot
 
-最后更新：2026-09-22 18:52:00 CST
+最后更新：2026-09-28 16:33:58 CST
 
 [返回产品介绍](../README.md)
 
@@ -31,18 +31,18 @@ python scripts/install-windows-qt.py
 ./scripts/build-windows.ps1
 ```
 
-Windows 分析器接入仍待完成；Mac 共享测试通过不能替代 Windows 原生验证。
+Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 的运行兼容仍需在目标系统确认；Mac 共享测试通过不能替代 Windows 原生验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试将设置中的 Windows Capture Gain（“Windows scRGB 增益”）改为 0.5；默认 1.0，不需要对所有 Windows 10 统一修改。已测试的 Windows 11 环境未见这一现象。
 
 ## 代码与分发
 
 设置页显示产品版本及本包源代码的最后提交时间（UTC），并提供手动打开GitHub发布列表的入口；不自动检查更新。同一代码快照重新编译不会改变此时间。版本来自CMake的`PROJECT_VERSION`，发布时才修改；诊断资料仍可记录独立的构建时间。
 
-公开导出清单中的`code_identity`保留源代码SHA与提交者时间，不能用公开仓同步提交时间替代。构建时校验实际输入；改动相关代码会显示“含未提交修改”。缺少Git历史或有效来源清单时显示未知，不以编译时间补齐。带有效清单的源码归档不依赖Git，也会校验输入文件散列。旧版清单无`code_identity`时显示未知。
+构建时校验实际输入与代码身份；改动相关代码会显示“含未提交修改”。缺少 Git 历史或有效来源清单时显示未知，不以编译时间补齐。带有效清单的源码归档不依赖 Git，也会校验输入文件散列。旧版清单缺少代码身份时显示未知。
 
 正式分发配置时额外指定`-DHDRSHOT_RELEASE_BUILD=ON`，构建会拒绝来源未知或相关输入有修改的包。该开关独立于`CMAKE_BUILD_TYPE=Release`；普通本地优化构建不自动视作发行包。
 
 `src/domain`、`src/application` 为共享逻辑；`src/platform` 为平台适配器，`src/ui` 为 Qt 界面，`tests` 为模块回归。既有 `hdrshot_*` 目标和命名空间保留，可见产品名称为 SeriousShot。
 
-`artifacts/2026-09-19_analyzer_interaction_fixes/checks/interaction_probe.mm` 是 CMake 引用的合成输入探针，不包含用户截图。公开快照的逐文件校验与来源提交记录在 `.seriousshot-export.json`。
+仓库包含 CMake 引用的合成输入探针，不包含用户截图。公开快照的逐文件校验记录在 `.seriousshot-export.json`。
 
 正式分发前还需要框架部署、签名和许可审查。项目主许可证仍未指定；第三方声明见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。

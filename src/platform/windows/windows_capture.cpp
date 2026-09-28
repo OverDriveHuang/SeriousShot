@@ -1,4 +1,9 @@
 #include "platform/windows/windows_capture.hpp"
+#include "platform/windows/windows_display_mode.hpp"
+#include "platform/windows/windows_gpu_source.hpp"
+#include "platform/windows/windows_icc_transform.hpp"
+#include "ports/diagnostics_port.hpp"
+#include "ports/export_ports.hpp"
 
 #include <windows.h>
 #include <winternl.h>
@@ -8,6 +13,7 @@
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
@@ -18,16 +24,18 @@
 #include <condition_variable>
 #include <cstring>
 #include <future>
-#include <iostream>
+#include <iomanip>
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <thread>
 
 namespace hdrshot {
 namespace {
 namespace capture = winrt::Windows::Graphics::Capture;
 namespace directx = winrt::Windows::Graphics::DirectX;
+namespace metadata = winrt::Windows::Foundation::Metadata;
 Error capture_error(const char* reason, HRESULT hr = E_FAIL) {
   return {ErrorCode::capture_failed, "WindowsCapture", Retryability::after_recreate,
           {{"reason", reason}, {"hresult", std::to_string(static_cast<std::uint32_t>(hr))}}};
@@ -38,28 +46,61 @@ struct Apartment {
   ~Apartment() { if (SUCCEEDED(hr)) CoUninitialize(); }
 };
 using OperationKey = std::pair<std::uint64_t, std::uint64_t>;
-bool borderless_capture_allowed() {
-  // Same official access request as the existing HDR sampler. Request once per
-  // process, before StartCapture; denial/unsupported access keeps the OS border.
-  static const bool allowed=[] {
+struct BorderlessAccess {
+  bool allowed{};
+  std::uint32_t native_code{};
+  const char* reason{"bordered_fallback"};
+};
+BorderlessAccess borderless_capture_access() {
+  // The optional access prompt is made once per process only when the method
+  // exists. A denial or absent API never blocks capture.
+  static const BorderlessAccess result=[] {
     try {
       auto access=capture::GraphicsCaptureAccess::RequestAccessAsync(capture::GraphicsCaptureAccessKind::Borderless);
       if(access.wait_for(std::chrono::seconds(30))!=winrt::Windows::Foundation::AsyncStatus::Completed) {
         access.Cancel();
-        std::cout<<"captureBorderlessAccess=timeout borderRequired=1\n";
-        return false;
+        return BorderlessAccess{false, WAIT_TIMEOUT, "bordered_fallback"};
       }
       const auto status=access.GetResults();
       const bool granted=status==winrt::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus::Allowed;
-      std::cout<<"captureBorderlessAccess="<<(granted?"allowed":"not_allowed")
-          <<" status="<<static_cast<int>(status)<<'\n';
-      return granted;
+      return BorderlessAccess{granted, static_cast<std::uint32_t>(status),
+          granted ? "available" : "bordered_fallback"};
     } catch(const winrt::hresult_error& e) {
-      std::cout<<"captureBorderlessAccess=unavailable hresult="<<static_cast<std::uint32_t>(e.code())<<'\n';
-      return false;
+      return BorderlessAccess{false, static_cast<std::uint32_t>(e.code()), "bordered_fallback"};
     }
   }();
-  return allowed;
+  return result;
+}
+const char* mode_name(const std::uint32_t value) {
+  switch (value) {
+    case 0: return "legacy";
+    case 1: return "sdr_acm";
+    case 2: return "hdr";
+    default: return "unknown";
+  }
+}
+std::string target_token(const WindowsDisplayInfo& display) {
+  std::ostringstream out;
+  out << std::hex << std::setfill('0') << std::setw(8)
+      << static_cast<std::uint32_t>(display.target_adapter_high)
+      << std::setw(8) << display.target_adapter_low << "_t" << std::dec << display.target_id;
+  return out.str();
+}
+void record_mode_facts(DiagnosticsPort* diagnostics, const WindowsDisplayInfo& display) {
+  const auto id = std::to_string(display.snapshot.id.value);
+  const auto code = std::to_string(display.mode_query_code);
+  record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.mode_detected", "success",
+      {{"displayId", id}, {"api", display.mode_query_source}, {"nativeCode", code},
+       {"returnedSpace", mode_name(display.detected_mode)}});
+  record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.mode_effective", "success",
+      {{"displayId", id}, {"api", display.mode_query_source}, {"nativeCode", code},
+       {"returnedSpace", mode_name(display.advanced_color_mode)},
+       {"reason", display.mode_fallback_reason}});
+  record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.identity", "success",
+      {{"displayId", id}, {"source", target_token(display)}});
+  record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.info2_flags", "success",
+      {{"displayId", id}, {"nativeCode", std::to_string(display.mode_query_flags)},
+       {"returnedSpace", std::to_string(display.mode_raw_active)}});
 }
 }
 
@@ -71,11 +112,62 @@ std::uint32_t windows_build_number() {
   return fn && fn(&version) == 0 ? version.dwBuildNumber : 0;
 }
 
-Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays() {
+Result<WindowsCaptureCapabilityPlan, Error> windows_check_capture_runtime_capabilities(
+    DiagnosticsPort* diagnostics) {
+  using Out = Result<WindowsCaptureCapabilityPlan, Error>;
+  // CoInitializeEx returns RPC_E_CHANGED_MODE on an existing STA, in which
+  // case this helper uses that apartment without balancing an unowned init.
+  Apartment apartment;
+  if (FAILED(apartment.hr) && apartment.hr != RPC_E_CHANGED_MODE) {
+    const auto error = capture_error("wgc_apartment_unavailable", apartment.hr);
+    record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
+        "failure", {}, &error);
+    return Out::failure(error);
+  }
   try {
-    if (windows_build_number() < 22000) {
-      return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("windows_11_required"));
+    const auto pool_name = L"Windows.Graphics.Capture.Direct3D11CaptureFramePool";
+    if (!capture::GraphicsCaptureSession::IsSupported() ||
+        !metadata::ApiInformation::IsMethodPresent(pool_name, L"CreateFreeThreaded")) {
+      const auto error = capture_error("wgc_unsupported");
+      record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
+          "failure", {{"api", "wgc_free_threaded"}}, &error);
+      return Out::failure(error);
     }
+    const auto session_name = L"Windows.Graphics.Capture.GraphicsCaptureSession";
+    const bool cursor_present = metadata::ApiInformation::IsPropertyPresent(
+        session_name, L"IsCursorCaptureEnabled");
+    const bool border_present = metadata::ApiInformation::IsPropertyPresent(
+        session_name, L"IsBorderRequired");
+    const bool border_access_present = metadata::ApiInformation::IsTypePresent(
+        L"Windows.Graphics.Capture.GraphicsCaptureAccess") &&
+        metadata::ApiInformation::IsMethodPresent(
+            L"Windows.Graphics.Capture.GraphicsCaptureAccess", L"RequestAccessAsync");
+    const auto plan = windows_plan_capture_capabilities(
+        cursor_present, border_present, border_access_present);
+    if (!plan.can_exclude_cursor) {
+      const auto error = capture_error("cursor_exclusion_unavailable");
+      record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
+          "failure", {{"api", "wgc_cursor"}}, &error);
+      return Out::failure(error);
+    }
+    record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
+        "success", {{"api", "wgc_free_threaded"}, {"reason", "available"},
+        {"cursor", "exclusion_available"},
+        {"osVersion", std::to_string(windows_build_number())}});
+    record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
+        "success", {{"api", "wgc_border"},
+        {"reason", plan.may_request_borderless ? "optional_available" : "bordered_fallback"}});
+    return Out::success(plan);
+  } catch (const winrt::hresult_error& e) {
+    const auto error = capture_error("wgc_unsupported", e.code());
+    record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
+        "failure", {{"api", "wgc_runtime"}}, &error);
+    return Out::failure(error);
+  }
+}
+
+Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(DiagnosticsPort* diagnostics) {
+  try {
     winrt::com_ptr<IDXGIFactory1> factory;
     winrt::check_hresult(CreateDXGIFactory1(winrt::guid_of<IDXGIFactory1>(), factory.put_void()));
     std::vector<WindowsDisplayInfo> displays;
@@ -113,13 +205,16 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays() {
             info.snapshot.capture_size_px.height / info.snapshot.point_pixel_scale};
         info.device_name = utf8(desc.DeviceName);
         info.gpu_name = utf8(gpu.Description);
+        info.dxgi_adapter_low = gpu.AdapterLuid.LowPart;
+        info.dxgi_adapter_high = gpu.AdapterLuid.HighPart;
         info.color_space = static_cast<std::uint32_t>(desc.ColorSpace);
         info.bits_per_color = desc.BitsPerColor;
         info.min_nits = desc.MinLuminance;
         info.max_nits = desc.MaxLuminance;
         info.max_full_frame_nits = desc.MaxFullFrameLuminance;
-        info.source_white.hdr_active = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-        info.advanced_color_mode = info.source_white.hdr_active ? 2U : 0U;
+        // Output6 reports a precise HDR fallback only. It is not evidence for
+        // SDR ACM, and mode zero is not silently asserted before INFO_2.
+        info.detected_mode = windows_mode_unknown;
         displays.push_back(std::move(info));
       }
     }
@@ -137,22 +232,46 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays() {
       return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("query_display_config", HRESULT_FROM_WIN32(config_result)));
     }
     paths.resize(path_count);
+    std::vector<WindowsTargetPath> target_paths;
+    target_paths.reserve(paths.size());
+    for (const auto& path : paths) {
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+      source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source),
+          path.sourceInfo.adapterId, path.sourceInfo.id};
+      const auto source_result = DisplayConfigGetDeviceInfo(&source.header);
+      target_paths.push_back({path.sourceInfo.adapterId.LowPart,
+          path.sourceInfo.adapterId.HighPart, path.sourceInfo.id, path.targetInfo.id,
+          source_result == ERROR_SUCCESS ? utf8(source.viewGdiDeviceName) : std::string{}});
+    }
     for (auto& info : displays) {
-      bool matched = false;
-      for (const auto& path : paths) {
-        DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
-        source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source), path.sourceInfo.adapterId, path.sourceInfo.id};
-        if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || utf8(source.viewGdiDeviceName) != info.device_name) continue;
-        matched = true;
+      const auto match = windows_match_target(info.dxgi_adapter_low,
+          info.dxgi_adapter_high, info.device_name, target_paths);
+      if (match.status == WindowsTargetMatchStatus::missing)
+        return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("display_path_not_found"));
+      if (match.status == WindowsTargetMatchStatus::ambiguous)
+        return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("display_target_ambiguous"));
+      {
+        const auto& path = paths[match.index];
+        info.target_adapter_low = path.targetInfo.adapterId.LowPart;
+        info.target_adapter_high = path.targetInfo.adapterId.HighPart;
+        info.target_id = path.targetInfo.id;
         DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
         target.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof(target), path.targetInfo.adapterId, path.targetInfo.id};
         if (DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS) info.friendly_name = utf8(target.monitorFriendlyDeviceName);
         DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2 color{};
         color.header = {DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2, sizeof(color), path.targetInfo.adapterId, path.targetInfo.id};
-        if (DisplayConfigGetDeviceInfo(&color.header) == ERROR_SUCCESS) {
-          info.advanced_color_mode = static_cast<std::uint32_t>(color.activeColorMode);
-          info.source_white.hdr_active = color.activeColorMode == DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR;
-        }
+        const auto color_result = DisplayConfigGetDeviceInfo(&color.header);
+        const auto selected = windows_choose_display_mode({static_cast<std::uint32_t>(color_result),
+            static_cast<std::uint32_t>(color.activeColorMode), color.value,
+            info.color_space == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020});
+        info.detected_mode = selected.detected_mode;
+        info.advanced_color_mode = selected.effective_mode;
+        info.mode_query_source = selected.source;
+        info.mode_fallback_reason = selected.reason;
+        info.mode_query_code = selected.info2_status;
+        info.mode_query_flags = selected.info2_flags;
+        info.mode_raw_active = selected.info2_active_mode;
+        info.source_white.hdr_active = selected.effective_mode == 2;
         DISPLAYCONFIG_SDR_WHITE_LEVEL white{};
         white.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, sizeof(white), path.targetInfo.adapterId, path.targetInfo.id};
         const auto white_result = DisplayConfigGetDeviceInfo(&white.header);
@@ -160,12 +279,20 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays() {
         else if (info.source_white.hdr_active) {
           return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("sdr_white_unavailable", HRESULT_FROM_WIN32(white_result)));
         }
-        break;
       }
-      if (!matched) return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("display_path_not_found"));
+      record_mode_facts(diagnostics, info);
       info.snapshot.dynamic_range = info.source_white.hdr_active ? DisplayDynamicRange::hdr : DisplayDynamicRange::sdr;
       const auto scale = WindowsColor::scrgb_to_edr_scale(info.source_white);
       if (!scale) return Result<std::vector<WindowsDisplayInfo>, Error>::failure(scale.error());
+      if (info.advanced_color_mode == 2) {
+        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.white", "success",
+            {{"displayId", std::to_string(info.snapshot.id.value)},
+             {"diffuseWhite", std::to_string(info.source_white.sdr_white_nits)},
+             {"scale", std::to_string(scale.value())}});
+      } else if (info.advanced_color_mode == 1) {
+        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.white", "success",
+            {{"displayId", std::to_string(info.snapshot.id.value)}, {"scale", "1"}});
+      }
       const auto name = winrt::to_hstring(info.device_name);
       const HDC dc = CreateDCW(L"DISPLAY", name.c_str(), nullptr, nullptr);
       if (dc) {
@@ -173,6 +300,16 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays() {
         std::vector<wchar_t> profile(chars);
         if (GetICMProfileW(dc, &chars, profile.data())) info.icc_path = utf8(profile.data());
         DeleteDC(dc);
+      }
+      if (info.advanced_color_mode == 0) {
+        if (info.icc_path.empty())
+          return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("legacy_profile_unavailable"));
+        auto profile = windows_load_icc_profile(info.icc_path);
+        if (!profile) return Result<std::vector<WindowsDisplayInfo>, Error>::failure(profile.error());
+        info.icc_profile = std::move(profile.value());
+        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.profile", "success",
+            {{"displayId", std::to_string(info.snapshot.id.value)},
+             {"source", info.icc_profile->sha256}, {"reason", "loaded"}});
       }
     }
     if (displays.empty()) return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("no_displays"));
@@ -184,12 +321,12 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays() {
 }
 
 Result<WindowsRawCapture, Error> windows_capture_display(
-    const WindowsDisplayInfo& display, const std::atomic_bool* cancelled, const std::uint32_t timeout_ms) {
+    const WindowsDisplayInfo& display, const std::atomic_bool* cancelled,
+    const std::uint32_t timeout_ms, DiagnosticsPort* diagnostics) {
+  const auto capability = windows_check_capture_runtime_capabilities(diagnostics);
+  if (!capability) return Result<WindowsRawCapture, Error>::failure(capability.error());
   Apartment apartment;
   try {
-    if (!capture::GraphicsCaptureSession::IsSupported()) {
-      return Result<WindowsRawCapture, Error>::failure(capture_error("wgc_unsupported"));
-    }
     const auto interop = winrt::get_activation_factory<capture::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
     capture::GraphicsCaptureItem item{nullptr};
     winrt::check_hresult(interop->CreateForMonitor(reinterpret_cast<HMONITOR>(display.monitor),
@@ -205,10 +342,34 @@ Result<WindowsRawCapture, Error> windows_capture_display(
     auto pool = capture::Direct3D11CaptureFramePool::CreateFreeThreaded(rt_device,
         directx::DirectXPixelFormat::R16G16B16A16Float, 2, item.Size());
     auto session = pool.CreateCaptureSession(item);
-    session.IsCursorCaptureEnabled(false);
-    if(borderless_capture_allowed()) session.IsBorderRequired(false);
-    std::cout<<"captureBorderRequired="<<(session.IsBorderRequired()?1:0)
-        <<" display="<<display.snapshot.id.value<<'\n';
+    const auto session_name = L"Windows.Graphics.Capture.GraphicsCaptureSession";
+    const bool border_present = metadata::ApiInformation::IsPropertyPresent(session_name, L"IsBorderRequired");
+    try { session.IsCursorCaptureEnabled(false); }
+    catch (const winrt::hresult_error& e) {
+      session.Close(); pool.Close();
+      return Result<WindowsRawCapture, Error>::failure(capture_error("cursor_exclusion_failed", e.code()));
+    }
+    BorderlessAccess border_access{};
+    if (capability.value().may_request_borderless) border_access = borderless_capture_access();
+    if (border_present && border_access.allowed) {
+      try { session.IsBorderRequired(false); }
+      catch (const winrt::hresult_error& e) {
+        border_access = {false, static_cast<std::uint32_t>(e.code()), "bordered_fallback"};
+      }
+    }
+    bool border_observed = false;
+    bool border_required = true;
+    if (border_present) {
+      try { border_required = session.IsBorderRequired(); border_observed = true; }
+      catch (const winrt::hresult_error& e) {
+        border_access = {false, static_cast<std::uint32_t>(e.code()), "bordered_fallback"};
+      }
+    }
+    record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border", "success",
+        {{"displayId", std::to_string(display.snapshot.id.value)}, {"api", "wgc_border"},
+         {"osVersion", std::to_string(windows_build_number())},
+         {"nativeCode", std::to_string(border_access.native_code)},
+         {"reason", border_observed && !border_required ? "available" : "bordered_fallback"}});
     struct FrameState {
       std::mutex mutex;
       std::condition_variable ready;
@@ -296,12 +457,20 @@ void WindowsDisplayCatalogPort::snapshot_displays(const SnapshotDisplaysRequest&
 
 struct WindowsCapturePort::Impl {
   std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays;
+  std::shared_ptr<DiagnosticsPort> diagnostics;
+  std::atomic<double> gain{1.0};
   std::mutex mutex;
   std::map<OperationKey, std::shared_ptr<std::atomic_bool>> cancellations;
   std::vector<std::future<void>> workers;
 };
-WindowsCapturePort::WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays) : impl_(std::make_unique<Impl>()) {
+WindowsCapturePort::WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
+    double gain, std::shared_ptr<DiagnosticsPort> diagnostics) : impl_(std::make_unique<Impl>()) {
   impl_->displays=std::move(displays);
+  impl_->diagnostics=std::move(diagnostics);
+  if (valid_windows_scrgb_gain(gain)) impl_->gain.store(gain);
+}
+void WindowsCapturePort::set_gain(double gain) {
+  if (valid_windows_scrgb_gain(gain)) impl_->gain.store(gain);
 }
 WindowsCapturePort::~WindowsCapturePort() {
   { std::scoped_lock lock(impl_->mutex);
@@ -315,16 +484,19 @@ void WindowsCapturePort::capture(const CaptureBatchRequest& request, Completion 
     completion(Result<NativeFrameBatch, Error>::failure(capture_error("invalid_capture_request"))); return;
   }
   const OperationKey key{request.session_id.value, request.operation_id.value};
+  const double frozen_gain = impl_->gain.load();
   const auto flag = std::make_shared<std::atomic_bool>(false);
   std::unique_lock lock(impl_->mutex);
   if (!impl_->cancellations.emplace(key, flag).second) {
     lock.unlock(); completion(Result<NativeFrameBatch, Error>::failure(capture_error("duplicate_operation"))); return;
   }
   std::erase_if(impl_->workers, [](auto& work) { return work.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
-  impl_->workers.push_back(std::async(std::launch::async, [request, completion = std::move(completion), flag, native=impl_->displays]() mutable {
+  impl_->workers.push_back(std::async(std::launch::async, [request, completion = std::move(completion), flag,
+      native=impl_->displays, diagnostics=impl_->diagnostics, frozen_gain]() mutable {
     const auto perform=[&]() -> Result<NativeFrameBatch,Error> {
     try {
-    const auto displays = native ? Result<std::vector<WindowsDisplayInfo>,Error>::success(*native) : windows_enumerate_displays();
+    const auto displays = native ? Result<std::vector<WindowsDisplayInfo>,Error>::success(*native)
+                                 : windows_enumerate_displays(diagnostics.get());
     if (!displays) return Result<NativeFrameBatch, Error>::failure(displays.error());
     std::vector<std::future<Result<NativeCaptureFrame, Error>>> futures;
     for (const auto target : request.targets) {
@@ -332,13 +504,31 @@ void WindowsCapturePort::capture(const CaptureBatchRequest& request, Completion 
       if (found == displays.value().end()) {
         return Result<NativeFrameBatch, Error>::failure(capture_error("target_display_missing"));
       }
-      futures.push_back(std::async(std::launch::async, [display = *found, flag] {
-        const auto raw = windows_capture_display(display, flag.get());
+      futures.push_back(std::async(std::launch::async, [display = *found, flag, diagnostics, frozen_gain] {
+        if (display.advanced_color_mode == 0 && !display.icc_profile)
+          return Result<NativeCaptureFrame, Error>::failure(capture_error("legacy_profile_unavailable"));
+        record_diagnostic_stage(diagnostics.get(), {}, {}, "windows.color", "capture.gain", "success",
+            {{"displayId", std::to_string(display.snapshot.id.value)},
+             {"scale", std::to_string(frozen_gain)}});
+        auto raw = windows_capture_display(display, flag.get(), 5000, diagnostics.get());
         if (!raw) return Result<NativeCaptureFrame, Error>::failure(raw.error());
-        auto linear = WindowsColor::normalize_capture(raw.value().rgba_scrgb, display.source_white);
+        const auto scale = WindowsColor::scrgb_to_edr_scale(display.source_white);
+        if (!scale) return Result<NativeCaptureFrame, Error>::failure(scale.error());
+        auto linear = windows_normalize_scrgb_source(raw.value().size_px,
+            std::move(raw.value().rgba_scrgb), scale.value(), frozen_gain,
+            display.advanced_color_mode == 0 ? display.icc_profile : nullptr);
         if (!linear) return Result<NativeCaptureFrame, Error>::failure(linear.error());
-        return Result<NativeCaptureFrame, Error>::success(NativeCaptureFrame{display.snapshot.id, raw.value().size_px,
-            PixelFormat::rgba16_float, WindowsColor::linear_p3_encoding(), std::move(linear.value())});
+        record_diagnostic_stage(diagnostics.get(), {}, {}, "windows.color", "capture.normalize", "success",
+            {{"displayId", std::to_string(display.snapshot.id.value)},
+             {"transfer", display.advanced_color_mode == 0 ? "legacy_icc_oetf" : "scrgb_matrix"},
+             {"format", "rgba32f"}, {"sourceStorage", "rgba16f"}});
+        NativeCaptureFrame frame{};
+        frame.display_id = display.snapshot.id;
+        frame.size_px = raw.value().size_px;
+        frame.pixel_format = PixelFormat::rgba32_float;
+        frame.encoding = WindowsColor::linear_p3_encoding();
+        frame.linear_source = std::move(linear.value());
+        return Result<NativeCaptureFrame, Error>::success(std::move(frame));
       }));
     }
     NativeFrameBatch batch{request.session_id, request.operation_id, request.display_generation, {}};

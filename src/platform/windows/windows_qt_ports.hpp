@@ -40,6 +40,8 @@ class WindowsQtOverlayWindow final : public QObject, public QtOverlayWindowPort 
   void configure(QWidget& host,bool order_front) override;
   void resize(QWidget& host) override;
   void set_system_dialog_active(QWidget& host,bool active,bool restore_focus) override;
+  void set_input_interrupted(std::function<void()> callback) override;
+  void restore_input_focus(QWidget& host) override;
   void* native_surface() const override { return surface_; }
  protected:
   bool eventFilter(QObject* object,QEvent* event) override;
@@ -49,6 +51,8 @@ class WindowsQtOverlayWindow final : public QObject, public QtOverlayWindowPort 
   WindowsDisplayInfo display_;
   void* surface_{};
   void* host_handle_{};
+  bool presented_{}, system_dialog_active_{};
+  std::function<void()> input_interrupted_;
 };
 class WindowsFileStorePort final : public FileStorePort {
  public:

@@ -107,25 +107,46 @@ class SourceIdentityTests(unittest.TestCase):
         self.put(".seriousshot-export.json", json.dumps({"files": {}}))
         self.assertEqual(self.generate()["source_commit"], "")
 
-    def receipt(self, source):
+    def receipt(self, source, schema=2):
         files = {p.relative_to(source).as_posix(): {"sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "mode": 420}
                  for p in source.rglob("*") if p.is_file()}
-        (source / ".seriousshot-export.json").write_text(json.dumps({
-            "code_identity": {"commit": self.initial, "timestamp": self.time}, "files": files}))
+        metadata = {"schema": schema, "files": files}
+        if schema == 1:
+            metadata["code_identity"] = {"commit": self.initial, "timestamp": self.time}
+        else:
+            metadata["timestamp"] = self.time
+        (source / ".seriousshot-export.json").write_text(json.dumps(metadata))
 
     def test_export_receipt_survives_archive_and_independent_history(self):
         archive = self.root / "archive"
         shutil.copytree(self.source, archive)
         self.receipt(archive)
-        self.assertEqual(self.generate(archive, release=True)["source_commit"], self.initial)
+        expected = hashlib.sha256((archive / ".seriousshot-export.json").read_bytes()).hexdigest()
+        self.assertNotIn(self.initial, (archive / ".seriousshot-export.json").read_text())
+        self.assertEqual(self.generate(archive, release=True)["source_commit"], expected)
         subprocess.check_call(["git", "init", "-q", str(archive)])
         subprocess.check_call(["git", "-C", str(archive), "add", "."])
         subprocess.check_call(["git", "-C", str(archive), "-c", "user.name=Test", "-c",
                                "user.email=test@example.invalid", "commit", "-qm", "export"])
         self.assertEqual(self.generate(archive, release=True)["source_commit_timestamp"], self.time)
+        self.assertEqual(self.generate(archive, release=True)["source_commit"], expected)
         (archive / "src/main.cpp").write_text("public-only change")
         self.assertTrue(self.generate(archive)["modified"])
         self.generate(archive, release=True, succeeds=False)
+
+    def test_schema_one_receipt_remains_readable(self):
+        archive = self.root / "archive"
+        shutil.copytree(self.source, archive)
+        self.receipt(archive, schema=1)
+        self.assertEqual(self.generate(archive, release=True)["source_commit"], self.initial)
+        self.assertEqual(self.generate(archive)["source_commit_timestamp"], self.time)
+
+    def test_schema_two_missing_or_invalid_time_cannot_release(self):
+        for timestamp in (None, '"; malicious'):
+            self.put(".seriousshot-export.json", json.dumps({"schema": 2,
+                "timestamp": timestamp, "files": {}}))
+            self.assertEqual(self.generate()["source_commit"], "")
+            self.generate(release=True, succeeds=False)
 
     def test_archive_receipt_detects_added_deleted_changed_files(self):
         archive = self.root / "archive"

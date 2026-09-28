@@ -213,6 +213,15 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
     analyzer_preferences = analyzer_text.toStdString();
     if (analyzer_preferences.size() > 65536U) analyzer_preferences.clear();
   }
+  double windows_gain = 1.0;
+#ifdef Q_OS_WIN
+  bool gain_parsed = false;
+  windows_gain = settings.value(QStringLiteral("windowsScRgbGain"), 1.0).toDouble(&gain_parsed);
+  if (!gain_parsed || !valid_windows_scrgb_gain(windows_gain))
+    return Result<SettingsSnapshot, Error>::failure(settings_error(
+        ErrorCode::settings_corrupt, Retryability::after_user_action,
+        {{"field", "windowsScRgbGain"}}));
+#endif
   return Result<SettingsSnapshot, Error>::success(SettingsSnapshot{
       5,
       settings.value(QStringLiteral("revision"), 0).toULongLong(),
@@ -233,10 +242,14 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
           existing_configuration).toBool(),
       settings.value(QStringLiteral("detailedLogging"), false).toBool(),
       std::move(analyzer_preferences),
+      windows_gain,
   });
 }
 
 Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& patch) {
+  if (patch.windows_scrgb_gain && !valid_windows_scrgb_gain(*patch.windows_scrgb_gain))
+    return Result<SettingsReceipt, Error>::failure(settings_error(
+        ErrorCode::invalid_input, Retryability::never, {{"field", "windowsScRgbGain"}}));
   if (patch.analyzer_preferences_json && patch.analyzer_preferences_json->size() > 65536U)
     return Result<SettingsReceipt, Error>::failure(settings_error(
         ErrorCode::invalid_input, Retryability::never, {{"field", "analyzerPreferences"}}));
@@ -295,6 +308,10 @@ Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& pa
       patch.detailed_logging.value_or(current.value().detailed_logging));
   settings.setValue(QStringLiteral("analyzerPreferences"), QString::fromStdString(
       patch.analyzer_preferences_json.value_or(current.value().analyzer_preferences_json)));
+#ifdef Q_OS_WIN
+  settings.setValue(QStringLiteral("windowsScRgbGain"),
+      patch.windows_scrgb_gain.value_or(current.value().windows_scrgb_gain));
+#endif
   settings.sync();
   const auto checked = check_status(settings, exact_path_);
   if (!checked) {

@@ -4,6 +4,7 @@
 
 #include <QFileDialog>
 #include <QDateTime>
+#include <QDoubleValidator>
 #include <QDesktopServices>
 #include <QUrl>
 #include <QEvent>
@@ -14,9 +15,11 @@
 #include <QHBoxLayout>
 #include <QKeyCombination>
 #include <QKeySequence>
+#include <QKeyEvent>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -57,8 +60,13 @@ SettingsWindow::SettingsWindow(
   qApp->installEventFilter(this);
   setWindowTitle(QStringLiteral("SeriousShot 设置"));
   setWindowFlag(Qt::WindowStaysOnTopHint, false);
+#ifdef Q_OS_WIN
+  setMinimumSize(800, 780);
+  resize(860, 820);
+#else
   setMinimumSize(800, 730);
   resize(860, 770);
+#endif
 
   auto* root = new QVBoxLayout(this);
   root->setContentsMargins(28, 24, 28, 24);
@@ -205,6 +213,17 @@ SettingsWindow::SettingsWindow(
       QStringLiteral("只影响 HDR 的 Display P3 PQ 输出；SDR 输出不使用此值。"));
   general_form_->addRow(
       QStringLiteral("Diffuse White 在 PQ 中的亮度"), pq_diffuse_white_combo_);
+#ifdef Q_OS_WIN
+  windows_scrgb_gain_edit_ = new QLineEdit(general);
+  windows_scrgb_gain_edit_->setObjectName(QStringLiteral("windowsScRgbGainEdit"));
+  auto* gain_validator = new QDoubleValidator(0.0, 3.0, 12, windows_scrgb_gain_edit_);
+  gain_validator->setLocale(QLocale::c());
+  gain_validator->setNotation(QDoubleValidator::StandardNotation);
+  windows_scrgb_gain_edit_->setValidator(gain_validator);
+  windows_scrgb_gain_edit_->setToolTip(QStringLiteral("Windows 截图源的 scRGB RGB 增益（0–3）；默认 1.0。"));
+  windows_scrgb_gain_edit_->installEventFilter(this);
+  general_form_->addRow(QStringLiteral("Windows scRGB 增益"), windows_scrgb_gain_edit_);
+#endif
   hdr_pq_precision_combo_ = new QComboBox(general);
   hdr_pq_precision_combo_->setObjectName(QStringLiteral("hdrPqPrecisionCombo"));
   hdr_pq_precision_combo_->setMinimumWidth(390);
@@ -283,7 +302,8 @@ SettingsWindow::SettingsWindow(
   identity_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
   identity_label->setToolTip(source_commit().empty()
       ? QStringLiteral("未找到可信的源代码提交信息；不会以构建时间代替。")
-      : QStringLiteral("源代码提交：%1").arg(QString::fromLatin1(
+      : (source_commit().size() == 64 ? QStringLiteral("源码快照 SHA-256：%1")
+                                      : QStringLiteral("源代码提交：%1")).arg(QString::fromLatin1(
             source_commit().data(), static_cast<qsizetype>(source_commit().size()))));
   identity_row->addWidget(identity_label, 1);
   auto* releases = new QPushButton(QStringLiteral("查看发布版本 ↗"), this);
@@ -330,6 +350,10 @@ SettingsWindow::SettingsWindow(
       [this] { persist_save_format(); });
   connect(pq_diffuse_white_combo_, &QComboBox::currentIndexChanged, this,
       [this] { persist_pq_diffuse_white(); });
+#ifdef Q_OS_WIN
+  connect(windows_scrgb_gain_edit_, &QLineEdit::editingFinished, this,
+      [this] { persist_windows_scrgb_gain(); });
+#endif
   connect(hdr_pq_precision_combo_, &QComboBox::currentIndexChanged, this,
       [this] { persist_hdr_pq_precision(); });
   connect(ultra_hdr_jpeg_quality_combo_, &QComboBox::currentIndexChanged, this,
@@ -375,6 +399,13 @@ void SettingsWindow::restore_controls_from_snapshot() {
   const QSignalBlocker hotkey_blocker{hotkey_edit_};
   const QSignalBlocker format_blocker{save_format_combo_};
   const QSignalBlocker diffuse_white_blocker{pq_diffuse_white_combo_};
+#ifdef Q_OS_WIN
+  const QSignalBlocker gain_blocker{windows_scrgb_gain_edit_};
+  auto gain_text = QString::number(snapshot_.windows_scrgb_gain, 'g', 12);
+  if (!gain_text.contains(QLatin1Char('.')) && !gain_text.contains(QLatin1Char('e')))
+    gain_text += QStringLiteral(".0");
+  windows_scrgb_gain_edit_->setText(gain_text);
+#endif
   const QSignalBlocker precision_blocker{hdr_pq_precision_combo_};
   const QSignalBlocker ultra_hdr_quality_blocker{ultra_hdr_jpeg_quality_combo_};
   const QSignalBlocker enter_blocker{enter_completion_combo_};
@@ -463,6 +494,13 @@ void SettingsWindow::update_general_label_width() {
 }
 
 bool SettingsWindow::eventFilter(QObject* watched, QEvent* event) {
+#ifdef Q_OS_WIN
+  if (watched == windows_scrgb_gain_edit_ && event->type() == QEvent::KeyPress &&
+      static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+    restore_controls_from_snapshot();
+    return true;
+  }
+#endif
   if (recording_hotkey_ && event->type() == QEvent::MouseButtonPress) {
     auto* widget = qobject_cast<QWidget*>(watched);
     const bool inside_editor = widget == hotkey_edit_ ||
@@ -571,6 +609,27 @@ void SettingsWindow::persist_pq_diffuse_white() {
     return;
   }
   finish_saved_change(QStringLiteral("PQ Diffuse White 已更新。"));
+}
+
+void SettingsWindow::persist_windows_scrgb_gain() {
+#ifdef Q_OS_WIN
+  if (loading_controls_) return;
+  bool parsed = false;
+  const double requested = QLocale::c().toDouble(windows_scrgb_gain_edit_->text(), &parsed);
+  if (!parsed || !valid_windows_scrgb_gain(requested)) {
+    restore_controls_from_snapshot();
+    show_status(QStringLiteral("Windows scRGB 增益须为 0 至 3 的有限小数。"), true);
+    return;
+  }
+  if (requested == snapshot_.windows_scrgb_gain) return;
+  const auto changed = SettingsWorkflow::change_windows_scrgb_gain(requested, settings_store_);
+  if (!changed) {
+    restore_controls_from_snapshot();
+    show_status(QStringLiteral("Windows scRGB 增益更新失败。"), true);
+    return;
+  }
+  finish_saved_change(QStringLiteral("Windows scRGB 增益已更新。"));
+#endif
 }
 
 void SettingsWindow::persist_hdr_pq_precision() {
