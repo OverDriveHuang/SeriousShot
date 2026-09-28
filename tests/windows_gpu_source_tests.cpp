@@ -1,10 +1,42 @@
 #include "platform/windows/windows_gpu_source.hpp"
+#include "platform/windows/windows_capture_policy.hpp"
+#include "platform/windows/windows_color.hpp"
 #include "test_support.hpp"
 #include <cmath>
 #include <limits>
 #include <utility>
 using namespace hdrshot;
 namespace {
+void compatibility_options_reach_gpu_once() {
+  // Exactly representable binary16 white, chroma, negative, extended samples.
+  const std::vector<std::uint16_t> raw{
+      0x4000,0x4000,0x4000,0x7e00, 0x3400,0x3800,0x3e00,0,
+      0xb400,0,0,0, 0,0x4000,0x4a00,0};
+  // FP64 oracle constructed from xy primaries, independent of product matrix.
+  constexpr double reference[4][3] = {
+      {2,2,2}, {0.2943845078214094,0.49170145028725964,1.4062492709346368},
+      {-0.2056154921785906,-0.008298549712740409,-0.00427065768028001},
+      {0.35507606257127494,1.9336116022980774,11.071034024706927}};
+  for (bool hdr : {false,true}) for (double white : {80.0,100.0,203.0,204.0}) {
+    const auto normal=WindowsColor::scrgb_to_edr_scale({hdr,white});
+    HDRSHOT_CHECK(normal.has_value());
+    for (bool gain_on : {false,true}) for (bool bypass : {false,true}) {
+      const auto adjustment=resolve_capture_adjustment({gain_on,bypass,0.5},hdr,normal.value());
+      HDRSHOT_CHECK(adjustment.has_value());
+      auto source=windows_normalize_scrgb_source({4,1},raw,
+          adjustment.value().white_scale,adjustment.value().effective_gain);
+      HDRSHOT_CHECK(source.has_value());
+      const auto pixels=source.value()->read_region({0,0,4,1});
+      HDRSHOT_CHECK(pixels.has_value());
+      const double scale=(gain_on?0.5:1.0)*(hdr&&!bypass?80.0/white:1.0);
+      for (int p=0;p<4;++p) {
+        for (int c=0;c<3;++c)
+          HDRSHOT_CHECK_NEAR(pixels.value()[p*4+c],reference[p][c]*scale,2e-6);
+        HDRSHOT_CHECK_NEAR(pixels.value()[p*4+3],1.0,0);
+      }
+    }
+  }
+}
 void gain_vectors_and_alpha() {
   const std::vector<std::uint16_t> raw{0x4000, 0x4000, 0x4000, 0x7e00};
   for (const auto [gain, expected] :
@@ -47,7 +79,8 @@ void negative_linear_input_is_preserved() {
 }
 } // namespace
 int main() {
-  return test::run({{"GPU source gain vectors", gain_vectors_and_alpha},
+  return test::run({{"capture compatibility options reach GPU once", compatibility_options_reach_gpu_once},
+                    {"GPU source gain vectors", gain_vectors_and_alpha},
                     {"GPU source input validation", invalid_source_and_gain},
                     {"GPU source retains negative linear input",
                      negative_linear_input_is_preserved}});

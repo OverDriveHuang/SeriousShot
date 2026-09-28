@@ -105,6 +105,20 @@ Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_windows_scrgb_gain
   return Result<SettingsUpdateReceipt, Error>::success({saved.value().revision});
 }
 
+Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_windows_capture_compatibility(
+    const bool gain_enabled, const bool bypass_sdr_white_enabled,
+    const double gain, SettingsStorePort& settings_store) {
+  if (!valid_windows_scrgb_gain(gain))
+    return Result<SettingsUpdateReceipt, Error>::failure(invalid_field("windows_scrgb_gain"));
+  SettingsPatch patch;
+  patch.windows_capture_gain_enabled = gain_enabled;
+  patch.windows_capture_bypass_sdr_white_enabled = bypass_sdr_white_enabled;
+  patch.windows_scrgb_gain = gain;
+  const auto saved = settings_store.save(patch);
+  if (!saved) return Result<SettingsUpdateReceipt, Error>::failure(saved.error());
+  return Result<SettingsUpdateReceipt, Error>::success({saved.value().revision});
+}
+
 Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_hdr_pq_precision(
     const HdrPqPrecision hdr_pq_precision,
     SettingsStorePort& settings_store) {

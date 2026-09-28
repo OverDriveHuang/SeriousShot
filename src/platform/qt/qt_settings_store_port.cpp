@@ -136,6 +136,19 @@ Result<CompletionAction, Error> parse_completion_action(
       {{"field", field}}));
 }
 
+#ifdef Q_OS_WIN
+Result<bool, Error> parse_windows_bool(const QSettings& settings, const QString& key) {
+  if (settings.contains(key)) {
+    const auto value = settings.value(key).toString();
+    if (value == QStringLiteral("true")) return Result<bool, Error>::success(true);
+    if (value == QStringLiteral("false")) return Result<bool, Error>::success(false);
+  }
+  return Result<bool, Error>::failure(settings_error(
+      ErrorCode::settings_corrupt, Retryability::after_user_action,
+      {{"field", key.toStdString()}}));
+}
+#endif
+
 }  // namespace
 
 QtSettingsStorePort::QtSettingsStorePort(
@@ -214,13 +227,53 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
     if (analyzer_preferences.size() > 65536U) analyzer_preferences.clear();
   }
   double windows_gain = 1.0;
+  bool windows_gain_enabled = false;
+  bool windows_bypass_sdr_white_enabled = false;
 #ifdef Q_OS_WIN
-  bool gain_parsed = false;
-  windows_gain = settings.value(QStringLiteral("windowsScRgbGain"), 1.0).toDouble(&gain_parsed);
-  if (!gain_parsed || !valid_windows_scrgb_gain(windows_gain))
-    return Result<SettingsSnapshot, Error>::failure(settings_error(
-        ErrorCode::settings_corrupt, Retryability::after_user_action,
-        {{"field", "windowsScRgbGain"}}));
+  const auto version_key = QStringLiteral("windowsCaptureCompatibilityVersion");
+  const auto gain_enabled_key = QStringLiteral("windowsCaptureGainEnabled");
+  const auto bypass_key = QStringLiteral("windowsCaptureBypassSdrWhiteEnabled");
+  const auto gain_key = QStringLiteral("windowsScRgbGain");
+  if (!settings.contains(version_key)) {
+    if (settings.contains(gain_enabled_key) || settings.contains(bypass_key))
+      return Result<SettingsSnapshot, Error>::failure(settings_error(
+          ErrorCode::settings_corrupt, Retryability::after_user_action,
+          {{"field", "windowsCaptureCompatibilityVersion"}}));
+    windows_gain = 0.5;
+    if (settings.contains(gain_key)) {
+      bool gain_parsed = false;
+      const double legacy_gain = settings.value(gain_key).toDouble(&gain_parsed);
+      if (!gain_parsed || !valid_windows_scrgb_gain(legacy_gain))
+        return Result<SettingsSnapshot, Error>::failure(settings_error(
+            ErrorCode::settings_corrupt, Retryability::after_user_action,
+            {{"field", "windowsScRgbGain"}}));
+      if (legacy_gain != 1.0) {
+        windows_gain = legacy_gain;
+        windows_gain_enabled = true;
+      }
+    }
+  } else {
+    if (settings.value(version_key).toString() != QStringLiteral("1"))
+      return Result<SettingsSnapshot, Error>::failure(settings_error(
+          ErrorCode::settings_corrupt, Retryability::after_user_action,
+          {{"field", "windowsCaptureCompatibilityVersion"}}));
+    const auto gain_enabled = parse_windows_bool(settings, gain_enabled_key);
+    if (!gain_enabled) return Result<SettingsSnapshot, Error>::failure(gain_enabled.error());
+    const auto bypass = parse_windows_bool(settings, bypass_key);
+    if (!bypass) return Result<SettingsSnapshot, Error>::failure(bypass.error());
+    if (!settings.contains(gain_key))
+      return Result<SettingsSnapshot, Error>::failure(settings_error(
+          ErrorCode::settings_corrupt, Retryability::after_user_action,
+          {{"field", "windowsScRgbGain"}}));
+    bool gain_parsed = false;
+    windows_gain = settings.value(gain_key).toDouble(&gain_parsed);
+    if (!gain_parsed || !valid_windows_scrgb_gain(windows_gain))
+      return Result<SettingsSnapshot, Error>::failure(settings_error(
+          ErrorCode::settings_corrupt, Retryability::after_user_action,
+          {{"field", "windowsScRgbGain"}}));
+    windows_gain_enabled = gain_enabled.value();
+    windows_bypass_sdr_white_enabled = bypass.value();
+  }
 #endif
   return Result<SettingsSnapshot, Error>::success(SettingsSnapshot{
       5,
@@ -243,6 +296,8 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
       settings.value(QStringLiteral("detailedLogging"), false).toBool(),
       std::move(analyzer_preferences),
       windows_gain,
+      windows_gain_enabled,
+      windows_bypass_sdr_white_enabled,
   });
 }
 
@@ -309,6 +364,13 @@ Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& pa
   settings.setValue(QStringLiteral("analyzerPreferences"), QString::fromStdString(
       patch.analyzer_preferences_json.value_or(current.value().analyzer_preferences_json)));
 #ifdef Q_OS_WIN
+  settings.setValue(QStringLiteral("windowsCaptureCompatibilityVersion"), 1);
+  settings.setValue(QStringLiteral("windowsCaptureGainEnabled"),
+      patch.windows_capture_gain_enabled.value_or(
+          current.value().windows_capture_gain_enabled));
+  settings.setValue(QStringLiteral("windowsCaptureBypassSdrWhiteEnabled"),
+      patch.windows_capture_bypass_sdr_white_enabled.value_or(
+          current.value().windows_capture_bypass_sdr_white_enabled));
   settings.setValue(QStringLiteral("windowsScRgbGain"),
       patch.windows_scrgb_gain.value_or(current.value().windows_scrgb_gain));
 #endif

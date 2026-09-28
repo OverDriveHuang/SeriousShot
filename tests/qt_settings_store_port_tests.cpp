@@ -37,7 +37,13 @@ void defaults_and_patches_persist_across_instances() {
       hdrshot::CompletionAction::copy_to_clipboard);
   HDRSHOT_CHECK(!defaults.value().initial_settings_presented);
   HDRSHOT_CHECK(!defaults.value().detailed_logging);
+#ifdef Q_OS_WIN
+  HDRSHOT_CHECK(defaults.value().windows_scrgb_gain == 0.5);
+#else
   HDRSHOT_CHECK(defaults.value().windows_scrgb_gain == 1.0);
+#endif
+  HDRSHOT_CHECK(!defaults.value().windows_capture_gain_enabled);
+  HDRSHOT_CHECK(!defaults.value().windows_capture_bypass_sdr_white_enabled);
 
   hdrshot::SettingsPatch hotkey;
   hotkey.global_capture_hotkey = "Command+Option+2";
@@ -62,6 +68,8 @@ void defaults_and_patches_persist_across_instances() {
   format.detailed_logging = true;
 #ifdef Q_OS_WIN
   format.windows_scrgb_gain = 0.5;
+  format.windows_capture_gain_enabled = true;
+  format.windows_capture_bypass_sdr_white_enabled = true;
 #endif
   const auto third_saved = first.save(format);
   HDRSHOT_CHECK(third_saved.has_value());
@@ -88,6 +96,13 @@ void defaults_and_patches_persist_across_instances() {
   HDRSHOT_CHECK(loaded.value().detailed_logging);
 #ifdef Q_OS_WIN
   HDRSHOT_CHECK(loaded.value().windows_scrgb_gain == 0.5);
+  HDRSHOT_CHECK(loaded.value().windows_capture_gain_enabled);
+  HDRSHOT_CHECK(loaded.value().windows_capture_bypass_sdr_white_enabled);
+  QSettings raw(QString::fromStdString(path), QSettings::IniFormat);
+  HDRSHOT_CHECK(raw.value("windowsCaptureCompatibilityVersion").toInt() == 1);
+  HDRSHOT_CHECK(raw.value("windowsCaptureGainEnabled").toBool());
+  HDRSHOT_CHECK(raw.value("windowsCaptureBypassSdrWhiteEnabled").toBool());
+  HDRSHOT_CHECK(raw.value("windowsScRgbGain").toDouble() == 0.5);
 #endif
   hdrshot::SettingsPatch quiet;
   quiet.detailed_logging = false;
@@ -113,6 +128,141 @@ void invalid_windows_gain_never_commits() {
   damaged.setValue("windowsScRgbGain", "nan");
   damaged.sync();
   HDRSHOT_CHECK(!store.load());
+#endif
+}
+
+void legacy_windows_gain_migrates_without_enabling_bypass() {
+#ifdef Q_OS_WIN
+  for (const double legacy_gain : {0.0, 0.5, 1.0, 1.274008, 3.0}) {
+    QTemporaryDir directory;
+    HDRSHOT_CHECK(directory.isValid());
+    const auto path = directory.filePath("settings.ini");
+    {
+      QSettings legacy(path, QSettings::IniFormat);
+      legacy.setValue("schemaVersion", 5);
+      legacy.setValue("windowsScRgbGain", legacy_gain);
+      legacy.sync();
+    }
+    hdrshot::QtSettingsStorePort store(path.toStdString(), "Control+Shift+2", "/Pictures");
+    const auto loaded = store.load();
+    HDRSHOT_CHECK(loaded.has_value());
+    HDRSHOT_CHECK(loaded.value().windows_capture_gain_enabled == (legacy_gain != 1.0));
+    HDRSHOT_CHECK(!loaded.value().windows_capture_bypass_sdr_white_enabled);
+    HDRSHOT_CHECK(loaded.value().windows_scrgb_gain ==
+        (legacy_gain == 1.0 ? 0.5 : legacy_gain));
+    hdrshot::SettingsPatch other;
+    other.detailed_logging = true;
+    HDRSHOT_CHECK(store.save(other).has_value());
+    const auto reopened = store.load();
+    HDRSHOT_CHECK(reopened.has_value());
+    HDRSHOT_CHECK(reopened.value().windows_capture_gain_enabled ==
+        loaded.value().windows_capture_gain_enabled);
+    HDRSHOT_CHECK(reopened.value().windows_scrgb_gain == loaded.value().windows_scrgb_gain);
+    QSettings raw(path, QSettings::IniFormat);
+    HDRSHOT_CHECK(raw.value("windowsCaptureCompatibilityVersion").toInt() == 1);
+    HDRSHOT_CHECK(raw.value("windowsCaptureBypassSdrWhiteEnabled").toString() == "false");
+  }
+#endif
+}
+
+void windows_compatibility_preserves_independent_options() {
+#ifdef Q_OS_WIN
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  const auto path = directory.filePath("settings.ini").toStdString();
+  hdrshot::QtSettingsStorePort store(path, "Control+Shift+2", "/Pictures");
+  hdrshot::SettingsPatch patch;
+  patch.windows_capture_gain_enabled = false;
+  patch.windows_capture_bypass_sdr_white_enabled = true;
+  patch.windows_scrgb_gain = 1.274008;
+  const auto first = store.save(patch);
+  HDRSHOT_CHECK(first.has_value());
+  HDRSHOT_CHECK(first.value().revision == 1);
+  hdrshot::QtSettingsStorePort reopened(path, "Control+Shift+2", "/Pictures");
+  const auto loaded = reopened.load();
+  HDRSHOT_CHECK(loaded.has_value());
+  HDRSHOT_CHECK(!loaded.value().windows_capture_gain_enabled);
+  HDRSHOT_CHECK(loaded.value().windows_capture_bypass_sdr_white_enabled);
+  HDRSHOT_CHECK(loaded.value().windows_scrgb_gain == 1.274008);
+  patch.windows_capture_gain_enabled = true;
+  patch.windows_capture_bypass_sdr_white_enabled = false;
+  patch.windows_scrgb_gain = 0.0;
+  const auto second = reopened.save(patch);
+  HDRSHOT_CHECK(second.has_value());
+  HDRSHOT_CHECK(second.value().revision == 2);
+  const auto reloaded = store.load();
+  HDRSHOT_CHECK(reloaded.has_value());
+  HDRSHOT_CHECK(reloaded.value().windows_capture_gain_enabled);
+  HDRSHOT_CHECK(!reloaded.value().windows_capture_bypass_sdr_white_enabled);
+  HDRSHOT_CHECK(reloaded.value().windows_scrgb_gain == 0.0);
+#endif
+}
+
+void malformed_windows_compatibility_fails_without_writing() {
+#ifdef Q_OS_WIN
+  struct BadSetting { const char* key; const char* value; const char* field; };
+  for (const auto bad : {
+      BadSetting{"windowsCaptureCompatibilityVersion", "2", "windowsCaptureCompatibilityVersion"},
+      BadSetting{"windowsCaptureGainEnabled", "yes", "windowsCaptureGainEnabled"},
+      BadSetting{"windowsCaptureBypassSdrWhiteEnabled", "2", "windowsCaptureBypassSdrWhiteEnabled"},
+      BadSetting{"windowsScRgbGain", "NaN", "windowsScRgbGain"},
+      BadSetting{"windowsScRgbGain", "3.1", "windowsScRgbGain"}}) {
+    QTemporaryDir directory;
+    HDRSHOT_CHECK(directory.isValid());
+    const auto path = directory.filePath("settings.ini");
+    {
+      QSettings raw(path, QSettings::IniFormat);
+      raw.setValue("windowsCaptureCompatibilityVersion", 1);
+      raw.setValue("windowsCaptureGainEnabled", true);
+      raw.setValue("windowsCaptureBypassSdrWhiteEnabled", false);
+      raw.setValue("windowsScRgbGain", 0.5);
+      raw.setValue(bad.key, bad.value);
+      raw.sync();
+    }
+    hdrshot::QtSettingsStorePort store(path.toStdString(), "Control+Shift+2", "/Pictures");
+    const auto loaded = store.load();
+    HDRSHOT_CHECK(!loaded);
+    HDRSHOT_CHECK(loaded.error().code == hdrshot::ErrorCode::settings_corrupt);
+    HDRSHOT_CHECK(loaded.error().safe_context.at("field") == bad.field);
+    hdrshot::SettingsPatch patch;
+    patch.detailed_logging = true;
+    HDRSHOT_CHECK(!store.save(patch));
+    QSettings raw(path, QSettings::IniFormat);
+    HDRSHOT_CHECK(!raw.contains("detailedLogging"));
+  }
+  for (const auto missing_key : {"windowsCaptureGainEnabled",
+      "windowsCaptureBypassSdrWhiteEnabled", "windowsScRgbGain"}) {
+    QTemporaryDir directory;
+    HDRSHOT_CHECK(directory.isValid());
+    const auto path = directory.filePath("settings.ini");
+    {
+      QSettings raw(path, QSettings::IniFormat);
+      raw.setValue("windowsCaptureCompatibilityVersion", 1);
+      raw.setValue("windowsCaptureGainEnabled", true);
+      raw.setValue("windowsCaptureBypassSdrWhiteEnabled", false);
+      raw.setValue("windowsScRgbGain", 0.5);
+      raw.remove(missing_key);
+      raw.sync();
+    }
+    hdrshot::QtSettingsStorePort store(path.toStdString(), "Control+Shift+2", "/Pictures");
+    const auto loaded = store.load();
+    HDRSHOT_CHECK(!loaded);
+    HDRSHOT_CHECK(loaded.error().code == hdrshot::ErrorCode::settings_corrupt);
+    HDRSHOT_CHECK(loaded.error().safe_context.at("field") == missing_key);
+  }
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  const auto path = directory.filePath("settings.ini");
+  {
+    QSettings raw(path, QSettings::IniFormat);
+    raw.setValue("windowsCaptureGainEnabled", true);
+    raw.sync();
+  }
+  hdrshot::QtSettingsStorePort store(path.toStdString(), "Control+Shift+2", "/Pictures");
+  const auto partial = store.load();
+  HDRSHOT_CHECK(!partial);
+  HDRSHOT_CHECK(partial.error().safe_context.at("field") ==
+      "windowsCaptureCompatibilityVersion");
 #endif
 }
 
@@ -234,6 +384,9 @@ int main() {
       {"Analyzer preferences independent and bounded", analyzer_preferences_are_independent_bounded_and_preserved},
       {"Qt settings defaults and persistence", defaults_and_patches_persist_across_instances},
       {"Qt settings rejects invalid Windows gain", invalid_windows_gain_never_commits},
+      {"Qt settings migrates legacy Windows gain", legacy_windows_gain_migrates_without_enabling_bypass},
+      {"Qt settings keeps Windows compatibility options independent", windows_compatibility_preserves_independent_options},
+      {"Qt settings rejects malformed Windows compatibility", malformed_windows_compatibility_fails_without_writing},
       {"Qt settings migrates schema one", schema_one_migrates_old_format_and_defaults_diffuse_white},
       {"Qt settings migrates schema two", schema_two_defaults_hdr_pq_precision},
       {"Qt settings rejects unsupported schema", unsupported_schema_fails_explicitly},

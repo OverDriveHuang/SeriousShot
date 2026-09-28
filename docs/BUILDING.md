@@ -1,6 +1,6 @@
 # 从源码构建 SeriousShot
 
-最后更新：2026-09-28 16:33:58 CST
+最后更新：2026-09-29 00:09:00 CST
 
 [返回产品介绍](../README.md)
 
@@ -31,7 +31,7 @@ python scripts/install-windows-qt.py
 ./scripts/build-windows.ps1
 ```
 
-Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 的运行兼容仍需在目标系统确认；Mac 共享测试通过不能替代 Windows 原生验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试将设置中的 Windows Capture Gain（“Windows scRGB 增益”）改为 0.5；默认 1.0，不需要对所有 Windows 10 统一修改。已测试的 Windows 11 环境未见这一现象。
+Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 的运行兼容仍需在目标系统确认；Mac 共享测试通过不能替代 Windows 原生验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试开启设置中的“Windows 10 截图亮度兼容”。总开关默认关闭，全选时启用 scRGB gain 和“HDR 捕获不使用 SDRWhiteLevel 归一化”两个独立子项，只启用其一时显示半选；scRGB gain 可编辑，预设 0.5，仅启用该子项后生效。应按实际截图结果判断是否开启，不能推断所有 Windows 10 都需要调整。已测试的 Windows 11 环境未见上述现象。
 
 ## 代码与分发
 

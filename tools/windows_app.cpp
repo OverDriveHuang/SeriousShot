@@ -188,7 +188,7 @@ class WindowsApplicationShell {
       settings_window_->set_window_activation_port(&activation_);
       settings_window_->set_applied([this](const SettingsSnapshot& settings){
         settings_=settings;
-        if(capture_) capture_->set_gain(settings_.windows_scrgb_gain);
+        if(capture_) capture_->set_capture_options(windows_capture_options_from_settings(settings_));
         diagnostics_->set_detailed_logging(settings_.detailed_logging);
         update_capture_action_text();
       });
@@ -262,7 +262,7 @@ class WindowsApplicationShell {
       overlays_.push_back({display.snapshot.id,host,presenter.value()});
     }
     catalog_=std::make_shared<WindowsDisplayCatalogPort>(displays);
-    capture_=std::make_shared<WindowsCapturePort>(displays,settings_.windows_scrgb_gain,diagnostics_);
+    capture_=std::make_shared<WindowsCapturePort>(displays,windows_capture_options_from_settings(settings_),diagnostics_);
     preview_=std::make_shared<MultiDisplayPreviewPresenterPort>(std::move(endpoints));
     session_=std::make_shared<CaptureSession>(catalog_,capture_,preview_,window_catalog_,diagnostics_);
     session_->begin({session,OperationId{1},FrameId{session.value},std::move(targets),initial},

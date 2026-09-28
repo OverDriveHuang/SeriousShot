@@ -21,11 +21,14 @@
 #include <QLineEdit>
 #include <QLocale>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <algorithm>
 #include <string>
@@ -39,6 +42,15 @@ QLabel* shortcut_value(const QString& value, QWidget* parent) {
   label->setTextInteractionFlags(Qt::TextSelectableByMouse);
   return label;
 }
+
+#ifdef Q_OS_WIN
+QString windows_gain_text(double gain) {
+  auto text = QString::number(gain, 'f', 12);
+  while (text.endsWith(QLatin1Char('0'))) text.chop(1);
+  if (text.endsWith(QLatin1Char('.'))) text += QLatin1Char('0');
+  return text;
+}
+#endif
 
 }  // namespace
 
@@ -62,7 +74,7 @@ SettingsWindow::SettingsWindow(
   setWindowFlag(Qt::WindowStaysOnTopHint, false);
 #ifdef Q_OS_WIN
   setMinimumSize(800, 780);
-  resize(860, 820);
+  resize(860, 850);
 #else
   setMinimumSize(800, 730);
   resize(860, 770);
@@ -213,17 +225,6 @@ SettingsWindow::SettingsWindow(
       QStringLiteral("只影响 HDR 的 Display P3 PQ 输出；SDR 输出不使用此值。"));
   general_form_->addRow(
       QStringLiteral("Diffuse White 在 PQ 中的亮度"), pq_diffuse_white_combo_);
-#ifdef Q_OS_WIN
-  windows_scrgb_gain_edit_ = new QLineEdit(general);
-  windows_scrgb_gain_edit_->setObjectName(QStringLiteral("windowsScRgbGainEdit"));
-  auto* gain_validator = new QDoubleValidator(0.0, 3.0, 12, windows_scrgb_gain_edit_);
-  gain_validator->setLocale(QLocale::c());
-  gain_validator->setNotation(QDoubleValidator::StandardNotation);
-  windows_scrgb_gain_edit_->setValidator(gain_validator);
-  windows_scrgb_gain_edit_->setToolTip(QStringLiteral("Windows 截图源的 scRGB RGB 增益（0–3）；默认 1.0。"));
-  windows_scrgb_gain_edit_->installEventFilter(this);
-  general_form_->addRow(QStringLiteral("Windows scRGB 增益"), windows_scrgb_gain_edit_);
-#endif
   hdr_pq_precision_combo_ = new QComboBox(general);
   hdr_pq_precision_combo_->setObjectName(QStringLiteral("hdrPqPrecisionCombo"));
   hdr_pq_precision_combo_->setMinimumWidth(390);
@@ -256,10 +257,74 @@ SettingsWindow::SettingsWindow(
       QStringLiteral("同时用于 SDR 底图与增益图 JPEG；纯 SDR 内容仅生成普通 JPEG。"));
   general_form_->addRow(
       QStringLiteral("JPEG 质量"), ultra_hdr_jpeg_quality_combo_);
+#ifdef Q_OS_WIN
+  auto* compatibility_row = new QWidget(general);
+  auto* compatibility_layout = new QHBoxLayout(compatibility_row);
+  compatibility_layout->setContentsMargins(0, 0, 0, 0);
+  windows_capture_compatibility_check_ = new QCheckBox(
+      QStringLiteral("Windows 10 截图亮度兼容"), compatibility_row);
+  windows_capture_compatibility_check_->setObjectName(
+      QStringLiteral("windowsCaptureCompatibilityCheckBox"));
+  windows_capture_compatibility_check_->setTristate(true);
+  compatibility_layout->addWidget(windows_capture_compatibility_check_);
+  auto* compatibility_help = new QLabel(
+      QStringLiteral("部分 Windows 10 版本截图亮度异常时可尝试开启，默认关闭。"),
+      compatibility_row);
+  compatibility_help->setObjectName(QStringLiteral("windowsCaptureCompatibilityHelp"));
+  auto help_palette = compatibility_help->palette();
+  auto help_color = help_palette.color(QPalette::WindowText);
+  help_color.setAlphaF(0.68f);
+  help_palette.setColor(QPalette::WindowText, help_color);
+  compatibility_help->setPalette(help_palette);
+  compatibility_layout->addWidget(compatibility_help);
+  compatibility_layout->addStretch(1);
+  general_form_->addRow(compatibility_row);
+
+  auto* compatibility_options = new QWidget(general);
+  auto* options_layout = new QHBoxLayout(compatibility_options);
+  options_layout->setContentsMargins(24, 0, 0, 0);
+  windows_capture_gain_check_ = new QCheckBox(
+      QStringLiteral("scRGB gain ="), compatibility_options);
+  windows_capture_gain_check_->setObjectName(QStringLiteral("windowsCaptureGainCheckBox"));
+  options_layout->addWidget(windows_capture_gain_check_);
+  windows_scrgb_gain_edit_ = new QLineEdit(compatibility_options);
+  windows_scrgb_gain_edit_->setObjectName(QStringLiteral("windowsScRgbGainEdit"));
+  windows_scrgb_gain_edit_->setFixedWidth(110);
+  auto* gain_validator = new QDoubleValidator(0.0, 3.0, 12, windows_scrgb_gain_edit_);
+  gain_validator->setLocale(QLocale::c());
+  gain_validator->setNotation(QDoubleValidator::StandardNotation);
+  windows_scrgb_gain_edit_->setValidator(gain_validator);
+  windows_scrgb_gain_edit_->setToolTip(QStringLiteral("Windows 截图源的 scRGB RGB 增益（0–3）；默认 0.5。"));
+  windows_scrgb_gain_edit_->installEventFilter(this);
+  options_layout->addWidget(windows_scrgb_gain_edit_);
+  options_layout->addSpacing(18);
+  windows_capture_bypass_sdr_white_check_ = new QCheckBox(
+      QStringLiteral("HDR 捕获不使用 SDRWhiteLevel 归一化。"), compatibility_options);
+  windows_capture_bypass_sdr_white_check_->setObjectName(
+      QStringLiteral("windowsCaptureBypassSdrWhiteCheckBox"));
+  options_layout->addWidget(windows_capture_bypass_sdr_white_check_);
+  options_layout->addStretch(1);
+  general_form_->addRow(compatibility_options);
+#endif
   general_form_->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
   update_general_label_width();
   general_section->addWidget(general);
+#ifdef Q_OS_WIN
+  // Keep the controls anchored when format-specific rows change height.
+  general_section->addStretch(1);
+  auto* general_scroll_content = new QWidget(this);
+  general_scroll_content->setLayout(general_section);
+  auto* general_scroll = new QScrollArea(this);
+  general_scroll->setObjectName(QStringLiteral("generalSettingsScrollArea"));
+  general_scroll->setWidgetResizable(true);
+  general_scroll->setFrameShape(QFrame::NoFrame);
+  general_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  general_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  general_scroll->setWidget(general_scroll_content);
+  root->addWidget(general_scroll, 1);
+#else
   root->addLayout(general_section);
+#endif
 
   auto* shortcuts_section = new QVBoxLayout();
   shortcuts_section->setContentsMargins(0, 0, 0, 0);
@@ -286,7 +351,9 @@ SettingsWindow::SettingsWindow(
   status_label_->setWordWrap(true);
   status_label_->hide();
   root->addWidget(status_label_);
+#ifndef Q_OS_WIN
   root->addStretch(1);
+#endif
 
   auto* identity_row = new QHBoxLayout();
   const auto source_time = QDateTime::fromString(
@@ -353,6 +420,22 @@ SettingsWindow::SettingsWindow(
 #ifdef Q_OS_WIN
   connect(windows_scrgb_gain_edit_, &QLineEdit::editingFinished, this,
       [this] { persist_windows_scrgb_gain(); });
+  connect(windows_capture_compatibility_check_, &QCheckBox::clicked, this,
+      [this] {
+        const bool all_enabled = snapshot_.windows_capture_gain_enabled &&
+            snapshot_.windows_capture_bypass_sdr_white_enabled;
+        persist_windows_capture_compatibility(!all_enabled, !all_enabled);
+      });
+  connect(windows_capture_gain_check_, &QCheckBox::clicked, this,
+      [this](bool checked) {
+        persist_windows_capture_compatibility(
+            checked, snapshot_.windows_capture_bypass_sdr_white_enabled);
+      });
+  connect(windows_capture_bypass_sdr_white_check_, &QCheckBox::clicked, this,
+      [this](bool checked) {
+        persist_windows_capture_compatibility(
+            snapshot_.windows_capture_gain_enabled, checked);
+      });
 #endif
   connect(hdr_pq_precision_combo_, &QComboBox::currentIndexChanged, this,
       [this] { persist_hdr_pq_precision(); });
@@ -400,11 +483,21 @@ void SettingsWindow::restore_controls_from_snapshot() {
   const QSignalBlocker format_blocker{save_format_combo_};
   const QSignalBlocker diffuse_white_blocker{pq_diffuse_white_combo_};
 #ifdef Q_OS_WIN
+  const QSignalBlocker compatibility_blocker{windows_capture_compatibility_check_};
+  const QSignalBlocker gain_check_blocker{windows_capture_gain_check_};
+  const QSignalBlocker bypass_blocker{windows_capture_bypass_sdr_white_check_};
+  const bool gain_enabled = snapshot_.windows_capture_gain_enabled;
+  const bool bypass_enabled = snapshot_.windows_capture_bypass_sdr_white_enabled;
+  windows_capture_compatibility_check_->setCheckState(
+      gain_enabled && bypass_enabled ? Qt::Checked :
+      gain_enabled || bypass_enabled ? Qt::PartiallyChecked : Qt::Unchecked);
+  windows_capture_gain_check_->setChecked(gain_enabled);
+  windows_capture_bypass_sdr_white_check_->setChecked(bypass_enabled);
+  windows_capture_gain_check_->setEnabled(gain_enabled || bypass_enabled);
+  windows_capture_bypass_sdr_white_check_->setEnabled(gain_enabled || bypass_enabled);
+  windows_scrgb_gain_edit_->setEnabled(gain_enabled);
   const QSignalBlocker gain_blocker{windows_scrgb_gain_edit_};
-  auto gain_text = QString::number(snapshot_.windows_scrgb_gain, 'g', 12);
-  if (!gain_text.contains(QLatin1Char('.')) && !gain_text.contains(QLatin1Char('e')))
-    gain_text += QStringLiteral(".0");
-  windows_scrgb_gain_edit_->setText(gain_text);
+  windows_scrgb_gain_edit_->setText(windows_gain_text(snapshot_.windows_scrgb_gain));
 #endif
   const QSignalBlocker precision_blocker{hdr_pq_precision_combo_};
   const QSignalBlocker ultra_hdr_quality_blocker{ultra_hdr_jpeg_quality_combo_};
@@ -495,6 +588,24 @@ void SettingsWindow::update_general_label_width() {
 
 bool SettingsWindow::eventFilter(QObject* watched, QEvent* event) {
 #ifdef Q_OS_WIN
+  const bool mouse_button_event = event->type() == QEvent::MouseButtonPress ||
+      event->type() == QEvent::MouseButtonRelease;
+  QWidget* click_target = qobject_cast<QWidget*>(watched);
+  if (mouse_button_event && watched == windowHandle()) {
+    click_target = childAt(static_cast<QMouseEvent*>(event)->position().toPoint());
+  }
+  const bool compatibility_click = click_target == windows_capture_compatibility_check_ ||
+      click_target == windows_capture_gain_check_ ||
+      click_target == windows_capture_bypass_sdr_white_check_;
+  const bool left_compatibility_click = compatibility_click && mouse_button_event &&
+      static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton;
+  if (left_compatibility_click && event->type() == QEvent::MouseButtonPress) {
+    // Focus loss occurs before clicked. Fold pending gain text into the click's patch.
+    suppress_gain_editing_finished_ = true;
+  }
+  if (left_compatibility_click && event->type() == QEvent::MouseButtonRelease) {
+    QTimer::singleShot(0, this, [this] { suppress_gain_editing_finished_ = false; });
+  }
   if (watched == windows_scrgb_gain_edit_ && event->type() == QEvent::KeyPress &&
       static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
     restore_controls_from_snapshot();
@@ -613,22 +724,40 @@ void SettingsWindow::persist_pq_diffuse_white() {
 
 void SettingsWindow::persist_windows_scrgb_gain() {
 #ifdef Q_OS_WIN
+  if (loading_controls_ || suppress_gain_editing_finished_) return;
+  persist_windows_capture_compatibility(
+      snapshot_.windows_capture_gain_enabled,
+      snapshot_.windows_capture_bypass_sdr_white_enabled);
+#endif
+}
+
+void SettingsWindow::persist_windows_capture_compatibility(
+    bool gain_enabled, bool bypass_sdr_white_enabled) {
+#ifdef Q_OS_WIN
   if (loading_controls_) return;
   bool parsed = false;
-  const double requested = QLocale::c().toDouble(windows_scrgb_gain_edit_->text(), &parsed);
+  const auto editor_text = windows_scrgb_gain_edit_->text();
+  double requested = QLocale::c().toDouble(editor_text, &parsed);
+  if (editor_text == windows_gain_text(snapshot_.windows_scrgb_gain)) {
+    requested = snapshot_.windows_scrgb_gain;
+    parsed = true;
+  }
   if (!parsed || !valid_windows_scrgb_gain(requested)) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("Windows scRGB 增益须为 0 至 3 的有限小数。"), true);
+    show_status(QStringLiteral("Windows 10 截图亮度兼容：scRGB gain 须为 0 至 3 的有限小数。"), true);
     return;
   }
-  if (requested == snapshot_.windows_scrgb_gain) return;
-  const auto changed = SettingsWorkflow::change_windows_scrgb_gain(requested, settings_store_);
+  if (gain_enabled == snapshot_.windows_capture_gain_enabled &&
+      bypass_sdr_white_enabled == snapshot_.windows_capture_bypass_sdr_white_enabled &&
+      requested == snapshot_.windows_scrgb_gain) return;
+  const auto changed = SettingsWorkflow::change_windows_capture_compatibility(
+      gain_enabled, bypass_sdr_white_enabled, requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("Windows scRGB 增益更新失败。"), true);
+    show_status(QStringLiteral("Windows 10 截图亮度兼容设置更新失败。"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("Windows scRGB 增益已更新。"));
+  finish_saved_change(QStringLiteral("Windows 10 截图亮度兼容设置已更新。"));
 #endif
 }
 

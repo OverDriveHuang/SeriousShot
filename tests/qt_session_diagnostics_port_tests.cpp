@@ -1,4 +1,5 @@
 #include "platform/qt/qt_session_diagnostics_port.hpp"
+#include "platform/windows/windows_capture_diagnostics.hpp"
 #include "test_support.hpp"
 
 #include <QDir>
@@ -195,9 +196,47 @@ void hot_switch_is_safe_while_worker_records() {
   HDRSHOT_CHECK(bytes.count('\n') == 121);
   HDRSHOT_CHECK(bytes.count("logging mode=") == 20);
 }
+void capture_compatibility_fields_survive_actual_sink() {
+  QTemporaryDir dir;
+  QtSessionDiagnosticsPort log(dir.path().toStdString());
+  HDRSHOT_CHECK(log.start(build,"Windows").has_value());
+  const auto before=read(log.exact_path());
+  auto write_capture=[&](bool g,bool b,bool hdr) {
+    const WindowsCaptureOptions options{g,b,0.5};
+    const float normal=hdr?static_cast<float>(80.0/204.0):1.0F;
+    const auto selected=resolve_capture_adjustment(options,hdr,normal);
+    HDRSHOT_CHECK(selected.has_value());
+    record_capture_adjustment_diagnostics(&log,SessionId{7},OperationId{9},42,
+        options,selected.value(),204.0,normal,hdr);
+  };
+  write_capture(true,true,true);
+  HDRSHOT_CHECK(read(log.exact_path())==before);
+  log.set_detailed_logging(true);
+  for (bool g : {false,true}) for (bool b : {false,true}) write_capture(g,b,true);
+  write_capture(true,true,false);
+  const auto bytes=read(log.exact_path());
+  HDRSHOT_CHECK(bytes.count("windows.color.capture.options")==5);
+  HDRSHOT_CHECK(bytes.count("windows.color.capture.white_applied")==5);
+  HDRSHOT_CHECK(bytes.contains("source=gain_on"));
+  HDRSHOT_CHECK(bytes.contains("source=gain_off"));
+  HDRSHOT_CHECK(bytes.contains("reason=white_bypass_on"));
+  HDRSHOT_CHECK(bytes.contains("reason=white_bypass_off"));
+  HDRSHOT_CHECK(bytes.contains("diffuseWhite=204"));
+  HDRSHOT_CHECK(bytes.contains("scale=0.392156"));
+  HDRSHOT_CHECK(bytes.contains("scale=0.5"));
+  HDRSHOT_CHECK(bytes.contains("scale=1 "));
+  HDRSHOT_CHECK(bytes.contains("displayId=42"));
+  HDRSHOT_CHECK(bytes.contains("session=7"));
+  HDRSHOT_CHECK(bytes.contains("op=9"));
+  const WindowsCaptureOptions tiny{true,true,1e-8};
+  record_capture_adjustment_diagnostics(&log,SessionId{7},OperationId{9},42,tiny,
+      resolve_capture_adjustment(tiny,true,1.0F).value(),204.0,1.0F,true);
+  HDRSHOT_CHECK(read(log.exact_path()).contains("scale=1e-08"));
+}
 }  // namespace
 int main() {
   return hdrshot::test::run({
+      {"capture compatibility actual detailed sink", capture_compatibility_fields_survive_actual_sink},
       {"detailed hot switch, source origin and privacy", detailed_mode_hot_switch_preserves_file_and_privacy},
       {"hot switch during background writes", hot_switch_is_safe_while_worker_records},
       {"session rotation and safe targets", starts_rotate_only_owned_logs},

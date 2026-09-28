@@ -18,6 +18,13 @@ if(APPLE)
 endif()
 
 include(CTest)
+if(BUILD_TESTING)
+  # The Windows capture options policy has no OS, Qt, or GPU dependency.
+  add_executable(hdrshot_windows_capture_policy_tests tests/windows_capture_policy_tests.cpp)
+  target_include_directories(hdrshot_windows_capture_policy_tests PRIVATE src tests)
+  target_compile_features(hdrshot_windows_capture_policy_tests PRIVATE cxx_std_20)
+  add_test(NAME hdrshot_windows_capture_policy_tests COMMAND hdrshot_windows_capture_policy_tests)
+endif()
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -1310,4 +1317,14 @@ endif()
 if(APPLE)
   target_link_libraries(hdrshot_macos_metal_presenter PUBLIC hdrshot_macos_linear_storage hdrshot_macos_gpu_source)
   target_link_libraries(hdrshot_macos_export_pixel_processor PUBLIC hdrshot_macos_linear_storage hdrshot_macos_gpu_source)
+endif()
+
+if(WIN32 AND BUILD_TESTING AND HDRSHOT_ENABLE_QT_HOST)
+  # CTest-launched processes need the configured Qt runtime even when their
+  # parent shell/preset does not propagate its amended DLL search path.
+  get_property(_hdrshot_tests DIRECTORY PROPERTY TESTS)
+  foreach(_hdrshot_test IN LISTS _hdrshot_tests)
+    set_property(TEST ${_hdrshot_test} APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endforeach()
 endif()

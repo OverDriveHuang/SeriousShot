@@ -1,4 +1,5 @@
 #include "platform/windows/windows_capture.hpp"
+#include "platform/windows/windows_capture_diagnostics.hpp"
 #include "platform/windows/windows_display_mode.hpp"
 #include "platform/windows/windows_gpu_source.hpp"
 #include "platform/windows/windows_icc_transform.hpp"
@@ -458,7 +459,7 @@ void WindowsDisplayCatalogPort::snapshot_displays(const SnapshotDisplaysRequest&
 struct WindowsCapturePort::Impl {
   std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays;
   std::shared_ptr<DiagnosticsPort> diagnostics;
-  std::atomic<double> gain{1.0};
+  WindowsCaptureOptions options{};
   std::mutex mutex;
   std::map<OperationKey, std::shared_ptr<std::atomic_bool>> cancellations;
   std::vector<std::future<void>> workers;
@@ -467,10 +468,25 @@ WindowsCapturePort::WindowsCapturePort(std::shared_ptr<const std::vector<Windows
     double gain, std::shared_ptr<DiagnosticsPort> diagnostics) : impl_(std::make_unique<Impl>()) {
   impl_->displays=std::move(displays);
   impl_->diagnostics=std::move(diagnostics);
-  if (valid_windows_scrgb_gain(gain)) impl_->gain.store(gain);
+  if (valid_windows_scrgb_gain(gain)) impl_->options={true, false, gain};
+}
+WindowsCapturePort::WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
+    WindowsCaptureOptions options, std::shared_ptr<DiagnosticsPort> diagnostics)
+    : impl_(std::make_unique<Impl>()) {
+  impl_->displays=std::move(displays);
+  impl_->diagnostics=std::move(diagnostics);
+  if (valid_windows_scrgb_gain(options.gain)) impl_->options=options;
 }
 void WindowsCapturePort::set_gain(double gain) {
-  if (valid_windows_scrgb_gain(gain)) impl_->gain.store(gain);
+  if (!valid_windows_scrgb_gain(gain)) return;
+  const std::scoped_lock lock(impl_->mutex);
+  impl_->options.gain=gain;
+  impl_->options.gain_enabled=true;
+}
+void WindowsCapturePort::set_capture_options(WindowsCaptureOptions options) {
+  if (!valid_windows_scrgb_gain(options.gain)) return;
+  const std::scoped_lock lock(impl_->mutex);
+  impl_->options=options;
 }
 WindowsCapturePort::~WindowsCapturePort() {
   { std::scoped_lock lock(impl_->mutex);
@@ -484,15 +500,15 @@ void WindowsCapturePort::capture(const CaptureBatchRequest& request, Completion 
     completion(Result<NativeFrameBatch, Error>::failure(capture_error("invalid_capture_request"))); return;
   }
   const OperationKey key{request.session_id.value, request.operation_id.value};
-  const double frozen_gain = impl_->gain.load();
   const auto flag = std::make_shared<std::atomic_bool>(false);
   std::unique_lock lock(impl_->mutex);
+  const auto frozen_options = impl_->options;
   if (!impl_->cancellations.emplace(key, flag).second) {
     lock.unlock(); completion(Result<NativeFrameBatch, Error>::failure(capture_error("duplicate_operation"))); return;
   }
   std::erase_if(impl_->workers, [](auto& work) { return work.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
   impl_->workers.push_back(std::async(std::launch::async, [request, completion = std::move(completion), flag,
-      native=impl_->displays, diagnostics=impl_->diagnostics, frozen_gain]() mutable {
+      native=impl_->displays, diagnostics=impl_->diagnostics, frozen_options]() mutable {
     const auto perform=[&]() -> Result<NativeFrameBatch,Error> {
     try {
     const auto displays = native ? Result<std::vector<WindowsDisplayInfo>,Error>::success(*native)
@@ -504,18 +520,23 @@ void WindowsCapturePort::capture(const CaptureBatchRequest& request, Completion 
       if (found == displays.value().end()) {
         return Result<NativeFrameBatch, Error>::failure(capture_error("target_display_missing"));
       }
-      futures.push_back(std::async(std::launch::async, [display = *found, flag, diagnostics, frozen_gain] {
+      futures.push_back(std::async(std::launch::async, [display = *found, flag, diagnostics,
+          frozen_options, session_id=request.session_id, operation_id=request.operation_id] {
         if (display.advanced_color_mode == 0 && !display.icc_profile)
           return Result<NativeCaptureFrame, Error>::failure(capture_error("legacy_profile_unavailable"));
-        record_diagnostic_stage(diagnostics.get(), {}, {}, "windows.color", "capture.gain", "success",
-            {{"displayId", std::to_string(display.snapshot.id.value)},
-             {"scale", std::to_string(frozen_gain)}});
         auto raw = windows_capture_display(display, flag.get(), 5000, diagnostics.get());
         if (!raw) return Result<NativeCaptureFrame, Error>::failure(raw.error());
         const auto scale = WindowsColor::scrgb_to_edr_scale(display.source_white);
         if (!scale) return Result<NativeCaptureFrame, Error>::failure(scale.error());
+        const auto adjustment=resolve_capture_adjustment(frozen_options,
+            display.source_white.hdr_active, scale.value());
+        if (!adjustment) return Result<NativeCaptureFrame, Error>::failure(adjustment.error());
+        record_capture_adjustment_diagnostics(diagnostics.get(), session_id, operation_id,
+            display.snapshot.id.value, frozen_options, adjustment.value(),
+            display.source_white.sdr_white_nits, scale.value(), display.source_white.hdr_active);
         auto linear = windows_normalize_scrgb_source(raw.value().size_px,
-            std::move(raw.value().rgba_scrgb), scale.value(), frozen_gain,
+            std::move(raw.value().rgba_scrgb), adjustment.value().white_scale,
+            adjustment.value().effective_gain,
             display.advanced_color_mode == 0 ? display.icc_profile : nullptr);
         if (!linear) return Result<NativeCaptureFrame, Error>::failure(linear.error());
         record_diagnostic_stage(diagnostics.get(), {}, {}, "windows.color", "capture.normalize", "success",

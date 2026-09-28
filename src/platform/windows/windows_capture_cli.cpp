@@ -154,7 +154,7 @@ int run_windows_capture_cli(QApplication &app, const CaptureCommand &command) {
   }
 
   auto capture = std::make_shared<WindowsCapturePort>(
-      displays, settings.value().windows_scrgb_gain, log);
+      displays, windows_capture_options_from_settings(settings.value()), log);
   HeadlessCapture session(catalog, capture);
   auto snapshot = wait_for_capture<ExportSnapshot>(
       app,

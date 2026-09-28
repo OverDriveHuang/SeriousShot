@@ -1,5 +1,6 @@
 #pragma once
 #include "platform/windows/windows_color.hpp"
+#include "platform/windows/windows_capture_policy.hpp"
 #include "platform/windows/windows_display_mode.hpp"
 #include "ports/capture_preview_ports.hpp"
 #include <atomic>
@@ -9,6 +10,12 @@
 namespace hdrshot {
 class DiagnosticsPort;
 class WindowsIccProfile;
+[[nodiscard]] inline WindowsCaptureOptions windows_capture_options_from_settings(
+    const SettingsSnapshot& settings) noexcept {
+  return {settings.windows_capture_gain_enabled,
+          settings.windows_capture_bypass_sdr_white_enabled,
+          settings.windows_scrgb_gain};
+}
 struct WindowsDisplayInfo {
   DisplaySnapshot snapshot;
   std::uintptr_t monitor{};
@@ -56,9 +63,12 @@ class WindowsCapturePort final : public CapturePort {
  public:
   explicit WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays = {},
       double gain = 1.0, std::shared_ptr<DiagnosticsPort> diagnostics = {});
+  WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
+      WindowsCaptureOptions options, std::shared_ptr<DiagnosticsPort> diagnostics = {});
   ~WindowsCapturePort() override;
   // Applied settings affect only captures started after this call.
   void set_gain(double gain);
+  void set_capture_options(WindowsCaptureOptions options);
   void capture(const CaptureBatchRequest& request, Completion completion) override;
   void cancel(SessionId session_id, OperationId operation_id) override;
  private:

@@ -159,7 +159,9 @@ struct SettingsSnapshot {
   bool initial_settings_presented{};
   bool detailed_logging{};
   std::string analyzer_preferences_json{}; // UI options only, no pixels/masks/sample positions
-  double windows_scrgb_gain{1.0}; // Source normalization, captured once per Windows frame.
+  double windows_scrgb_gain{1.0}; // Windows store supplies its own new-install preference.
+  bool windows_capture_gain_enabled{false};
+  bool windows_capture_bypass_sdr_white_enabled{false};
 
   friend bool operator==(const SettingsSnapshot&, const SettingsSnapshot&) = default;
 };
@@ -177,6 +179,8 @@ struct SettingsPatch {
   std::optional<bool> detailed_logging;
   std::optional<std::string> analyzer_preferences_json;
   std::optional<double> windows_scrgb_gain;
+  std::optional<bool> windows_capture_gain_enabled;
+  std::optional<bool> windows_capture_bypass_sdr_white_enabled;
 };
 
 [[nodiscard]] inline bool valid_windows_scrgb_gain(const double gain) noexcept {

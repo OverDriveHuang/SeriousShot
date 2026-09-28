@@ -55,6 +55,7 @@ class SettingsWindow final : public QWidget {
   void persist_save_format();
   void persist_pq_diffuse_white();
   void persist_windows_scrgb_gain();
+  void persist_windows_capture_compatibility(bool gain_enabled, bool bypass_sdr_white_enabled);
   void persist_hdr_pq_precision();
   void persist_ultra_hdr_jpeg_quality();
   void persist_enter_completion_action();
@@ -82,6 +83,9 @@ class SettingsWindow final : public QWidget {
   QComboBox* save_format_combo_{};
   QComboBox* pq_diffuse_white_combo_{};
   QLineEdit* windows_scrgb_gain_edit_{};
+  QCheckBox* windows_capture_compatibility_check_{};
+  QCheckBox* windows_capture_gain_check_{};
+  QCheckBox* windows_capture_bypass_sdr_white_check_{};
   QComboBox* hdr_pq_precision_combo_{};
   QComboBox* ultra_hdr_jpeg_quality_combo_{};
   QFormLayout* general_form_{};
@@ -90,6 +94,7 @@ class SettingsWindow final : public QWidget {
   QKeySequence hotkey_before_recording_;
   bool recording_hotkey_{};
   bool loading_controls_{};
+  bool suppress_gain_editing_finished_{};
   QtWindowActivationPort* activation_{};
 };
 

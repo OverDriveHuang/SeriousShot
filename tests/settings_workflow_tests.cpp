@@ -59,6 +59,11 @@ class RecordingSettingsStore final : public SettingsStorePort {
       snapshot.pq_diffuse_white = *patch.pq_diffuse_white;
     }
     if (patch.windows_scrgb_gain) snapshot.windows_scrgb_gain = *patch.windows_scrgb_gain;
+    if (patch.windows_capture_gain_enabled)
+      snapshot.windows_capture_gain_enabled = *patch.windows_capture_gain_enabled;
+    if (patch.windows_capture_bypass_sdr_white_enabled)
+      snapshot.windows_capture_bypass_sdr_white_enabled =
+          *patch.windows_capture_bypass_sdr_white_enabled;
     if (patch.hdr_pq_precision.has_value()) {
       snapshot.hdr_pq_precision = *patch.hdr_pq_precision;
     }
@@ -213,6 +218,43 @@ void windows_gain_is_bounded_and_independent() {
   }
 }
 
+void windows_capture_compatibility_saves_one_complete_patch() {
+  RecordingSettingsStore settings;
+  const auto saved = SettingsWorkflow::change_windows_capture_compatibility(
+      true, true, 0.5, settings);
+  HDRSHOT_CHECK(saved.has_value());
+  HDRSHOT_CHECK(saved.value().settings_revision == 5);
+  HDRSHOT_CHECK(settings.patches.size() == 1U);
+  const auto& patch = settings.patches.front();
+  HDRSHOT_CHECK(patch.windows_capture_gain_enabled == true);
+  HDRSHOT_CHECK(patch.windows_capture_bypass_sdr_white_enabled == true);
+  HDRSHOT_CHECK(patch.windows_scrgb_gain == 0.5);
+  HDRSHOT_CHECK(settings.snapshot.windows_capture_gain_enabled);
+  HDRSHOT_CHECK(settings.snapshot.windows_capture_bypass_sdr_white_enabled);
+  HDRSHOT_CHECK(settings.snapshot.windows_scrgb_gain == 0.5);
+  HDRSHOT_CHECK(!patch.pq_diffuse_white);
+}
+
+void windows_capture_compatibility_rejects_bad_gain_and_propagates_save_error() {
+  RecordingSettingsStore settings;
+  for (const double bad : {-0.01, 3.01, std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::quiet_NaN()}) {
+    const auto result = SettingsWorkflow::change_windows_capture_compatibility(
+        true, false, bad, settings);
+    HDRSHOT_CHECK(!result);
+    HDRSHOT_CHECK(result.error().code == ErrorCode::invalid_input);
+  }
+  HDRSHOT_CHECK(settings.patches.empty());
+  settings.save_error = ErrorCode::permission_denied;
+  const auto result = SettingsWorkflow::change_windows_capture_compatibility(
+      false, true, 1.274008, settings);
+  HDRSHOT_CHECK(!result);
+  HDRSHOT_CHECK(result.error().code == ErrorCode::permission_denied);
+  HDRSHOT_CHECK(settings.patches.size() == 1U);
+  HDRSHOT_CHECK(!settings.snapshot.windows_capture_gain_enabled);
+  HDRSHOT_CHECK(!settings.snapshot.windows_capture_bypass_sdr_white_enabled);
+}
+
 void hdr_pq_precision_persists_independently() {
   RecordingSettingsStore settings;
   const auto result = SettingsWorkflow::change_hdr_pq_precision(
@@ -306,6 +348,8 @@ int main() {
       {"invalid values do not touch ports", invalid_values_do_not_touch_ports},
       {"diffuse white persists independently", diffuse_white_persists_independently},
       {"Windows gain validation and independent persistence", windows_gain_is_bounded_and_independent},
+      {"Windows compatibility saves one complete patch", windows_capture_compatibility_saves_one_complete_patch},
+      {"Windows compatibility validates and reports save failure", windows_capture_compatibility_rejects_bad_gain_and_propagates_save_error},
       {"HDR PQ precision persists independently", hdr_pq_precision_persists_independently},
       {"invalid HDR PQ precision is rejected", invalid_hdr_pq_precision_is_rejected},
       {"Ultra HDR format and quality persist", ultra_hdr_format_and_quality_persist_independently},

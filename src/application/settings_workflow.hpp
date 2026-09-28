@@ -33,6 +33,10 @@ class SettingsWorkflow {
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_windows_scrgb_gain(
       double gain, SettingsStorePort& settings_store);
 
+  [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_windows_capture_compatibility(
+      bool gain_enabled, bool bypass_sdr_white_enabled, double gain,
+      SettingsStorePort& settings_store);
+
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_hdr_pq_precision(
       HdrPqPrecision hdr_pq_precision,
       SettingsStorePort& settings_store);

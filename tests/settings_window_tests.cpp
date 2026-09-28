@@ -8,6 +8,8 @@
 #include <QDateTime>
 #include <QUrl>
 #include <QEvent>
+#include <QFont>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QKeyEvent>
@@ -19,7 +21,11 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QPalette>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QWindow>
 
+#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -31,12 +37,14 @@ class MemorySettingsStore final : public SettingsStorePort {
  public:
   SettingsSnapshot snapshot{5, 0, "Command+Option+8", "/Pictures/SeriousShot"};
   bool fail_next_save{};
+  int save_attempts{};
 
   Result<SettingsSnapshot, Error> load() override {
     return Result<SettingsSnapshot, Error>::success(snapshot);
   }
 
   Result<SettingsReceipt, Error> save(const SettingsPatch& patch) override {
+    ++save_attempts;
     if (fail_next_save) {
       fail_next_save = false;
       return Result<SettingsReceipt, Error>::failure(Error{
@@ -60,6 +68,11 @@ class MemorySettingsStore final : public SettingsStorePort {
       snapshot.pq_diffuse_white = *patch.pq_diffuse_white;
     }
     if (patch.windows_scrgb_gain) snapshot.windows_scrgb_gain = *patch.windows_scrgb_gain;
+    if (patch.windows_capture_gain_enabled)
+      snapshot.windows_capture_gain_enabled = *patch.windows_capture_gain_enabled;
+    if (patch.windows_capture_bypass_sdr_white_enabled)
+      snapshot.windows_capture_bypass_sdr_white_enabled =
+          *patch.windows_capture_bypass_sdr_white_enabled;
     if (patch.hdr_pq_precision.has_value()) {
       snapshot.hdr_pq_precision = *patch.hdr_pq_precision;
     }
@@ -366,54 +379,152 @@ void completion_actions_and_precision_apply_immediately() {
   HDRSHOT_CHECK(fixture.store.snapshot.hdr_pq_precision == HdrPqPrecision::bits_16);
 }
 
-void windows_gain_is_visible_and_transactional() {
+void windows_capture_compatibility_controls_are_transactional() {
 #ifdef Q_OS_WIN
   Fixture fixture;
+  fixture.store.snapshot.windows_capture_gain_enabled = false;
+  fixture.store.snapshot.windows_capture_bypass_sdr_white_enabled = false;
+  fixture.store.snapshot.windows_scrgb_gain = 0.5;
+  int notifications = 0;
+  fixture.window.set_applied([&](const SettingsSnapshot&) { ++notifications; });
   fixture.window.reload_and_show();
   QApplication::processEvents();
   auto* gain = fixture.window.findChild<QLineEdit*>("windowsScRgbGainEdit");
-  auto* white = fixture.window.findChild<QComboBox*>("pqDiffuseWhiteCombo");
-  auto* format = fixture.window.findChild<QComboBox*>("saveFormatCombo");
-  auto* group = fixture.window.findChild<QGroupBox*>("generalSettingsContainer");
-  HDRSHOT_CHECK(gain && white && format && group);
-  auto* form = qobject_cast<QFormLayout*>(group->layout());
-  HDRSHOT_CHECK(form);
-  int white_row = -1, gain_row = -1;
-  QFormLayout::ItemRole role{};
-  form->getWidgetPosition(white, &white_row, &role);
-  form->getWidgetPosition(gain, &gain_row, &role);
-  HDRSHOT_CHECK(gain_row == white_row + 1);
-  HDRSHOT_CHECK(gain->isVisible());
-  HDRSHOT_CHECK(gain->text() == "1.0");
-  format->setCurrentIndex(format->findData(static_cast<int>(SaveFormat::ultra_hdr_jpeg)));
-  QApplication::processEvents();
-  HDRSHOT_CHECK(gain->isVisible());
-  HDRSHOT_CHECK(!white->isVisible());
-  const auto prior_revision = fixture.store.snapshot.revision;
-  gain->setFocus();
-  gain->setText("0.");
-  QKeyEvent digit(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, QStringLiteral("5"));
-  QApplication::sendEvent(gain, &digit);
+  auto* parent = fixture.window.findChild<QCheckBox*>(
+      "windowsCaptureCompatibilityCheckBox");
+  auto* gain_check = fixture.window.findChild<QCheckBox*>(
+      "windowsCaptureGainCheckBox");
+  auto* bypass = fixture.window.findChild<QCheckBox*>(
+      "windowsCaptureBypassSdrWhiteCheckBox");
+  auto* help = fixture.window.findChild<QLabel*>(
+      "windowsCaptureCompatibilityHelp");
+  HDRSHOT_CHECK(gain && parent && gain_check && bypass && help);
+  HDRSHOT_CHECK(gain_check->text() == QStringLiteral("scRGB gain ="));
+  HDRSHOT_CHECK(help->text() == QStringLiteral(
+      "部分 Windows 10 版本截图亮度异常时可尝试开启，默认关闭。"));
+  HDRSHOT_CHECK(parent->checkState() == Qt::Unchecked);
+  HDRSHOT_CHECK(!gain_check->isEnabled() && !bypass->isEnabled() && !gain->isEnabled());
   HDRSHOT_CHECK(gain->text() == "0.5");
-  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.0);
-  format->setFocus();
-  QApplication::processEvents();
+
+  const auto click_once = [&](QCheckBox* control) {
+    const auto saves = fixture.store.save_attempts;
+    const auto notices = notifications;
+    control->click();
+    HDRSHOT_CHECK(fixture.store.save_attempts == saves + 1);
+    HDRSHOT_CHECK(notifications == notices + 1);
+  };
+  click_once(parent);
+  HDRSHOT_CHECK(parent->checkState() == Qt::Checked);
+  HDRSHOT_CHECK(gain_check->isChecked() && bypass->isChecked());
+  HDRSHOT_CHECK(gain_check->isEnabled() && bypass->isEnabled() && gain->isEnabled());
+  click_once(gain_check);
+  HDRSHOT_CHECK(parent->checkState() == Qt::PartiallyChecked);
+  HDRSHOT_CHECK(!gain_check->isChecked() && bypass->isChecked() && !gain->isEnabled());
+  click_once(gain_check);
+  HDRSHOT_CHECK(parent->checkState() == Qt::Checked);
+  click_once(bypass);
+  HDRSHOT_CHECK(parent->checkState() == Qt::PartiallyChecked);
+  click_once(gain_check);
+  HDRSHOT_CHECK(parent->checkState() == Qt::Unchecked);
+  HDRSHOT_CHECK(!gain_check->isEnabled() && !bypass->isEnabled());
+  click_once(parent);
+  HDRSHOT_CHECK(parent->checkState() == Qt::Checked);
+  click_once(parent);
+  HDRSHOT_CHECK(parent->checkState() == Qt::Unchecked);
   HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 0.5);
-  HDRSHOT_CHECK(fixture.store.snapshot.revision == prior_revision + 1);
+
+  fixture.store.snapshot.windows_capture_gain_enabled = true;
+  fixture.store.snapshot.windows_capture_bypass_sdr_white_enabled = false;
+  fixture.window.reload_and_show();
+  HDRSHOT_CHECK(parent->checkState() == Qt::PartiallyChecked);
+  click_once(parent);
+  HDRSHOT_CHECK(parent->checkState() == Qt::Checked);
+  HDRSHOT_CHECK(gain_check->isChecked() && bypass->isChecked());
+
   gain->setFocus();
-  gain->setText("nan");
-  format->setFocus();
+  gain->setText("1.0");
+  gain->clearFocus();
   QApplication::processEvents();
-  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 0.5);
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.0);
+  HDRSHOT_CHECK(gain_check->isChecked() && parent->checkState() == Qt::Checked);
+  click_once(parent);
+  click_once(parent);
+  HDRSHOT_CHECK(gain->text() == "1.0");
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.0);
   gain->setFocus();
   gain->setText("2.5");
   QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
   QApplication::sendEvent(gain, &escape);
-  HDRSHOT_CHECK(gain->text() == "0.5");
-  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 0.5);
+  HDRSHOT_CHECK(gain->text() == "1.0");
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.0);
+
+  fixture.store.fail_next_save = true;
+  const auto before_failure = notifications;
+  bypass->click();
+  HDRSHOT_CHECK(parent->checkState() == Qt::Checked && bypass->isChecked());
+  HDRSHOT_CHECK(notifications == before_failure);
+  gain->setFocus();
+  gain->setText("nan");
+  bypass->click();
+  HDRSHOT_CHECK(gain->text() == "1.0" && bypass->isChecked());
+  HDRSHOT_CHECK(notifications == before_failure);
+  fixture.store.snapshot.windows_capture_gain_enabled = false;
+  fixture.store.snapshot.windows_capture_bypass_sdr_white_enabled = true;
+  fixture.window.reload_and_show();
+  HDRSHOT_CHECK(parent->checkState() == Qt::PartiallyChecked);
+  HDRSHOT_CHECK(!gain_check->isChecked() && bypass->isChecked());
+  HDRSHOT_CHECK(!gain->isEnabled());
+  fixture.store.snapshot.windows_scrgb_gain = 1.1234567890123;
+  fixture.window.reload_and_show();
+  click_once(parent);
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.1234567890123);
 #else
   Fixture fixture;
   HDRSHOT_CHECK(fixture.window.findChild<QLineEdit*>("windowsScRgbGainEdit") == nullptr);
+  HDRSHOT_CHECK(fixture.window.findChild<QCheckBox*>("windowsCaptureCompatibilityCheckBox") == nullptr);
+#endif
+}
+
+void windows_capture_click_commits_pending_gain_once() {
+#ifdef Q_OS_WIN
+  Fixture fixture;
+  fixture.store.snapshot.windows_capture_gain_enabled = true;
+  fixture.store.snapshot.windows_capture_bypass_sdr_white_enabled = true;
+  fixture.store.snapshot.windows_scrgb_gain = 0.5;
+  int notifications = 0;
+  fixture.window.set_applied([&](const SettingsSnapshot&) { ++notifications; });
+  fixture.window.reload_and_show();
+  QApplication::processEvents();
+  auto* gain = fixture.window.findChild<QLineEdit*>("windowsScRgbGainEdit");
+  auto* bypass = fixture.window.findChild<QCheckBox*>(
+      "windowsCaptureBypassSdrWhiteCheckBox");
+  auto* scroll = fixture.window.findChild<QScrollArea*>(
+      "generalSettingsScrollArea");
+  HDRSHOT_CHECK(gain && bypass && scroll);
+  scroll->ensureWidgetVisible(bypass);
+  QApplication::processEvents();
+  gain->setFocus();
+  HDRSHOT_CHECK(gain->hasFocus());
+  gain->setText("1.274008");
+  const auto saves = fixture.store.save_attempts;
+  const QPoint local{8, bypass->height() / 2};
+  const QPoint window_local = bypass->mapTo(&fixture.window, local);
+  const QPoint global = bypass->mapToGlobal(local);
+  QMouseEvent press(QEvent::MouseButtonPress, QPointF(window_local), QPointF(global),
+      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(fixture.window.windowHandle(), &press);
+  HDRSHOT_CHECK(!gain->hasFocus());
+  HDRSHOT_CHECK(fixture.store.save_attempts == saves);
+  QMouseEvent release(QEvent::MouseButtonRelease, QPointF(window_local), QPointF(global),
+      Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(fixture.window.windowHandle(), &release);
+  QApplication::processEvents();
+  HDRSHOT_CHECK(fixture.store.save_attempts == saves + 1);
+  HDRSHOT_CHECK(notifications == 1);
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_scrgb_gain == 1.274008);
+  HDRSHOT_CHECK(fixture.store.snapshot.windows_capture_gain_enabled);
+  HDRSHOT_CHECK(!fixture.store.snapshot.windows_capture_bypass_sdr_white_enabled);
+  HDRSHOT_CHECK(gain->text() == "1.274008");
 #endif
 }
 
@@ -445,6 +556,7 @@ void save_format_switches_only_the_relevant_quality_rows() {
   fixture.window.set_applied([&](const SettingsSnapshot& snapshot) { applied = snapshot; });
   fixture.window.reload_and_show();
   QApplication::processEvents();
+  QApplication::processEvents();
   auto* format = fixture.window.findChild<QComboBox*>(QStringLiteral("saveFormatCombo"));
   auto* diffuse_white = fixture.window.findChild<QComboBox*>(
       QStringLiteral("pqDiffuseWhiteCombo"));
@@ -457,6 +569,7 @@ void save_format_switches_only_the_relevant_quality_rows() {
       quality != nullptr);
   const auto png_position = format->mapTo(&fixture.window, QPoint{});
   const auto png_width = format->width();
+  auto* format_scroll = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
 
   format->setCurrentIndex(format->findData(
       static_cast<int>(SaveFormat::ultra_hdr_jpeg)));
@@ -485,7 +598,9 @@ void save_format_switches_only_the_relevant_quality_rows() {
   HDRSHOT_CHECK(precision->isVisible());
   HDRSHOT_CHECK(!quality->isVisible());
   HDRSHOT_CHECK(format->mapTo(&fixture.window, QPoint{}) == png_position);
-  HDRSHOT_CHECK(format->width() == png_width);
+  const int scrollbar_width = format_scroll && format_scroll->verticalScrollBar()->isVisible()
+      ? format_scroll->verticalScrollBar()->width() : 0;
+  HDRSHOT_CHECK(format->width() == png_width - scrollbar_width);
   HDRSHOT_CHECK(
       fixture.store.snapshot.ultra_hdr_jpeg_quality ==
       UltraHdrJpegQuality::compact);
@@ -630,12 +745,45 @@ int main(int argc, char** argv) {
   }
   const auto screenshot_path = qgetenv("HDRSHOT_SETTINGS_SCREENSHOT");
   if (!screenshot_path.isEmpty()) {
+    const int font_id = QFontDatabase::addApplicationFont(
+        QCoreApplication::applicationDirPath() +
+        QStringLiteral("/assets/fonts/NotoSansSC-VF.ttf"));
+    if (font_id >= 0) {
+      const auto families = QFontDatabase::applicationFontFamilies(font_id);
+      if (!families.isEmpty()) application.setFont(QFont(families.front(), 10));
+    }
     Fixture fixture;
+#ifdef Q_OS_WIN
+    fixture.store.snapshot.windows_scrgb_gain = 0.5;
+#endif
     if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ULTRAHDR")) {
       fixture.store.snapshot.save_format = SaveFormat::ultra_hdr_jpeg;
     }
     fixture.window.reload_and_show();
     QApplication::processEvents();
+    if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_MINIMUM")) {
+      fixture.window.resize(fixture.window.minimumSize());
+      QApplication::processEvents();
+    }
+    if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_SHOW_COMPATIBILITY")) {
+      auto* scroll = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
+      auto* option = fixture.window.findChild<QCheckBox*>(
+          "windowsCaptureBypassSdrWhiteCheckBox");
+      if (scroll != nullptr && option != nullptr) {
+        scroll->ensureWidgetVisible(option, 0, 8);
+        QApplication::processEvents();
+      }
+    }
+    QApplication::processEvents();
+    if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_REPORT_SCROLL")) {
+      auto* scroll = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
+      if (scroll != nullptr) {
+        std::printf("settings_size=%dx%d general_scroll_max=%d general_scroll_visible=%d\n",
+            fixture.window.width(), fixture.window.height(),
+            scroll->verticalScrollBar()->maximum(),
+            scroll->verticalScrollBar()->isVisible() ? 1 : 0);
+      }
+    }
     if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path))) {
       return 1;
     }
@@ -661,7 +809,8 @@ int main(int argc, char** argv) {
       {"custom button gates hotkey recording", custom_button_is_the_only_entry_to_recording_and_command_round_trips},
       {"settings general rows are wide and aligned", general_rows_are_wide_aligned_and_folder_actions_are_explicit},
       {"completion actions and precision auto apply", completion_actions_and_precision_apply_immediately},
-      {"Windows gain UI persists only valid commits", windows_gain_is_visible_and_transactional},
+      {"Windows capture compatibility UI persists each state change once", windows_capture_compatibility_controls_are_transactional},
+      {"Windows checkbox click commits pending gain once", windows_capture_click_commits_pending_gain_once},
       {"save format switches relevant rows", save_format_switches_only_the_relevant_quality_rows},
       {"ISO JPEG label preserves stored format and quality", iso_jpeg_label_preserves_existing_format_and_quality},
       {"failed auto apply restores snapshot", failed_auto_apply_restores_the_last_valid_snapshot},
