@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-09-29 00:13:42 CST
+最后更新：2026-10-07 21:09:00 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -25,7 +25,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。不只是把像素值�
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接画圈、加箭头和文字，把截图、标注、输出合在一起。
 - **SDR 也输出标准色彩空间**：对于直接保存显示缓冲区像素、缺少 ICC，或依赖显示器专属 ICC 的传统截图流程，SeriousShot 在 Windows 11 上将像素转换到标准 Display P3，并嵌入匹配的矩阵／曲线型 ICC（matrix-shaper profile）。图片的颜色解释不再依赖原显示器的专属配置，也更便于支持标准 ICC 的软件处理。这里包含实际像素转换，不是只替换 ICC 标签。
 
-HDR 呈现仍取决于查看器、系统和屏幕的支持；通用文件格式并不意味着所有软件都能显示 HDR。0.1.2 Release 提供 macOS DMG 和 Windows x64 ZIP；Windows ZIP 是解压运行版。
+HDR 呈现仍取决于查看器、系统和屏幕的支持；通用文件格式并不意味着所有软件都能显示 HDR。当前 macOS 安装包为 [0.1.3 DMG](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.3)，改善因精度误差导致的 HDR／SDR 误判；Windows 安装包仍为 [0.1.2 x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.2)，解压后运行。
 
 ## 截图、标注、分享，一次完成
 
