@@ -30,7 +30,7 @@ class SourceNormalizerPort {
  public:
   virtual ~SourceNormalizerPort() = default;
   // Only called after the shared interpreter validates non-linear P3/FP16.
-  // Takes ownership of the transient input. Preserve exact FP32 inverse values.
+  // Takes ownership of the input; preserves the exact FP32 inverse transfer.
   virtual Result<LinearSourceRef, Error> normalize_extended_p3(
       PixelSize size, std::vector<std::uint16_t> rgba_half) = 0;
 };

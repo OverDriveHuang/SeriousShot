@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-09-29T00:01:35+08:00",
+  "timestamp": "2026-10-07T21:03:40+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "643c091d0c43157f206960811f6446d1aaf3f0d11c1b45aab53fc15f5a21d8c7",
+      "sha256": "9e36b06a2af2df8a998dfcc48b19d7e00f357ca3a9e4fd289a36708b0f390350",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -163,7 +163,7 @@
       "mode": 420
     },
     "src/application/analysis_workflow.cpp": {
-      "sha256": "3146416bc25fe6de12b11c15b8cdd93632d0f1125c6e5fb8013ded3aa9594c87",
+      "sha256": "bb1960cf7bb06acdd1382eae3ea4377861942daf0fae4b346dbf6f8bd455df64",
       "mode": 420
     },
     "src/application/analysis_workflow.hpp": {
@@ -279,7 +279,7 @@
       "mode": 420
     },
     "src/core/frame.hpp": {
-      "sha256": "a3b98292b42423b32249cedde72e7aeab929909051bfc2649c1ccb85a34bd8cb",
+      "sha256": "be38fb2d717d2756a2e13127c66ba7b4fd4a4ac2586f37ae0134def600b337f5",
       "mode": 420
     },
     "src/core/geometry.hpp": {
@@ -299,7 +299,7 @@
       "mode": 420
     },
     "src/core/linear_source.hpp": {
-      "sha256": "a23af5f62befa7d6a6f192c2f4c738dcc3992e5c1e2aff39e2142503f56bb813",
+      "sha256": "d1fbda8c526004cf6af8a35afad2d492f6e0308e6b0372d1beda4244e975f8ea",
       "mode": 420
     },
     "src/core/result.hpp": {
@@ -414,6 +414,10 @@
       "sha256": "76ec89fec23f9acf269647b9680e397bfa90ee924ab7f04b40124f976a4adafb",
       "mode": 420
     },
+    "src/domain/color/capture_edr_boundary.hpp": {
+      "sha256": "070cc65363fda4b8e16be7dd89aca6ac07f597aa20388a7bdf8f5630dc9d398d",
+      "mode": 420
+    },
     "src/domain/color/display_p3_icc_profile.hpp": {
       "sha256": "27fdb9115da3d9db69a0c4c3734cb64b2688b340f85577de9ba61084bda34297",
       "mode": 420
@@ -447,15 +451,15 @@
       "mode": 420
     },
     "src/domain/frame/frame_cropper.cpp": {
-      "sha256": "0a7d69b75c87c90fdf07b45ac6be6906983618577ba9fa26eb62d343e7cd71ec",
+      "sha256": "0bc22345b22476784463c82bd3e79768c78c642a574a3bf87745f7742070604e",
       "mode": 420
     },
     "src/domain/frame/frame_cropper.hpp": {
-      "sha256": "b59310dec4aee6b3007aa4e96bea43ea51fd1ef98104b554bc42c2f7f073270e",
+      "sha256": "2dff5b30a1e04b0d0422ba84f0ae30a91e457ec1573c76739851e5e843691ea1",
       "mode": 420
     },
     "src/domain/frame/frame_pipeline.cpp": {
-      "sha256": "f9cdbed369ebe5a12aef26e7eff62a882f725e4bba020104f602f97c19a59cbe",
+      "sha256": "30c0b50b4f879f49d759c3de9f0fb18e7475d730df4635716f1bbc807b2fbbde",
       "mode": 420
     },
     "src/domain/frame/frame_pipeline.hpp": {
@@ -507,7 +511,7 @@
       "mode": 420
     },
     "src/domain/output/source_range_probe.cpp": {
-      "sha256": "e3a391c3ee41108c4667d54d929a240a8cc4b61f8010eebd1a1d333ff936548f",
+      "sha256": "95ca873efc0820cb26561d8cef73c8c387f694dedfc4e99284658d8af475f856",
       "mode": 420
     },
     "src/domain/output/source_range_probe.hpp": {
@@ -515,7 +519,7 @@
       "mode": 420
     },
     "src/domain/output/ultra_hdr_input_renderer.cpp": {
-      "sha256": "4c7e13614cf98a0bba1a1448c8968db6624d107ec6d313a2d6f301c6246ad628",
+      "sha256": "f623a79be1f9f0906b0bba1f05368123495dc5b0f3e0b7ab707017b3cf06ce2e",
       "mode": 420
     },
     "src/domain/output/ultra_hdr_input_renderer.hpp": {
@@ -599,7 +603,7 @@
       "mode": 420
     },
     "src/platform/macos/macos_gpu_source.mm": {
-      "sha256": "3548bcd883bf51f1447b49bc1c14f18f97024112ec520ce5c248412654b7aaeb",
+      "sha256": "0060017b639dad269289ab85c4d435a918c55355a2550ec39f7c530254b743e0",
       "mode": 420
     },
     "src/platform/macos/macos_linear_storage.hpp": {
@@ -615,7 +619,7 @@
       "mode": 420
     },
     "src/platform/macos/macos_metal_export_pixel_processor.mm": {
-      "sha256": "5674355b54a8ebcc3dbd8c97be350c45e47626cde88d7a298d21e503680c26bc",
+      "sha256": "216551c83fd9e162271529bd365316214e3c8231c48589722ed3e6b93b686613",
       "mode": 420
     },
     "src/platform/macos/macos_preview_presenter_port.cpp": {
@@ -895,7 +899,7 @@
       "mode": 420
     },
     "src/ports/ultra_hdr_ports.hpp": {
-      "sha256": "78ff24a1ca6168e035cad9f39141431d2c2d96981fbe0d801a09a88c750063be",
+      "sha256": "72a0f80e6941c8d3580095cc066621b33de2fae102d195ee96f19b9575bdadeb",
       "mode": 420
     },
     "src/ports/window_catalog_port.hpp": {
@@ -1022,12 +1026,16 @@
       "sha256": "2e768c5b86d27921c587cbe615e4e278a7d71f06adb249aba3efc48bd67d4d96",
       "mode": 420
     },
+    "tests/capture_edr_boundary_tests.cpp": {
+      "sha256": "35e08ec82b2d777554fbf60494fbf810af873df71cb1c7e431c4d595aac9ff86",
+      "mode": 420
+    },
     "tests/capture_session_tests.cpp": {
       "sha256": "c034dbf6546b7fdecc890da31e44153dbb05bffccfad5c5605fbae1bfeb5c1ac",
       "mode": 420
     },
     "tests/clean_content_tests.cpp": {
-      "sha256": "32cee27bacde10077e646de88e5c79dddf60f0fe47346d0b947a1c135e4f5e98",
+      "sha256": "886a9f2ae5b663882614d69f89f2a4c2db67274d9b80be2688f5869e11846732",
       "mode": 420
     },
     "tests/default_save_workflow_tests.cpp": {
@@ -1091,7 +1099,7 @@
       "mode": 420
     },
     "tests/macos_gpu_source_tests.mm": {
-      "sha256": "c7fb768f556cf766ffdec2dd8b6f337c16947dd4d1cbe75c4becdcc64339bda6",
+      "sha256": "6eeb9938b5bfacd5ccad3f776aac2fbd906aeafd1ff3a72c17c6d58fb1f9a2d6",
       "mode": 420
     },
     "tests/macos_icc_profile_tests.mm": {

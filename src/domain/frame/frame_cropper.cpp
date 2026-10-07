@@ -97,6 +97,7 @@ Result<CanonicalFrameView, Error> FrameCropper::crop_display(
       segment.display_dynamic_range,
       std::move(pixels),
       std::move(floats),
+      segment.capture_sdr_tolerance,
   });
 }
 
@@ -116,6 +117,7 @@ SelectionRoiView FrameCropper::view(const CanonicalFrameView& frame) {
       frame.rgba_float,
       frame.rgba_float.capacity(),
       {},
+      frame.capture_sdr_tolerance,
   };
 }
 
@@ -172,6 +174,7 @@ Result<SelectionRoiView, Error> FrameCropper::view_display(
       segment.rgba_float,
       segment.rgba_float.capacity(),
       segment.linear_source,
+      segment.capture_sdr_tolerance,
   });
 }
 
@@ -181,6 +184,7 @@ Result<CanonicalFrameView, Error> FrameCropper::read_cpu_region(const SelectionR
   CanonicalFrameView out{frame.source_frame_id, frame.display_generation,
       frame.selection_revision, frame.source_rect_px, frame.size_px,
       frame.point_pixel_scale, frame.encoding, frame.display_dynamic_range, {}, {}};
+  out.capture_sdr_tolerance = frame.capture_sdr_tolerance;
   const auto width = static_cast<std::size_t>(frame.size_px.width);
   const auto height = static_cast<std::size_t>(frame.size_px.height);
   if (frame.linear_source) {

@@ -59,7 +59,7 @@ void exhaustive_fp16_source_and_linear_input() {
   for(unsigned i=0;i<=0x4200;++i) {
     const auto encoded=ExtendedP3Mapper::decode_binary16(static_cast<std::uint16_t>(i)).value();
     const auto value=linear.value().rgba_float[i*4];
-    HDRSHOT_CHECK(value==ExtendedP3Mapper::inverse_extended_srgb(encoded));
+    HDRSHOT_CHECK(value == ExtendedP3Mapper::inverse_extended_srgb(encoded));
     const auto half=ExtendedP3Mapper::decode_binary16(ExtendedP3Mapper::encode_binary16(value)).value();
     maximum_half_linear_delta=std::max(maximum_half_linear_delta,std::abs(double(value-half)));
     if(i<=0x3c00) maximum_sdr_code_delta=std::max(maximum_sdr_code_delta,std::abs(

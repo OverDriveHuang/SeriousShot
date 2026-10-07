@@ -77,6 +77,7 @@ Result<LinearDisplayP3HalfImage, Error> CpuUltraHdrInputRenderer::render(
 
   LinearDisplayP3HalfImage result;
   result.size_px = source.size_px;
+  result.capture_sdr_tolerance = source.capture_sdr_tolerance;
   result.reference_white_nits = request.reference_white_nits;
   result.source_visible_maximum_linear_component = 0.0;
   result.rgba_half.resize(width * height * 4U);

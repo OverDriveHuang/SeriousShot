@@ -13,7 +13,8 @@ Error failure(const char *reason) {
 }
 ExportSnapshot compact_snapshot(const ExportSnapshot &original,
                                 LinearSourceRef source,
-                                std::vector<AnnotationOwnedSpan> owned = {}) {
+                                std::vector<AnnotationOwnedSpan> owned = {},
+                                bool preserve_capture_provenance = true) {
   const auto size = source->size_px();
   const PixelRect rect{0, 0, size.width, size.height};
   auto desktop = std::make_shared<FrozenDesktop>();
@@ -34,6 +35,14 @@ ExportSnapshot compact_snapshot(const ExportSnapshot &original,
   // Actual source-visible pixels, not the display headroom, choose the class.
   segment.display_dynamic_range = DisplayDynamicRange::hdr;
   segment.linear_source = std::move(source);
+  const auto& segments = original.frozen_desktop->canonical_segments;
+  const auto provenance = std::find_if(segments.begin(), segments.end(),
+      [&](const auto& candidate) {
+        return candidate.display_id == original.target_display_id ||
+            (original.target_display_id.value == 0 && segments.size() == 1);
+      });
+  segment.capture_sdr_tolerance = preserve_capture_provenance &&
+      provenance != segments.end() && provenance->capture_sdr_tolerance;
   desktop->canonical_segments.push_back(std::move(segment));
   auto result = original;
   result.frozen_desktop = desktop;
@@ -132,7 +141,8 @@ AnalysisWorkflow::report_snapshot(const ExportSnapshot &original,
       composed->size_px().height <= 0)
     return Result<ExportSnapshot, Error>::failure(
         failure("invalid_composed_report"));
+  // A generated report is newly composed linear content, not capture pixels.
   return Result<ExportSnapshot, Error>::success(
-      compact_snapshot(original, std::move(composed)));
+      compact_snapshot(original, std::move(composed), {}, false));
 }
 } // namespace hdrshot

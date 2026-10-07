@@ -1,5 +1,8 @@
 #include "application/clean_content_cache.hpp"
+#include "application/analysis_workflow.hpp"
 #include "application/export_workflow.hpp"
+#include "adapters/shared/libultrahdr_encoder.hpp"
+#include "domain/color/capture_edr_boundary.hpp"
 #include "domain/annotation/annotation_compositing.hpp"
 #include "domain/color/extended_p3_mapper.hpp"
 #include "domain/frame/frame_pipeline.hpp"
@@ -7,6 +10,7 @@
 #include "domain/output/source_range_probe.hpp"
 #include "domain/output/ultra_hdr_input_renderer.hpp"
 #include "platform/macos/macos_gpu_source.hpp"
+#include "platform/macos/macos_analysis_backend.hpp"
 #include "platform/macos/macos_linear_storage.hpp"
 #include "platform/macos/macos_metal_export_pixel_processor.hpp"
 #include "platform/macos/metal_edr_presenter.hpp"
@@ -723,6 +727,219 @@ void invalid_bounds_and_native_sample_offsets_fail_without_publication() {
   mixed.source_is_linear = false;
   reject_preview(mixed, "native source cannot be tagged nonlinear");
 }
+void generated_linear_report_is_not_capture_normalized() {
+  const auto device = macos_gpu_device();
+  auto descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+      width:1 height:1 mipmapped:NO];
+  descriptor.storageMode = MTLStorageModeShared;
+  descriptor.usage = MTLTextureUsageShaderRead;
+  const auto staging = [device newTextureWithDescriptor:descriptor];
+  const std::array<float, 4> generated{1.001F, 0.5F, 0.0F, 1.0F};
+  [staging replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0
+      withBytes:generated.data() bytesPerRow:sizeof(generated)];
+  descriptor.storageMode = MTLStorageModePrivate;
+  const auto texture = [device newTextureWithDescriptor:descriptor];
+  const auto command = [macos_gpu_queue() commandBuffer];
+  const auto blit = [command blitCommandEncoder];
+  [blit copyFromTexture:staging sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+      sourceSize:MTLSizeMake(1, 1, 1) toTexture:texture destinationSlice:0 destinationLevel:0
+      destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [blit endEncoding];
+  const auto composed = macos_wrap_linear_texture(texture, command);
+  HDRSHOT_CHECK(composed.has_value());
+  const auto samples = composed.value()->read_region({0, 0, 1, 1});
+  HDRSHOT_CHECK(samples.has_value());
+  check_float_bits(samples.value(), generated);
+  ExportSnapshot original;
+  original.frozen_desktop = interpret({0x3c01, 0x3800, 0, 0x3c00}, true, {1, 1});
+  original.target_display_id = kDisplay;
+  original.selection = {7, {0, 0, 1, 1}};
+  original.annotations.revision = 1;
+  original.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(empty_render({0, 0, 1, 1}));
+  const auto report = AnalysisWorkflow::report_snapshot(original, composed.value());
+  HDRSHOT_CHECK(report.has_value());
+  const auto metal = processor();
+  const auto original_png = ExportWorkflow::prepare(original, nullptr, metal.get(), nullptr, nullptr, metal.get());
+  const auto report_png = ExportWorkflow::prepare(report.value(), nullptr, metal.get(), nullptr, nullptr, metal.get());
+  HDRSHOT_CHECK(original_png && original_png.value().output_encoding.transfer == TransferFunction::srgb);
+  HDRSHOT_CHECK(report_png && report_png.value().output_encoding.transfer == TransferFunction::pq);
+}
+
+LinearSourceRef upload_exact_fp32(PixelSize size, std::span<const float> pixels) {
+  const auto device = macos_gpu_device();
+  auto descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+      width:static_cast<NSUInteger>(size.width) height:static_cast<NSUInteger>(size.height) mipmapped:NO];
+  descriptor.storageMode = MTLStorageModeShared;
+  descriptor.usage = MTLTextureUsageShaderRead;
+  const auto staging = [device newTextureWithDescriptor:descriptor];
+  [staging replaceRegion:MTLRegionMake2D(0, 0, static_cast<NSUInteger>(size.width), static_cast<NSUInteger>(size.height)) mipmapLevel:0
+      withBytes:pixels.data() bytesPerRow:static_cast<NSUInteger>(size.width) * 16];
+  descriptor.storageMode = MTLStorageModePrivate;
+  const auto texture = [device newTextureWithDescriptor:descriptor];
+  const auto command = [macos_gpu_queue() commandBuffer];
+  const auto blit = [command blitCommandEncoder];
+  [blit copyFromTexture:staging sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+      sourceSize:MTLSizeMake(static_cast<NSUInteger>(size.width), static_cast<NSUInteger>(size.height), 1)
+      toTexture:texture destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [blit endEncoding];
+  const auto source = macos_wrap_linear_texture(texture, command);
+  HDRSHOT_CHECK(source.has_value());
+  return source.value();
+}
+
+void fp32_capture_classification_is_shared_and_never_changes_pixels() {
+  constexpr PixelSize size{32,32};
+  constexpr PixelRect full{0,0,32,32};
+  const auto metal = processor();
+  const auto backend = make_macos_analysis_backend();
+  HDRSHOT_CHECK(backend.has_value());
+  CpuUltraHdrInputRenderer cpu_renderer;
+  LibUltraHdrEncoder encoder;
+  const float first_hdr = std::nextafter(kCaptureSdrMaximumEdr, std::numeric_limits<float>::infinity());
+  for (float peak : {1.0F, 1.00033020973F, 1.001F, kCaptureSdrMaximumEdr, first_hdr, 2.0F}) {
+    const bool hdr = source_requires_hdr(peak, true);
+    LinearFloatPixels pixels(32U*32U*4U);
+    for (std::size_t i=0; i<pixels.size(); i+=4) {
+      pixels[i]=std::min(peak, 1.001F); pixels[i+1]=0.5F; pixels[i+2]=-0.0F; pixels[i+3]=1.0F;
+    }
+    pixels[0]=peak;
+    auto desktop = std::make_shared<FrozenDesktop>(*interpret(std::vector<std::uint16_t>(32U*32U*4U, 0), false, size));
+    auto& segment = desktop->canonical_segments.front();
+    segment.rgba_float.clear(); segment.linear_source=upload_exact_fp32(size, pixels);
+    const auto source = segment.linear_source;
+    ExportSnapshot snapshot;
+    snapshot.frozen_desktop=desktop; snapshot.target_display_id=kDisplay;
+    snapshot.selection={7,full}; snapshot.annotations.revision=1;
+    snapshot.annotation_render_plan=std::make_shared<AnnotationRenderPlan>(empty_render(full));
+    const auto native=roi(desktop,full);
+    const auto cpu=FrameCropper::read_cpu_region(native);
+    HDRSHOT_CHECK(cpu && cpu.value().capture_sdr_tolerance);
+    check_float_bits(cpu.value().rgba_float,pixels);
+    const auto plan=empty_pixels(full);
+    const auto cpu_fit=SourceRangeProbe::probe(cpu.value(),plan);
+    const auto gpu_fit=metal->probe(native,plan,{});
+    HDRSHOT_CHECK(cpu_fit && gpu_fit && cpu_fit.value().fits_sdr==!hdr && gpu_fit.value().fits_sdr==!hdr);
+    const auto cpu_view=FrameCropper::view(cpu.value());
+    const auto cpu_jpeg=cpu_renderer.render({&cpu_view, &plan, 203});
+    const auto gpu_jpeg=metal->render({&native,&plan,203});
+    HDRSHOT_CHECK(cpu_jpeg && gpu_jpeg);
+    HDRSHOT_CHECK(cpu_jpeg.value().maximum_linear_component==double(peak));
+    HDRSHOT_CHECK(gpu_jpeg.value().maximum_linear_component==double(peak));
+    HDRSHOT_CHECK((jpeg_output_kind(cpu_jpeg.value())==JpegOutputKind::ultra_hdr)==hdr);
+    HDRSHOT_CHECK(jpeg_output_kind(cpu_jpeg.value())==jpeg_output_kind(gpu_jpeg.value()));
+    const auto analysis=AnalysisWorkflow::prepare(snapshot,*backend.value().port,metal.get());
+    HDRSHOT_CHECK(analysis && analysis.value().input.is_hdr==hdr);
+    check_float_bits(analysis.value().input.source->read_region(full).value(),pixels);
+    auto cpu_desktop=std::make_shared<FrozenDesktop>(*desktop);
+    cpu_desktop->canonical_segments.front().linear_source.reset();
+    cpu_desktop->canonical_segments.front().rgba_float=pixels;
+    auto cpu_snapshot=snapshot;
+    cpu_snapshot.frozen_desktop=cpu_desktop;
+    for (auto format : {SaveFormat::png_display_p3_dual_range,SaveFormat::ultra_hdr_jpeg}) {
+      snapshot.save_format=format;
+      cpu_snapshot.save_format=format;
+      const auto exported=ExportWorkflow::prepare(snapshot,nullptr,metal.get(),metal.get(),&encoder,metal.get());
+      HDRSHOT_CHECK(exported && exported.value().output_encoding.transfer==(hdr?TransferFunction::pq:TransferFunction::srgb));
+      const auto cpu_exported=ExportWorkflow::prepare(cpu_snapshot,nullptr,nullptr,&cpu_renderer,&encoder);
+      HDRSHOT_CHECK(cpu_exported && cpu_exported.value().output_encoding.transfer==exported.value().output_encoding.transfer);
+    }
+    check_float_bits(cpu_desktop->canonical_segments.front().rgba_float,pixels);
+    check_float_bits(source->read_region(full).value(),pixels);
+  }
+}
+
+void implicit_single_display_original_preserves_capture_provenance() {
+  constexpr PixelSize size{32,32};
+  constexpr PixelRect full{0,0,32,32};
+  auto desktop = std::make_shared<FrozenDesktop>(*interpret(
+      std::vector<std::uint16_t>(32U*32U*4U, 0x3c01), true, size));
+  desktop->canonical_segments.front().display_id=DisplayId{99};
+  HDRSHOT_CHECK(desktop->canonical_segments.front().capture_sdr_tolerance);
+  ExportSnapshot snapshot;
+  snapshot.frozen_desktop=desktop;
+  snapshot.target_display_id=DisplayId{0};
+  snapshot.selection={7,full}; snapshot.annotations.revision=1;
+  snapshot.annotation_render_plan=std::make_shared<AnnotationRenderPlan>(empty_render(full));
+  const auto metal=processor();
+  const auto backend=make_macos_analysis_backend();
+  HDRSHOT_CHECK(backend.has_value());
+  const auto prepared=AnalysisWorkflow::prepare(snapshot,*backend.value().port,metal.get());
+  HDRSHOT_CHECK(prepared && !prepared.value().input.is_hdr);
+  HDRSHOT_CHECK(prepared.value().original.frozen_desktop->canonical_segments.front().capture_sdr_tolerance);
+  const auto exported=ExportWorkflow::prepare(prepared.value().original,nullptr,metal.get(),nullptr,nullptr,metal.get());
+  HDRSHOT_CHECK(exported && exported.value().output_encoding.transfer==TransferFunction::srgb);
+  const auto report=AnalysisWorkflow::report_snapshot(prepared.value().original,prepared.value().input.source);
+  HDRSHOT_CHECK(report && !report.value().frozen_desktop->canonical_segments.front().capture_sdr_tolerance);
+  const auto report_exported=ExportWorkflow::prepare(report.value(),nullptr,metal.get(),nullptr,nullptr,metal.get());
+  HDRSHOT_CHECK(report_exported && report_exported.value().output_encoding.transfer==TransferFunction::pq);
+}
+
+void capture_boundary_drives_exports_and_analysis_without_losing_isolated_hdr() {
+  constexpr PixelSize size{32, 32};
+  constexpr PixelRect full{0, 0, 32, 32};
+  const auto metal = processor();
+  const auto backend = make_macos_analysis_backend();
+  HDRSHOT_CHECK(backend.has_value());
+  LibUltraHdrEncoder encoder;
+  for (const bool has_hdr : {false, true}) {
+    std::vector<std::uint16_t> pixels(32U * 32U * 4U, 0x3c01);
+    for (std::size_t offset = 0; offset < pixels.size(); offset += 4U) {
+      pixels[offset + 1] = 0x3800;
+      pixels[offset + 2] = 0xb800;
+      pixels[offset + 3] = 0x7e00;
+    }
+    if (has_hdr) pixels[1] = 0x3c02;
+    pixels[5] = 0x8000;
+    const auto native = interpret(pixels, true, size);
+    const auto cpu = interpret(pixels, false, size);
+    const auto source = native->canonical_segments.front().linear_source;
+    const auto samples = source->read_region(full);
+    HDRSHOT_CHECK(samples.has_value());
+    check_float_bits(samples.value(), cpu->canonical_segments.front().rgba_float);
+    HDRSHOT_CHECK(samples.value()[0] == ExtendedP3Mapper::inverse_extended_srgb(
+            ExtendedP3Mapper::decode_binary16(0x3c01).value()));
+    HDRSHOT_CHECK(samples.value()[4] == samples.value()[0]);
+    HDRSHOT_CHECK(samples.value()[5] == 0.0F && std::signbit(samples.value()[5]));
+    HDRSHOT_CHECK(samples.value()[2] < 0.0F && samples.value()[3] == 1.0F);
+
+    ExportSnapshot snapshot;
+    snapshot.frozen_desktop = native;
+    snapshot.target_display_id = kDisplay;
+    snapshot.selection = {7, full};
+    snapshot.annotations.revision = 1;
+    snapshot.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(empty_render(full));
+    const auto analysis = AnalysisWorkflow::prepare(snapshot, *backend.value().port, metal.get());
+    HDRSHOT_CHECK(analysis.has_value());
+    HDRSHOT_CHECK(analysis.value().input.is_hdr == has_hdr);
+    const auto analyzed_samples = analysis.value().input.source->read_region(full);
+    HDRSHOT_CHECK(analyzed_samples.has_value());
+    check_float_bits(analyzed_samples.value(), samples.value());
+    const auto report = AnalysisWorkflow::report_snapshot(snapshot, analysis.value().input.source);
+    HDRSHOT_CHECK(report.has_value());
+
+    for (auto candidate : {snapshot, analysis.value().original, report.value()}) {
+      const bool output_hdr = has_hdr || !candidate.frozen_desktop->canonical_segments.front().capture_sdr_tolerance;
+      for (const auto white : {PqDiffuseWhite::nits_100, PqDiffuseWhite::nits_203}) {
+        for (const auto format : {SaveFormat::png_display_p3_dual_range, SaveFormat::ultra_hdr_jpeg}) {
+          candidate.pq_diffuse_white = white;
+          candidate.save_format = format;
+          const auto exported = ExportWorkflow::prepare(candidate, nullptr, metal.get(),
+              metal.get(), &encoder, metal.get());
+          HDRSHOT_CHECK(exported.has_value());
+          HDRSHOT_CHECK(exported.value().output_encoding.transfer ==
+              (output_hdr ? TransferFunction::pq : TransferFunction::srgb));
+          const auto& bytes = exported.value().artifact.bytes;
+          HDRSHOT_CHECK(!bytes.empty());
+          const std::string_view marker = format == SaveFormat::png_display_p3_dual_range
+              ? "cLLI" : "hdr-gain-map";
+          const bool has_hdr_metadata = std::search(bytes.begin(), bytes.end(),
+              marker.begin(), marker.end()) != bytes.end();
+          HDRSHOT_CHECK(has_hdr_metadata == output_hdr);
+        }
+      }
+    }
+  }
+}
 } // namespace
 
 int main() {
@@ -742,7 +959,11 @@ int main() {
     }
     return test::run({
         {"first native source draw precedes CPU readback", first_draw_consumes_new_native_source_before_cpu_readback},
-        {"all 65536 half codes preserve finite inverse FP32 bits", all_65536_half_codes_preserve_finite_inverse_float_bits},
+        {"all 65536 half codes match exact inverse", all_65536_half_codes_preserve_finite_inverse_float_bits},
+        {"capture boundary PNG JPEG analysis original and report", capture_boundary_drives_exports_and_analysis_without_losing_isolated_hdr},
+        {"FP32 classification CPU Metal PNG JPEG analysis exact source", fp32_capture_classification_is_shared_and_never_changes_pixels},
+        {"implicit display99 original provenance and generated report", implicit_single_display_original_preserves_capture_provenance},
+        {"generated linear report retains subthreshold HDR", generated_linear_report_is_not_capture_normalized},
         {"nonzero odd 1x1 and boundary native ROIs", nonzero_odd_single_pixel_and_boundary_rois_read_exactly},
         {"first clean preview sparse ROI offsets reuse and immutable revisions", native_clean_first_preview_roi_offsets_and_immutable_revisions},
         {"native PNG 10/12/16 100/203 and JPEG reference matrix", png_all_precisions_and_whites_and_jpeg_match_cpu_reference},

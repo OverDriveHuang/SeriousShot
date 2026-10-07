@@ -5,6 +5,7 @@
 #include "core/result.hpp"
 #include "domain/annotation/annotation_render_plan.hpp"
 #include "domain/frame/frame_cropper.hpp"
+#include "domain/color/capture_edr_boundary.hpp"
 #include "ports/export_ports.hpp"
 
 #include <cstdint>
@@ -33,6 +34,7 @@ struct LinearDisplayP3HalfImage {
   // Classification only; absent for standalone callers without annotations.
   // The actual maximum above still drives HDR headroom, including AA edges.
   std::optional<double> source_visible_maximum_linear_component;
+  bool capture_sdr_tolerance{};
 };
 
 class UltraHdrInputRendererPort {
@@ -58,8 +60,9 @@ enum class JpegOutputKind { display_p3_sdr, ultra_hdr };
 }
 
 [[nodiscard]] inline JpegOutputKind jpeg_output_kind(const LinearDisplayP3HalfImage& image) {
-  return jpeg_output_kind(image.source_visible_maximum_linear_component.value_or(
-      image.maximum_linear_component));
+  return source_requires_hdr(image.source_visible_maximum_linear_component.value_or(
+      image.maximum_linear_component), image.capture_sdr_tolerance)
+      ? JpegOutputKind::ultra_hdr : JpegOutputKind::display_p3_sdr;
 }
 
 struct EncodedUltraHdrJpeg {

@@ -256,7 +256,8 @@ kernel void extended_p3_to_linear_rgba16f(
 // Only tiny statistics return to CPU; annotation-owned AA never participates.
 kernel void probe_native_range(texture2d<float, access::read> source [[texture(0)]],
     device const uint4* spans [[buffer(0)]], device atomic_uint* counters [[buffer(1)]],
-    constant uint& span_count [[buffer(2)]], uint gid [[thread_position_in_grid]],
+    constant uint& span_count [[buffer(2)]], constant float& sdr_maximum_edr [[buffer(3)]],
+    uint gid [[thread_position_in_grid]],
     uint lane [[thread_position_in_threadgroup]], uint lanes [[threads_per_threadgroup]]) {
   uint flags = 0;
   uint lo = 0, hi = span_count;
@@ -269,7 +270,7 @@ kernel void probe_native_range(texture2d<float, access::read> source [[texture(0
       const uint pixel = s.x + gid - s.z;
       const float3 v = source.read(uint2(pixel % source.get_width(), pixel / source.get_width())).rgb;
       if (any((as_type<uint3>(v) & uint3(0x7f800000)) == uint3(0x7f800000))) flags |= 1u;
-      if (any(v > 1.0f)) flags |= 2u;
+      if (any(v > sdr_maximum_edr)) flags |= 2u;
       break;
     }
   }
@@ -721,6 +722,7 @@ Result<LinearDisplayP3HalfImage, Error> MacMetalExportPixelProcessor::render(
         processor_error(ErrorCode::invalid_color_contract, "non_finite_source_component"));
   }
   LinearDisplayP3HalfImage result;
+  result.capture_sdr_tolerance = source.capture_sdr_tolerance;
   result.size_px = source.size_px;
   result.reference_white_nits = request.reference_white_nits;
   result.source_visible_maximum_linear_component = static_cast<double>(
@@ -813,6 +815,8 @@ Result<RangeFitResult, Error> MacMetalExportPixelProcessor::probe(
     [encoder setBuffer:input offset:0 atIndex:0];
     [encoder setBuffer:stats offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    const float sdr_maximum = source_sdr_maximum_edr(source.capture_sdr_tolerance);
+    [encoder setBytes:&sdr_maximum length:sizeof(sdr_maximum) atIndex:3];
     [encoder dispatchThreads:MTLSizeMake(source_pixels,1,1)
         threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
@@ -823,7 +827,7 @@ Result<RangeFitResult, Error> MacMetalExportPixelProcessor::probe(
     const auto* values = static_cast<const std::uint32_t*>(stats.contents);
     if (values[0]) return Output::failure(processor_error(ErrorCode::invalid_color_contract, "range_nonfinite_source"));
     return Output::success({values[1] == 0, source_pixels, annotation_pixels, source_pixels * 3,
-        values[1] ? "source_visible_component_above_edr_one" : "source_visible_components_fit_edr_one"});
+        values[1] ? "source_visible_component_above_sdr_boundary" : "source_visible_components_fit_sdr_boundary"});
   }
 }
 

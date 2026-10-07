@@ -24,6 +24,7 @@ struct CanonicalFrameView {
   DisplayDynamicRange display_dynamic_range{DisplayDynamicRange::sdr};
   std::vector<std::uint16_t> rgba_half;
   LinearFloatPixels rgba_float;
+  bool capture_sdr_tolerance{};
 };
 
 // Read-only ROI: CPU spans borrow their frame; a native source is shared-owned.
@@ -43,6 +44,7 @@ struct SelectionRoiView {
   std::span<const float> rgba_float;
   std::size_t float_storage_capacity_samples{};
   LinearSourceRef linear_source{};
+  bool capture_sdr_tolerance{};
 
   [[nodiscard]] bool valid_storage() const {
     if (linear_source) {

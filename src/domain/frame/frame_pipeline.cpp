@@ -42,6 +42,7 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
         frame_error(ErrorCode::invalid_input, "SourceColorInterpreter", frame.display_id));
   }
   const bool native_linear_input = static_cast<bool>(frame.linear_source);
+  const bool capture_sdr_tolerance = frame.encoding.transfer == TransferFunction::extended_srgb;
   if (frame.pixel_format != (native_linear_input ? PixelFormat::rgba32_float : PixelFormat::rgba16_float)) {
     return Result<CanonicalFrameSegment, Error>::failure(frame_error(
         ErrorCode::unsupported_pixel_format, "SourceColorInterpreter", frame.display_id));
@@ -105,7 +106,8 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
     linear.reserve((count + alignment_samples - 1) / alignment_samples * alignment_samples);
     linear.resize(count);
     for (std::size_t i = 0; i < linear.size(); i += 4) {
-      for (std::size_t c = 0; c < 3; ++c) linear[i + c] = inverse[frame.rgba_half[i + c]];
+      for (std::size_t channel = 0; channel < 3; ++channel)
+        linear[i + channel] = inverse[frame.rgba_half[i + channel]];
       linear[i + 3] = 1.0F;
     }
     std::vector<std::uint16_t>().swap(frame.rgba_half);
@@ -125,6 +127,7 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
       std::move(linear),
       native_linear_input ? 0U : (frame.pixel_format == PixelFormat::rgba32_float ? 1U : 0U),
       std::move(native_linear),
+      capture_sdr_tolerance,
   });
 }
 

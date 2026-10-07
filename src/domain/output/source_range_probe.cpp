@@ -1,5 +1,6 @@
 #include "domain/output/source_range_probe.hpp"
 #include "domain/annotation/annotation_pixel_plan_validator.hpp"
+#include "domain/color/capture_edr_boundary.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -119,13 +120,13 @@ Result<RangeFitResult, Error> SourceRangeProbe::probe(
           return Result<RangeFitResult, Error>::failure(
               probe_error(ErrorCode::invalid_color_contract, "invalid_source_component"));
         }
-        if (value.value() > 1.0F) {
+        if (source_requires_hdr(value.value(), frame.capture_sdr_tolerance)) {
           return Result<RangeFitResult, Error>::success(RangeFitResult{
               false,
               source_pixel_count,
               annotation_pixel_count,
               scanned_components,
-              "source_visible_component_above_edr_one",
+              "source_visible_component_above_sdr_boundary",
           });
         }
       }
@@ -136,7 +137,7 @@ Result<RangeFitResult, Error> SourceRangeProbe::probe(
       source_pixel_count,
       annotation_pixel_count,
       scanned_components,
-      "source_visible_components_fit_edr_one",
+      "source_visible_components_fit_sdr_boundary",
   });
 }
 

@@ -86,6 +86,8 @@ struct CanonicalFrameSegment {
   LinearFloatPixels rgba_float;
   std::uint32_t software_linearization_passes{};
   LinearSourceRef linear_source{};
+  // Explicit capture provenance; generated/already-linear sources stay strict.
+  bool capture_sdr_tolerance{};
 };
 
 struct FrozenDesktop {

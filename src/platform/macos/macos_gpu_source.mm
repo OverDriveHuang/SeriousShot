@@ -86,7 +86,8 @@ kernel void normalize_extended_p3(
     output.write(float4(0.0f, 0.0f, 0.0f, 1.0f), p);
     return;
   }
-  output.write(float4(inverse[bits.r], inverse[bits.g], inverse[bits.b], 1.0f), p);
+  float3 linear = float3(inverse[bits.r], inverse[bits.g], inverse[bits.b]);
+  output.write(float4(linear, 1.0f), p);
 }
 
 // Matches the portable PositionedCleanSample's 24-byte layout, without

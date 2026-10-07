@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.2 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.3 LANGUAGES CXX)
 
 if(MSVC)
   include(cmake/windows_msvc.cmake)
@@ -996,6 +996,12 @@ if(BUILD_TESTING)
   hdrshot_enable_warnings(hdrshot_color_tests)
   add_test(NAME hdrshot_color_tests COMMAND hdrshot_color_tests)
 
+  add_executable(hdrshot_capture_edr_boundary_tests tests/capture_edr_boundary_tests.cpp)
+  target_link_libraries(hdrshot_capture_edr_boundary_tests PRIVATE hdrshot_frame_pipeline hdrshot_output_policy)
+  target_include_directories(hdrshot_capture_edr_boundary_tests PRIVATE tests)
+  hdrshot_enable_warnings(hdrshot_capture_edr_boundary_tests)
+  add_test(NAME hdrshot_capture_edr_boundary_tests COMMAND hdrshot_capture_edr_boundary_tests)
+
   add_executable(hdrshot_png_tests tests/png_encoder_tests.cpp)
   target_link_libraries(hdrshot_png_tests PRIVATE hdrshot_png hdrshot_color)
   target_include_directories(hdrshot_png_tests PRIVATE tests)
@@ -1287,9 +1293,10 @@ if(APPLE)
     target_compile_options(hdrshot_macos_gpu_source_tests PRIVATE -fobjc-arc)
     hdrshot_enable_warnings(hdrshot_macos_gpu_source_tests)
     target_include_directories(hdrshot_macos_gpu_source_tests PRIVATE tests)
-    target_link_libraries(hdrshot_macos_gpu_source_tests PRIVATE hdrshot_export_workflow
+    target_link_libraries(hdrshot_macos_gpu_source_tests PRIVATE hdrshot_analysis_application
       hdrshot_frame_pipeline hdrshot_ultra_hdr_input hdrshot_macos_export_pixel_processor
-      hdrshot_macos_metal_presenter)
+      hdrshot_macos_metal_presenter hdrshot_ultra_hdr_codec
+      hdrshot_macos_analysis)
     add_test(NAME hdrshot_macos_gpu_source_tests COMMAND hdrshot_macos_gpu_source_tests)
     set_tests_properties(hdrshot_macos_gpu_source_tests PROPERTIES SKIP_RETURN_CODE 77)
   endif()
