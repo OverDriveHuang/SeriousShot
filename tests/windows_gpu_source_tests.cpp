@@ -17,7 +17,7 @@ void compatibility_options_reach_gpu_once() {
       {2,2,2}, {0.2943845078214094,0.49170145028725964,1.4062492709346368},
       {-0.2056154921785906,-0.008298549712740409,-0.00427065768028001},
       {0.35507606257127494,1.9336116022980774,11.071034024706927}};
-  for (bool hdr : {false,true}) for (double white : {80.0,100.0,203.0,204.0}) {
+  for (bool hdr : {false,true}) for (double white : {80.0,100.0,203.0,204.0,240.0,400.0,480.0}) {
     const auto normal=WindowsColor::scrgb_to_edr_scale({hdr,white});
     HDRSHOT_CHECK(normal.has_value());
     for (bool gain_on : {false,true}) for (bool bypass : {false,true}) {

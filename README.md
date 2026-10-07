@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-10-07 21:09:00 CST
+最后更新：2026-10-08 00:35:00 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -25,7 +25,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。不只是把像素值�
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接画圈、加箭头和文字，把截图、标注、输出合在一起。
 - **SDR 也输出标准色彩空间**：对于直接保存显示缓冲区像素、缺少 ICC，或依赖显示器专属 ICC 的传统截图流程，SeriousShot 在 Windows 11 上将像素转换到标准 Display P3，并嵌入匹配的矩阵／曲线型 ICC（matrix-shaper profile）。图片的颜色解释不再依赖原显示器的专属配置，也更便于支持标准 ICC 的软件处理。这里包含实际像素转换，不是只替换 ICC 标签。
 
-HDR 呈现仍取决于查看器、系统和屏幕的支持；通用文件格式并不意味着所有软件都能显示 HDR。当前 macOS 安装包为 [0.1.3 DMG](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.3)，改善因精度误差导致的 HDR／SDR 误判；Windows 安装包仍为 [0.1.2 x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.2)，解压后运行。
+HDR 呈现仍取决于查看器、系统和屏幕的支持；通用文件格式并不意味着所有软件都能显示 HDR。[0.1.3 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.3) 提供 macOS arm64 DMG 与 Windows x64 ZIP，改善因精度误差导致的 HDR／SDR 误判。Windows 补充包对应的源码提交与归档链接见 Release 说明。
 
 ## 截图、标注、分享，一次完成
 
@@ -74,7 +74,7 @@ macOS 与 Windows 共用分析工作流；Windows 版本使用原生 GPU 后端�
 
 ### Windows 解压运行与更新
 
-下载 0.1.2 的 Windows x64 ZIP，完整解压到一个可写目录，再从解压后的目录运行 SeriousShot；不要直接在压缩包中启动。更新时先退出正在运行的旧版，再解压新版并从新版目录启动，避免继续运行旧副本。首次运行后按需设置截图快捷键、输出格式与保存位置。Windows 10 的亮度兼容选项见下方系统支持说明。
+下载 [0.1.3 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.3)，完整解压到一个可写目录，再从解压后的目录运行 SeriousShot；不要直接在压缩包中启动。更新时先退出正在运行的旧版，再解压新版并从新版目录启动，避免继续运行旧副本。首次运行后按需设置截图快捷键、输出格式与保存位置。Windows 10 的亮度兼容选项见下方系统支持说明。
 
 ### macOS 安装与首次使用
 

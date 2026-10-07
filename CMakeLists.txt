@@ -918,7 +918,7 @@ if(BUILD_TESTING)
   add_test(NAME hdrshot_interaction_tests COMMAND hdrshot_interaction_tests)
 
   add_executable(hdrshot_frame_pipeline_tests tests/frame_pipeline_tests.cpp)
-  target_link_libraries(hdrshot_frame_pipeline_tests PRIVATE hdrshot_frame_pipeline)
+  target_link_libraries(hdrshot_frame_pipeline_tests PRIVATE hdrshot_frame_pipeline hdrshot_frame_cropper)
   target_include_directories(hdrshot_frame_pipeline_tests PRIVATE tests)
   hdrshot_enable_warnings(hdrshot_frame_pipeline_tests)
   add_test(NAME hdrshot_frame_pipeline_tests COMMAND hdrshot_frame_pipeline_tests)

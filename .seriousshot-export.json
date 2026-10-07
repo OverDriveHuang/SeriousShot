@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-07T21:03:40+08:00",
+  "timestamp": "2026-10-08T00:34:55+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "9e36b06a2af2df8a998dfcc48b19d7e00f357ca3a9e4fd289a36708b0f390350",
+      "sha256": "018135219b4fa3aabba50c7e86c389e840151430af25fadb32c1e85955bb6206",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "bf182c9611f20b66e476cf1849261174bdcae46635df1f49d096504ebbfcccce",
+      "sha256": "9130e4cb23ad351898ad9fd3d554c0e9737793120843366b2b35bcec899e30f5",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -87,7 +87,7 @@
       "mode": 420
     },
     "cmake/windows.cmake": {
-      "sha256": "192470846ba7e07b824bfaccdc275b97beb17d3a2f0fc761e709f2955d4cc856",
+      "sha256": "2361233fe3f767bf265b93c11a2056801a31ba7c9f9ca6819af4a0cdaeeb3032",
       "mode": 420
     },
     "cmake/windows_analysis.cmake": {
@@ -147,7 +147,7 @@
       "mode": 420
     },
     "src/adapters/shared/libultrahdr_encoder.cpp": {
-      "sha256": "474d546ace1e3ee60c54b325b8fec9a41ae9efd81117f66ff20382144fdebdcc",
+      "sha256": "d1b7f10c0f968f838fb7652ed5e34e1ce87960152c1f707250ea5e869ef91ed8",
       "mode": 420
     },
     "src/adapters/shared/libultrahdr_encoder.hpp": {
@@ -279,7 +279,7 @@
       "mode": 420
     },
     "src/core/frame.hpp": {
-      "sha256": "be38fb2d717d2756a2e13127c66ba7b4fd4a4ac2586f37ae0134def600b337f5",
+      "sha256": "b1e20ce036795a6126ef28fb43d50076803d0e88dc2c244e65029ef955d60e43",
       "mode": 420
     },
     "src/core/geometry.hpp": {
@@ -459,7 +459,7 @@
       "mode": 420
     },
     "src/domain/frame/frame_pipeline.cpp": {
-      "sha256": "30c0b50b4f879f49d759c3de9f0fb18e7475d730df4635716f1bbc807b2fbbde",
+      "sha256": "8decb9e36f8099638569d359ee3f1bcb04f035e0da7b70d9de161f4b4f268629",
       "mode": 420
     },
     "src/domain/frame/frame_pipeline.hpp": {
@@ -747,7 +747,7 @@
       "mode": 420
     },
     "src/platform/windows/windows_capture.cpp": {
-      "sha256": "e6c55507cb935380fcefbacf40af0b2b3468fba09fc605d37ff7bcf8f5ad17e6",
+      "sha256": "e6964325ededfcc09111c71c7a363c0f557f2276f98beba838ac37697380caa6",
       "mode": 420
     },
     "src/platform/windows/windows_capture.hpp": {
@@ -771,7 +771,7 @@
       "mode": 420
     },
     "src/platform/windows/windows_color.cpp": {
-      "sha256": "7b991659fbd1da5347caae21e762e0b0d70bd71a3169227ea87f7987f5a304bc",
+      "sha256": "e96898fbfe180d423a0baacd9458e3d2c66cb11e49772ffa9d4033e0ef55fe84",
       "mode": 420
     },
     "src/platform/windows/windows_color.hpp": {
@@ -783,7 +783,7 @@
       "mode": 420
     },
     "src/platform/windows/windows_d3d_export.cpp": {
-      "sha256": "b159c87fa72800e93226d3ed9ca5e1d0b50a934e784c1fc66a55cfda1a44ebe0",
+      "sha256": "4e884d7d3cddbc91c9540795082d274a65e145e0da1d9021d40c0a6333ab3522",
       "mode": 420
     },
     "src/platform/windows/windows_d3d_export.hpp": {
@@ -1055,7 +1055,7 @@
       "mode": 420
     },
     "tests/frame_pipeline_tests.cpp": {
-      "sha256": "d09814f4037ea68d2de709b4adeb1f8cdfbc0155b67d300ea7f7b6c79dfc8151",
+      "sha256": "9e5b3e05b65880ec316e89641a8d15ba2b98c8229c3970202dff602e456c259e",
       "mode": 420
     },
     "tests/freetype_text_rasterizer_tests.cpp": {
@@ -1267,15 +1267,15 @@
       "mode": 420
     },
     "tests/windows_capture_tests.cpp": {
-      "sha256": "a82c286b5ed81a2bb0a1e018c0fd4515fa61e6acf9a469745592a34d60ba1998",
+      "sha256": "da0f2267c989e349ee99beb582f6f9f92974137aff1389711156d3b60279f079",
       "mode": 420
     },
     "tests/windows_color_tests.cpp": {
-      "sha256": "6ad4788389f7c2ca3c7d1963d32be347331dc7bbc32d7319d637982627b5788e",
+      "sha256": "1cbad266515cf24c619d4618c624642a574c3659adfb3368abc1d3590c5d5302",
       "mode": 420
     },
     "tests/windows_d3d_export_tests.cpp": {
-      "sha256": "c601a097e91128f3b37b5b3040e04218b9ddfa999f9cb6b5ece8fe1bc706a59e",
+      "sha256": "cd161c9434d8c2e3b23e8f96e18a00a4c95cc18c6c20fa98e235a0b8f8ba31a5",
       "mode": 420
     },
     "tests/windows_d3d_presenter_tests.cpp": {
@@ -1291,7 +1291,7 @@
       "mode": 420
     },
     "tests/windows_gpu_source_tests.cpp": {
-      "sha256": "5b83158cfc56a06282c039d0b57c6a75b1068c0dc1efe2c980093ec96cb9a0e9",
+      "sha256": "927b21c0bbffb817181e90158f72b156f31dcecca85614beb667b2bbcd535734",
       "mode": 420
     },
     "tests/windows_icc_transform_tests.cpp": {

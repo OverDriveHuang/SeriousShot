@@ -2,6 +2,7 @@
 
 #include "domain/annotation/annotation_pixel_plan_validator.hpp"
 #include "domain/color/extended_p3_mapper.hpp"
+#include "domain/color/capture_edr_boundary.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -116,7 +117,8 @@ Result<RangeFitResult, Error> WindowsLinearP3RangeProbe::probe(
         const auto decoded = source_view.sample(p + c);
         ++out.scanned_component_count;
         if (!decoded) return Result<RangeFitResult, Error>::failure(decoded.error());
-        if (decoded.value() > 1.0F) out.fits_sdr = false;
+        if (source_requires_hdr(
+                decoded.value(), source_view.capture_sdr_tolerance)) out.fits_sdr = false;
       }
     }
   }

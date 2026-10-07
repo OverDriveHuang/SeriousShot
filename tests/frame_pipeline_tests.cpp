@@ -1,4 +1,5 @@
 #include "domain/frame/frame_pipeline.hpp"
+#include "domain/frame/frame_cropper.hpp"
 #include "test_support.hpp"
 
 #include <cstdint>
@@ -45,7 +46,7 @@ public:
 };
 
 void interpreter_accepts_only_unambiguous_native_linear_source() {
-  const auto snapshot = display(7, LogicalRect{}, {2, 2});
+  const auto snapshot = display(7, LogicalRect{0, 0, 2, 2}, {2, 2});
   auto native = [] {
     NativeCaptureFrame frame{};
     frame.display_id = DisplayId{7};
@@ -61,6 +62,22 @@ void interpreter_accepts_only_unambiguous_native_linear_source() {
   HDRSHOT_CHECK(static_cast<bool>(valid.value().linear_source));
   HDRSHOT_CHECK(valid.value().rgba_half.empty() &&
                 valid.value().rgba_float.empty());
+  HDRSHOT_CHECK(!valid.value().capture_sdr_tolerance);
+  auto capture = native();
+  capture.capture_sdr_tolerance = true;
+  auto opted = SourceColorInterpreter::interpret(std::move(capture), snapshot);
+  HDRSHOT_CHECK(opted && opted.value().capture_sdr_tolerance);
+  HDRSHOT_CHECK(opted.value().software_linearization_passes == 0);
+  const auto source = opted.value().linear_source;
+  auto desktop = std::make_shared<FrozenDesktop>();
+  desktop->canonical_segments.push_back(std::move(opted.value()));
+  const auto roi = FrameCropper::view_display(*desktop, DisplayId{7},
+      {SelectionRevision{1}, {0, 0, 1, 1}});
+  HDRSHOT_CHECK(roi && roi.value().capture_sdr_tolerance);
+  const auto read = FrameCropper::read_cpu_region(roi.value());
+  HDRSHOT_CHECK(read && read.value().capture_sdr_tolerance);
+  HDRSHOT_CHECK(FrameCropper::view(read.value()).capture_sdr_tolerance);
+  HDRSHOT_CHECK(desktop->canonical_segments.front().linear_source == source);
   auto wrong = native();
   wrong.rgba_half = {0x3c00};
   HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(wrong), snapshot));

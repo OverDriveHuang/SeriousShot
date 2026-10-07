@@ -63,6 +63,8 @@ struct NativeCaptureFrame {
   std::shared_ptr<LinearStoragePort> linear_storage;
   std::shared_ptr<SourceNormalizerPort> source_normalizer{};
   LinearSourceRef linear_source{}; // Already normalized FP32 Linear Display P3.
+  // Platform opt-in for capture classification; never modifies source samples.
+  bool capture_sdr_tolerance{};
 };
 
 struct NativeFrameBatch {
@@ -86,7 +88,7 @@ struct CanonicalFrameSegment {
   LinearFloatPixels rgba_float;
   std::uint32_t software_linearization_passes{};
   LinearSourceRef linear_source{};
-  // Explicit capture provenance; generated/already-linear sources stay strict.
+  // Explicit capture provenance; generated/non-opted-in linear sources stay strict.
   bool capture_sdr_tolerance{};
 };
 

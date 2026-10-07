@@ -295,6 +295,7 @@ Result<LinearDisplayP3HalfImage,Error> WindowsD3DExportPixelProcessor::render(co
   for(const auto& p:pixels.value().pixels) for(auto c:p) out.rgba_half.push_back(static_cast<std::uint16_t>(c));
   out.maximum_linear_component=std::bit_cast<float>(pixels.value().stats[6]);
   out.source_visible_maximum_linear_component=std::bit_cast<float>(pixels.value().stats[7]);
+  out.capture_sdr_tolerance=request.source->capture_sdr_tolerance;
   return Result<LinearDisplayP3HalfImage,Error>::success(std::move(out));
 }
 }  // namespace hdrshot

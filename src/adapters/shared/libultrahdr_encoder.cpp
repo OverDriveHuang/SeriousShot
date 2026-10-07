@@ -132,8 +132,8 @@ Result<EncodedUltraHdrJpeg, Error> encode_sdr_jpeg(
     for (std::size_t x = 0; x < width; ++x) {
       for (std::size_t c = 0; c < 3; ++c) {
         auto bits = source.rgba_half[start + x * 4U + c];
-        // Explicit AA policy: positive finite residual edge HDR may be clipped
-        // when a renderer supplied the source-passthrough classification.
+        // Renderer-owned SDR classification allows final clipping of positive
+        // finite AA residuals and capture-tolerance excursions; source stays intact.
         if (allow_edge_clip && bits > 0x3C00U && bits < 0x7C00U) bits = 0x3C00U;
         // Accept signed zero; reject negative, >1, NaN or infinity instead of
         // silently clipping a renderer contract violation into SDR.

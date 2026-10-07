@@ -1,10 +1,13 @@
 #include "platform/windows/windows_color.hpp"
 #include "application/analysis_workflow.hpp"
 #include "domain/color/extended_p3_mapper.hpp"
+#include "domain/color/capture_edr_boundary.hpp"
 #include "platform/cpu/cpu_analysis_port.hpp"
 #include "test_support.hpp"
 #include <limits>
 #include <memory>
+#include <bit>
+#include <cstring>
 
 using namespace hdrshot;
 namespace {
@@ -74,6 +77,34 @@ void classification_and_coverage() {
   HDRSHOT_CHECK(!probe.probe(roi, plan, {}));
   frame.encoding.transfer = TransferFunction::extended_srgb;
   HDRSHOT_CHECK(!probe.probe(FrameCropper::view(frame), plan, {}));
+}
+void capture_tolerance_preserves_fp32_and_source_ownership() {
+  WindowsLinearP3RangeProbe probe;
+  for (const bool tolerance : {false, true}) {
+    for (const float maximum : {1.0F, 1.00033021F, 1.001F, 1.002F,
+        kCaptureSdrMaximumEdr, std::bit_cast<float>(kCaptureSdrMaximumEdrBits + 1U)}) {
+      CanonicalFrameView frame{};
+      frame.size_px = {2, 1};
+      frame.encoding = WindowsColor::linear_p3_encoding();
+      frame.display_dynamic_range = DisplayDynamicRange::hdr;
+      frame.capture_sdr_tolerance = tolerance;
+      // A colored excursion must classify by RGB, even when Y is below one.
+      frame.rgba_float.assign({maximum, 0.1F, -0.2F, 1.0F, 4.0F, 4.0F, 4.0F, 1.0F});
+      const auto before = frame.rgba_float;
+      AnnotationPixelPlan ownership{0, {2, 1}, {{0, 0, 1}},
+          {{0, 1, 1, ObjectId{1}, 0xffffff, {{{0.4F, 0, 0, 0.5F}}}}}};
+      auto fit = probe.probe(FrameCropper::view(frame), ownership, {});
+      const bool expected_sdr = tolerance ?
+          maximum != std::bit_cast<float>(kCaptureSdrMaximumEdrBits + 1U) : maximum == 1.0F;
+      HDRSHOT_CHECK(fit && fit.value().fits_sdr == expected_sdr);
+      HDRSHOT_CHECK(fit.value().scanned_component_count == 3);
+      ownership = {0, {2, 1}, {{0, 0, 2}}, {}};
+      fit = probe.probe(FrameCropper::view(frame), ownership, {});
+      HDRSHOT_CHECK(fit && !fit.value().fits_sdr && fit.value().scanned_component_count == 6);
+      HDRSHOT_CHECK(std::memcmp(before.data(), frame.rgba_float.data(), before.size()*sizeof(float)) == 0);
+    }
+  }
+  HDRSHOT_CHECK(source_requires_hdr(kCaptureHdrMinimumEdr, true));
 }
 void frozen_sdr_skips_pixels_but_validates_structure() {
   WindowsLinearP3RangeProbe probe;
@@ -165,21 +196,24 @@ void compact_analysis_snapshot_restores_capture_range() {
   HDRSHOT_CHECK(!windows_snapshot_with_capture_range(invalid, DisplayDynamicRange::sdr));
 }
 void real_analysis_original_and_report_keep_capture_range() {
-  for (const auto captured : {DisplayDynamicRange::sdr, DisplayDynamicRange::hdr}) {
+  for (const auto captured : {DisplayDynamicRange::sdr, DisplayDynamicRange::hdr})
+      for (const float maximum : {1.001F, 1.0040311F})
+      for (const bool omit_target : {false, true}) {
     CanonicalFrameSegment segment{};
-    segment.display_id = DisplayId{1};
+    segment.display_id = DisplayId{7};
     segment.desktop_frame_points = {0, 0, 1, 1};
     segment.size_px = {1, 1};
     segment.pixel_format = PixelFormat::rgba32_float;
     segment.encoding = WindowsColor::linear_p3_encoding();
     segment.display_dynamic_range = captured;
-    segment.rgba_float.assign({1.0040311F, 1.0F, 1.0F, 1.0F});
+    segment.capture_sdr_tolerance = captured == DisplayDynamicRange::hdr;
+    segment.rgba_float.assign({maximum, 1.0F, 1.0F, 1.0F});
     auto desktop = std::make_shared<FrozenDesktop>();
     desktop->desktop_bounds_points = {0, 0, 1, 1};
     desktop->canonical_segments.push_back(std::move(segment));
     ExportSnapshot original{};
     original.frozen_desktop = desktop;
-    original.target_display_id = DisplayId{1};
+    original.target_display_id = omit_target ? DisplayId{} : DisplayId{7};
     original.selection = {SelectionRevision{1}, {0, 0, 1, 1}};
     original.annotations.revision = DocumentRevision{2};
     original.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
@@ -188,8 +222,11 @@ void real_analysis_original_and_report_keep_capture_range() {
     auto cpu = make_cpu_analysis_port();
     const auto prepared = AnalysisWorkflow::prepare(original, *cpu, &probe);
     HDRSHOT_CHECK(prepared.has_value());
-    HDRSHOT_CHECK(prepared.value().input.is_hdr == (captured == DisplayDynamicRange::hdr));
+    const bool expected_hdr = captured == DisplayDynamicRange::hdr && maximum == 1.0040311F;
+    HDRSHOT_CHECK(prepared.value().input.is_hdr == expected_hdr);
     const auto& compact = prepared.value().original;
+    HDRSHOT_CHECK(compact.frozen_desktop->canonical_segments.front().capture_sdr_tolerance ==
+        (captured == DisplayDynamicRange::hdr));
     HDRSHOT_CHECK(compact.frozen_desktop->canonical_segments.front().display_dynamic_range == DisplayDynamicRange::hdr);
     const auto restored = windows_snapshot_with_capture_range(compact, captured);
     HDRSHOT_CHECK(restored.has_value());
@@ -201,15 +238,24 @@ void real_analysis_original_and_report_keep_capture_range() {
         restored.value().selection.desktop_rect, restored.value().annotations.revision);
     HDRSHOT_CHECK(plan.has_value());
     const auto fit = probe.probe(view.value(), plan.value(), {});
-    HDRSHOT_CHECK(fit && fit.value().fits_sdr == (captured == DisplayDynamicRange::sdr));
+    HDRSHOT_CHECK(fit && fit.value().fits_sdr == !expected_hdr);
     const auto report = AnalysisWorkflow::report_snapshot(compact, prepared.value().input.source);
     HDRSHOT_CHECK(report.has_value());
+    HDRSHOT_CHECK(!report.value().frozen_desktop->canonical_segments.front().capture_sdr_tolerance);
     const auto restored_report = windows_snapshot_with_capture_range(report.value(), captured);
     HDRSHOT_CHECK(restored_report.has_value());
     HDRSHOT_CHECK(restored_report.value().clean_content->source == restored_report.value().frozen_desktop);
     HDRSHOT_CHECK(restored_report.value().frozen_desktop->canonical_segments.front().display_dynamic_range == captured);
     HDRSHOT_CHECK(report.value().frozen_desktop->canonical_segments.front().display_dynamic_range == DisplayDynamicRange::hdr);
     HDRSHOT_CHECK(original.frozen_desktop->canonical_segments.front().display_dynamic_range == captured);
+    auto report_roi = FrameCropper::view_display(*restored_report.value().frozen_desktop,
+        restored_report.value().target_display_id, restored_report.value().selection);
+    HDRSHOT_CHECK(report_roi && !report_roi.value().capture_sdr_tolerance);
+    auto report_plan = restored_report.value().clean_content->roi_plan(
+        restored_report.value().selection.desktop_rect, restored_report.value().annotations.revision);
+    HDRSHOT_CHECK(report_plan.has_value());
+    const auto report_fit = probe.probe(report_roi.value(), report_plan.value(), {});
+    HDRSHOT_CHECK(report_fit && report_fit.value().fits_sdr == (captured == DisplayDynamicRange::sdr));
   }
 }
 }
@@ -218,6 +264,7 @@ int main() {
       {"linear capture", capture_does_not_gamma_encode}, {"classification and AA ownership", classification_and_coverage},
       {"frozen SDR validates without pixel reads", frozen_sdr_skips_pixels_but_validates_structure},
       {"frozen display class and HDR threshold", frozen_display_class_and_hdr_threshold},
+      {"capture FP32 tolerance and source ownership", capture_tolerance_preserves_fp32_and_source_ownership},
       {"compact analysis restores captured range", compact_analysis_snapshot_restores_capture_range},
       {"real analysis original and report preserve capture range", real_analysis_original_and_report_keep_capture_range}});
 }

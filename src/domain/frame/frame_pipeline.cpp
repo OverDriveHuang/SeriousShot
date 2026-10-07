@@ -42,7 +42,8 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
         frame_error(ErrorCode::invalid_input, "SourceColorInterpreter", frame.display_id));
   }
   const bool native_linear_input = static_cast<bool>(frame.linear_source);
-  const bool capture_sdr_tolerance = frame.encoding.transfer == TransferFunction::extended_srgb;
+  const bool capture_sdr_tolerance = frame.capture_sdr_tolerance ||
+      frame.encoding.transfer == TransferFunction::extended_srgb;
   if (frame.pixel_format != (native_linear_input ? PixelFormat::rgba32_float : PixelFormat::rgba16_float)) {
     return Result<CanonicalFrameSegment, Error>::failure(frame_error(
         ErrorCode::unsupported_pixel_format, "SourceColorInterpreter", frame.display_id));
