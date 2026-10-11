@@ -15,6 +15,7 @@
 #include "platform/macos/macos_metal_export_pixel_processor.hpp"
 #include "platform/macos/metal_edr_presenter.hpp"
 #include "test_support.hpp"
+#include "domain/analysis/math.hpp"
 
 #import <Foundation/Foundation.h>
 
@@ -23,6 +24,8 @@
 #include <bit>
 #include <cstdint>
 #include <iomanip>
+#include <fstream>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -940,6 +943,78 @@ void capture_boundary_drives_exports_and_analysis_without_losing_isolated_hdr() 
     }
   }
 }
+void magnifier_native_source_nearest_neighbor_edges_and_overlay_separation() {
+  constexpr PixelSize size{128,128};
+  const auto desktop=interpret(source_pixels(size),true,size);
+  const auto source=desktop->canonical_segments.front().linear_source;
+  const auto texture=macos_source_texture(source);
+  HDRSHOT_CHECK(texture.storageMode==MTLStorageModePrivate);
+  HDRSHOT_CHECK(texture.pixelFormat==MTLPixelFormatRGBA32Float);
+  auto display=presenter();
+  auto clean=std::make_shared<CleanContentSnapshot>();
+  clean->source=desktop; clean->display_id=kDisplay; clean->content_revision=99;
+  for(PixelPoint p : {PixelPoint{63,61},PixelPoint{0,0},PixelPoint{127,127}})
+    clean->owned.push_back({p.y,p.x,1,ObjectId{99},0xff0000,{{10.F,0.F,0.F,0.F}},true});
+  auto annotated=preview_request(desktop,clean);
+  annotated.selection_px={0,0,128,128}; annotated.ui_border_width_px=0;
+  const auto clean_shown=display->render_offscreen(annotated);
+  HDRSHOT_CHECK(clean_shown.has_value());
+  HDRSHOT_CHECK_NEAR(clean_shown.value().rgba_linear_display_p3[std::size_t(61*128+63)*4],10.,.001);
+  for(int zoom : {4,8,12,16}) for(PixelPoint center : {PixelPoint{63,61},PixelPoint{0,0},PixelPoint{127,127}}) {
+    auto request=preview_request(desktop,clean);
+    request.selection_px={}; request.ui_border_width_px=0;
+    request.outside_linear_dim_factor=.25F;
+    request.magnifier={true,center,{0,0,7*zoom,5*zoom},zoom,1};
+    const auto actual=display->render_offscreen(request);
+    HDRSHOT_CHECK(actual.has_value());
+    HDRSHOT_CHECK(macos_source_texture(source)==texture);
+    HDRSHOT_CHECK(std::all_of(actual.value().rgba_linear_display_p3.begin(),actual.value().rgba_linear_display_p3.end(),[](float v){return std::isfinite(v);}));
+    for(int row=0;row<5;++row) for(int col=0;col<7;++col) {
+      // Choose cell interiors away from the center outline and crosshair.
+      const int dx=col*zoom+1,dy=row*zoom+1;
+      const int x=center.x+col-3,y=center.y+row-2;
+      const auto offset=std::size_t(dy*size.width+dx)*4;
+      if(x<0 || y<0 || x>=size.width || y>=size.height) {
+        for(int c=0;c<3;++c) HDRSHOT_CHECK_NEAR(actual.value().rgba_linear_display_p3[offset+c],.025,.0001);
+      } else {
+        const auto sample=source->read_region({x,y,1,1});
+        HDRSHOT_CHECK(sample.has_value() && sample.value().size()==4);
+        for(int c=0;c<3;++c) HDRSHOT_CHECK_NEAR(actual.value().rgba_linear_display_p3[offset+c],sample.value()[c],.008);
+      }
+    }
+    // Center box and broken cross are display-only 203-nit UI marks.
+    const int cx=3*zoom,cy=2*zoom;
+    HDRSHOT_CHECK_NEAR(actual.value().rgba_linear_display_p3[std::size_t(cy*size.width+cx)*4],2.03,.002);
+    HDRSHOT_CHECK_NEAR(actual.value().rgba_linear_display_p3[std::size_t(7*zoom/2)*4],2.03,.002);
+    const auto outside=source->read_region({127,126,1,1}); HDRSHOT_CHECK(outside.has_value());
+    HDRSHOT_CHECK_NEAR(actual.value().rgba_linear_display_p3[std::size_t(126*128+127)*4],outside.value()[0]*.25,.008);
+    std::cout << "magnifier native zoom=" << zoom << " center=" << center.x << ',' << center.y
+              << " texture=Private/RGBA32Float source_identity=unchanged\n";
+  }
+  if(const char* path=std::getenv("HDRSHOT_MAGNIFIER_NATIVE_PPM")){
+    constexpr PixelSize visual_size{320,320};
+    const auto visual=interpret(source_pixels(visual_size),true,visual_size);
+    const auto center_sample=visual->canonical_segments.front().linear_source->read_region({159,240,1,1});HDRSHOT_CHECK(center_sample.has_value());
+    std::ofstream sample_file(std::string(path)+".rgb");for(int i=0;i<3;++i)sample_file<<std::setprecision(17)<<center_sample.value()[i]<<" ";
+    auto request=preview_request(visual);request.selection_px={};request.ui_border_width_px=0;
+    request.magnifier={true,{159,240},{0,0,216,216},8,1};
+    const auto image=display->render_offscreen(request);HDRSHOT_CHECK(image.has_value());
+    std::ofstream file(path,std::ios::binary);file<<"P6\n216 216\n255\n";
+    // SDR visual evidence only. Numerical HDR checks above use raw linear data.
+    for(int y=0;y<216;++y)for(int x=0;x<216;++x){const auto i=std::size_t(y*320+x)*4;const auto& pixels=image.value().rgba_linear_display_p3;
+      const auto v=hdrshot::analysis_math::display_srgb_from_work(hdrshot::analysis_math::a3(pixels[i],pixels[i+1],pixels[i+2]),1u);
+      for(float c:{v.x,v.y,v.z})file.put(char(std::lround(std::clamp(c,0.F,1.F)*255)));}
+    HDRSHOT_CHECK(file.good());
+  }
+  auto invalid=preview_request(desktop);
+  invalid.magnifier={true,{63,61},{0,0,56,40},0,1};
+  HDRSHOT_CHECK(!display->render_offscreen(invalid));
+  invalid.magnifier.zoom=-8; HDRSHOT_CHECK(!display->render_offscreen(invalid));
+  invalid.magnifier.zoom=8; invalid.magnifier.viewport.width=0; HDRSHOT_CHECK(!display->render_offscreen(invalid));
+  invalid.magnifier.viewport={127,0,56,40}; HDRSHOT_CHECK(!display->render_offscreen(invalid));
+  invalid.magnifier.visible=false; HDRSHOT_CHECK(display->render_offscreen(invalid).has_value());
+}
+
 } // namespace
 
 int main() {
@@ -958,6 +1033,7 @@ int main() {
       return 1;
     }
     return test::run({
+        {"native magnifier exact cells, raw source, edges, overlay and invalid requests", magnifier_native_source_nearest_neighbor_edges_and_overlay_separation},
         {"first native source draw precedes CPU readback", first_draw_consumes_new_native_source_before_cpu_readback},
         {"all 65536 half codes match exact inverse", all_65536_half_codes_preserve_finite_inverse_float_bits},
         {"capture boundary PNG JPEG analysis original and report", capture_boundary_drives_exports_and_analysis_without_losing_isolated_hdr},

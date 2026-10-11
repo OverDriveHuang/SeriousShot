@@ -1,8 +1,12 @@
 #pragma once
 #include "platform/windows/windows_capture.hpp"
 #include "ports/capture_preview_ports.hpp"
+#include <cstdint>
 #include <memory>
 namespace hdrshot {
+struct WindowsPreviewResourceCounters {
+  std::uint64_t source_texture_uploads{}, clean_content_uploads{};
+};
 class WindowsD3DPreviewPresenter final : public PreviewPresenterPort {
  public:
   static Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error> create(
@@ -11,6 +15,8 @@ class WindowsD3DPreviewPresenter final : public PreviewPresenterPort {
   // Native GPU fixture: a null HWND creates an offscreen FP16 surface. This
   // reads the same shader output used by the HWND path, before DWM composition.
   Result<std::vector<std::uint16_t>,Error> render_offscreen(const PresentPreviewRequest& request);
+  // Read-only native regression diagnostics; does not wait for the GPU.
+  WindowsPreviewResourceCounters resource_counters() const;
   ~WindowsD3DPreviewPresenter() override;
   void present(const PresentPreviewRequest& request,Completion completion) override;
   void cancel(SessionId session,OperationId operation) override;

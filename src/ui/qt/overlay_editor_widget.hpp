@@ -32,6 +32,8 @@ enum class EditorTool : std::uint8_t { select, rectangle, ellipse, arrow, text }
 
 class OverlayEditorWidget final : public QWidget {
  public:
+  void set_magnifier_exclusion(QRect region) {if(magnifier_exclusion_!=region){magnifier_exclusion_=region;update();}}
+  [[nodiscard]] bool magnifier_applicable() const {return !interaction_locked_ && (selection_.desktop_rect.empty() || dragging_selection_ || selection_adjustment_.has_value());}
   void set_clean_content_presented(bool enabled) { clean_content_presented_ = enabled; update(); }
 
   using PreviewChanged =
@@ -89,6 +91,7 @@ class OverlayEditorWidget final : public QWidget {
   void enterEvent(QEnterEvent* event) override;
 
  private:
+  QRect magnifier_exclusion_{};
   bool clean_content_presented_{};
   std::optional<AnnotationObject> draft_annotation_;
   void update_new_annotation_preview(PixelPoint current);

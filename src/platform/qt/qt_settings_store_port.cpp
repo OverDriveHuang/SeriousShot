@@ -1,4 +1,5 @@
 #include "platform/qt/qt_settings_store_port.hpp"
+#include "ui/qt/analysis_defaults_json.hpp"
 
 #include <QDir>
 #include <QFileInfo>
@@ -298,10 +299,13 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
       windows_gain,
       windows_gain_enabled,
       windows_bypass_sdr_white_enabled,
+      analysis_defaults_from_json(settings.value("analysisDefaults").toString(),analyzer_text),
   });
 }
 
 Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& patch) {
+  if (patch.analysis_defaults && !valid_analysis_defaults(*patch.analysis_defaults))
+    return Result<SettingsReceipt, Error>::failure(settings_error(ErrorCode::invalid_input,Retryability::never,{{"field","analysisDefaults"}}));
   if (patch.windows_scrgb_gain && !valid_windows_scrgb_gain(*patch.windows_scrgb_gain))
     return Result<SettingsReceipt, Error>::failure(settings_error(
         ErrorCode::invalid_input, Retryability::never, {{"field", "windowsScRgbGain"}}));
@@ -361,6 +365,7 @@ Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& pa
           current.value().initial_settings_presented));
   settings.setValue(QStringLiteral("detailedLogging"),
       patch.detailed_logging.value_or(current.value().detailed_logging));
+  settings.setValue("analysisDefaults", analysis_defaults_json(patch.analysis_defaults.value_or(current.value().analysis_defaults)));
   settings.setValue(QStringLiteral("analyzerPreferences"), QString::fromStdString(
       patch.analyzer_preferences_json.value_or(current.value().analyzer_preferences_json)));
 #ifdef Q_OS_WIN

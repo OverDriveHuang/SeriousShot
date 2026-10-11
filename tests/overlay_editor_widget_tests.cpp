@@ -1,4 +1,5 @@
 #include "ui/qt/overlay_editor_widget.hpp"
+#include "ports/annotation_font_contract.hpp"
 #include "test_support.hpp"
 
 #include <QApplication>
@@ -180,6 +181,19 @@ void preview_preserves_partial_coverage() {
   painter.end();
   // The fake glyph fills its bounds: sample far from selection handles/UI.
   HDRSHOT_CHECK(qAlpha(pixels.pixel(bounds.x+bounds.width/2,bounds.y+bounds.height/2))==128);
+}
+
+void pending_text_requests_the_fixed_variable_font_instance() {
+  Fixture fixture;
+  fixture.button("toolText")->click();
+  send_drag(fixture.widget, {100,100}, {350,180});
+  auto* editor = fixture.widget.findChild<QLineEdit*>("annotationTextEditor");
+  HDRSHOT_CHECK(editor != nullptr);
+  const auto font = editor->font();
+  HDRSHOT_CHECK(font.isVariableAxisSet("wght"));
+  HDRSHOT_CHECK(font.variableAxisValue("wght") == annotation_font::weight);
+  HDRSHOT_CHECK(font.hintingPreference() == QFont::PreferNoHinting);
+  HDRSHOT_CHECK((font.styleStrategy() & QFont::NoFontMerging) != 0);
 }
 
 void explicit_completion_commits_text_and_failure_preserves_input() {
@@ -1014,6 +1028,7 @@ int main(int argc, char** argv) {
       {"leaving a candidate clears only preview", leaving_candidate_clears_preview_without_touching_selection},
       {"drawing cursor stays out of toolbar and properties", drawing_cursor_does_not_leak_into_controls},
       {"preview retains grayscale annotation coverage", preview_preserves_partial_coverage},
+      {"pending input requests fixed wght instance", pending_text_requests_the_fixed_variable_font_instance},
       {"pending text explicit completion is transactional", explicit_completion_commits_text_and_failure_preserves_input},
       {"input focus blocks fixed completion", pending_input_fixed_keys_do_not_complete_capture},
       {"empty text and cancellation do not add objects", empty_text_completion_and_capture_cancel_do_not_create_objects},

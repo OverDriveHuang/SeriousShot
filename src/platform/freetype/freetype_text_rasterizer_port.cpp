@@ -1,4 +1,5 @@
 #include "platform/freetype/freetype_text_rasterizer_port.hpp"
+#include "ports/annotation_font_contract.hpp"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -18,6 +19,11 @@
 
 namespace hdrshot {
 namespace {
+
+// Keep measurement and coverage on the same loading policy. With the fixed
+// font, FT_LOAD_DEFAULT automatically grid-fits the diagnosed small CJK
+// horizontals too heavily. Do not replace this with FT_LOAD_DEFAULT.
+constexpr FT_Int32 glyph_load_flags = FT_LOAD_NO_AUTOHINT;
 
 Error font_error(
     const ErrorCode code,
@@ -117,7 +123,8 @@ struct FreeTypeTextRasterizerPort::Impl {
     }
     std::vector<FT_Fixed> coordinates(variation->num_axis);
     bool found_weight = false;
-    constexpr FT_Fixed calibrated_weight = static_cast<FT_Fixed>(450L * 65536L);
+    constexpr FT_Fixed calibrated_weight =
+        static_cast<FT_Fixed>(annotation_font::weight * 65536L);
     for (FT_UInt index = 0; index < variation->num_axis; ++index) {
       const auto& axis = variation->axis[index];
       coordinates[index] = axis.def;
@@ -215,7 +222,7 @@ Result<TextMetrics, Error> FreeTypeTextRasterizerPort::measure(
         pen_x += static_cast<std::int32_t>(kerning.x / 64);
       }
     }
-    const auto load_status = FT_Load_Glyph(impl_->face, glyph_index, FT_LOAD_DEFAULT);
+    const auto load_status = FT_Load_Glyph(impl_->face, glyph_index, glyph_load_flags);
     if (load_status != 0) {
       return Result<TextMetrics, Error>::failure(font_error(
           ErrorCode::unsupported_encoding,
@@ -310,7 +317,7 @@ Result<TextCoverageMask, Error> FreeTypeTextRasterizerPort::rasterize(
     const auto load_status = FT_Load_Glyph(
         impl_->face,
         glyph_index,
-        FT_LOAD_DEFAULT);
+        glyph_load_flags);
     if (load_status != 0 || FT_Render_Glyph(impl_->face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
       return Result<TextCoverageMask, Error>::failure(font_error(
           ErrorCode::unsupported_encoding,

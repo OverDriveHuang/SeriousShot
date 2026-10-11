@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.3 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.4 LANGUAGES CXX)
 
 if(MSVC)
   include(cmake/windows_msvc.cmake)
@@ -248,6 +248,10 @@ target_link_libraries(hdrshot_analysis_cpu PUBLIC hdrshot_analysis_core
 target_include_directories(hdrshot_analysis_cpu PUBLIC src)
 hdrshot_enable_warnings(hdrshot_analysis_cpu)
 if(BUILD_TESTING)
+  add_executable(hdrshot_capture_magnifier_tests tests/capture_magnifier_tests.cpp)
+  target_link_libraries(hdrshot_capture_magnifier_tests PRIVATE hdrshot_analysis_core)
+  target_include_directories(hdrshot_capture_magnifier_tests PRIVATE tests)
+  add_test(NAME hdrshot_capture_magnifier_tests COMMAND hdrshot_capture_magnifier_tests)
   add_executable(hdrshot_analyzer_core_tests tests/analyzer_core_tests.cpp)
   target_link_libraries(hdrshot_analyzer_core_tests PRIVATE hdrshot_analysis_cpu)
   target_include_directories(hdrshot_analyzer_core_tests PRIVATE tests)
@@ -403,7 +407,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
     src/ui/qt/overlay_editor_widget.cpp
   )
   target_link_libraries(hdrshot_qt_overlay_ui
-    PUBLIC hdrshot_annotation_model hdrshot_annotation_rasterizer hdrshot_geometry hdrshot_input_mapper hdrshot_capture_session hdrshot_export_workflow Qt6::Widgets
+    PUBLIC hdrshot_annotation_model hdrshot_annotation_rasterizer hdrshot_geometry hdrshot_input_mapper hdrshot_capture_session hdrshot_export_workflow hdrshot_analysis_core Qt6::Widgets
   )
   target_include_directories(hdrshot_qt_overlay_ui PUBLIC src)
   hdrshot_enable_warnings(hdrshot_qt_overlay_ui)
@@ -438,7 +442,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
     add_executable(hdrshot_qt_settings_store_tests
       tests/qt_settings_store_port_tests.cpp
     )
-    target_link_libraries(hdrshot_qt_settings_store_tests PRIVATE hdrshot_qt_settings)
+    target_link_libraries(hdrshot_qt_settings_store_tests PRIVATE hdrshot_analysis_core hdrshot_qt_settings)
     target_include_directories(hdrshot_qt_settings_store_tests PRIVATE tests)
     hdrshot_enable_warnings(hdrshot_qt_settings_store_tests)
     add_test(NAME hdrshot_qt_settings_store_tests COMMAND hdrshot_qt_settings_store_tests)

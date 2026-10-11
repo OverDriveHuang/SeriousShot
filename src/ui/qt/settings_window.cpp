@@ -1,5 +1,8 @@
+#include "ui/qt/analysis_readings.hpp"
 #include "ui/qt/settings_window.hpp"
 #include <QCheckBox>
+#include <QTabWidget>
+#include <QGridLayout>
 #include "core/build_metadata.hpp"
 
 #include <QFileDialog>
@@ -104,6 +107,18 @@ SettingsWindow::SettingsWindow(
   description->setWordWrap(true);
   root->addWidget(description);
 
+  auto* tabs=new QTabWidget(this);
+  tabs->setObjectName("settingsTabs");
+  root->addWidget(tabs,1);
+  auto* general_page=new QWidget(tabs);
+  auto* general_root=new QVBoxLayout(general_page);
+  general_root->setContentsMargins(0,0,0,0);
+  tabs->addTab(general_page,"通用");
+  auto* analysis_page=new QWidget(tabs);
+  tabs->addTab(analysis_page,"分析");
+  build_analysis_tab(analysis_page);
+  const auto analysis_margins = analysis_page->layout()->contentsMargins();
+  general_root->setContentsMargins(analysis_margins);
   auto* general_section = new QVBoxLayout();
   general_section->setContentsMargins(0, 0, 0, 0);
   general_section->setSpacing(6);
@@ -114,6 +129,7 @@ SettingsWindow::SettingsWindow(
   auto* general = new QGroupBox(this);
   general->setObjectName(QStringLiteral("generalSettingsContainer"));
   general_form_ = new QFormLayout(general);
+  general_form_->setSizeConstraint(QLayout::SetMinimumSize);
   general_form_->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
   general_form_->setRowWrapPolicy(QFormLayout::DontWrapRows);
   general_form_->setHorizontalSpacing(18);
@@ -309,23 +325,6 @@ SettingsWindow::SettingsWindow(
   general_form_->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
   update_general_label_width();
   general_section->addWidget(general);
-#ifdef Q_OS_WIN
-  // Keep the controls anchored when format-specific rows change height.
-  general_section->addStretch(1);
-  auto* general_scroll_content = new QWidget(this);
-  general_scroll_content->setLayout(general_section);
-  auto* general_scroll = new QScrollArea(this);
-  general_scroll->setObjectName(QStringLiteral("generalSettingsScrollArea"));
-  general_scroll->setWidgetResizable(true);
-  general_scroll->setFrameShape(QFrame::NoFrame);
-  general_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  general_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-  general_scroll->setWidget(general_scroll_content);
-  root->addWidget(general_scroll, 1);
-#else
-  root->addLayout(general_section);
-#endif
-
   auto* shortcuts_section = new QVBoxLayout();
   shortcuts_section->setContentsMargins(0, 0, 0, 0);
   shortcuts_section->setSpacing(6);
@@ -344,16 +343,31 @@ SettingsWindow::SettingsWindow(
   shortcuts_form->addRow(QStringLiteral("撤销"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::undo), shortcuts));
   shortcuts_form->addRow(QStringLiteral("重做"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::redo), shortcuts));
   shortcuts_section->addWidget(shortcuts);
-  root->addLayout(shortcuts_section);
+  auto* general_scroll_content = new QWidget(general_page);
+  auto* content_layout = new QVBoxLayout(general_scroll_content);
+  content_layout->setContentsMargins(0, 0, 0, 0);
+  content_layout->setSpacing(18);
+  content_layout->setSizeConstraint(QLayout::SetMinimumSize);
+  content_layout->addLayout(general_section);
+  content_layout->addLayout(shortcuts_section);
+  content_layout->addStretch(1);
+  auto* general_scroll = new QScrollArea(general_page);
+  general_scroll->setObjectName(QStringLiteral("generalSettingsScrollArea"));
+  general_scroll->setWidgetResizable(true);
+  general_scroll->setFrameShape(QFrame::NoFrame);
+  general_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  general_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  general_scroll->setWidget(general_scroll_content);
+  general_scroll_content->setAutoFillBackground(false);
+  general_scroll->setAutoFillBackground(false);
+  general_scroll->viewport()->setAutoFillBackground(false);
+  general_root->addWidget(general_scroll);
 
   status_label_ = new QLabel(this);
   status_label_->setObjectName(QStringLiteral("settingsStatusLabel"));
   status_label_->setWordWrap(true);
   status_label_->hide();
   root->addWidget(status_label_);
-#ifndef Q_OS_WIN
-  root->addStretch(1);
-#endif
 
   auto* identity_row = new QHBoxLayout();
   const auto source_time = QDateTime::fromString(
@@ -476,6 +490,13 @@ void SettingsWindow::reload_and_show() {
 }
 
 void SettingsWindow::restore_controls_from_snapshot() {
+  const auto& d=snapshot_.analysis_defaults;
+  {QSignalBlocker b(magnifier_enabled_); magnifier_enabled_->setChecked(d.magnifier_enabled);}
+  const double values[]{double(d.magnifier_zoom),double(int(d.hdr_space)),double(int(d.sdr_space)),d.reference_white_nits,d.blur_sigma_px,double(d.sample_side)};
+  for(int i=0;i<6;++i) {QSignalBlocker b(analysis_combos_[i]);analysis_combos_[i]->setCurrentIndex(std::max(0,analysis_combos_[i]->findData(values[i])));}
+  magnifier_readings_->set_selected(d.magnifier.selected);
+  analyzer_readings_->set_selected(d.analyzer.selected);
+
   loading_controls_ = true;
   const QSignalBlocker log_blocker{detailed_logging_check_};
   detailed_logging_check_->setChecked(snapshot_.detailed_logging);
@@ -623,6 +644,53 @@ bool SettingsWindow::eventFilter(QObject* watched, QEvent* event) {
     }
   }
   return QWidget::eventFilter(watched, event);
+}
+
+
+void SettingsWindow::build_analysis_tab(QWidget* page) {
+  auto* root=new QVBoxLayout(page);auto* scroll=new QScrollArea(page);scroll->setObjectName("analysisSettingsScrollArea");scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);root->addWidget(scroll);
+  // Match the general tab's native group surface and contextual control colors.
+  // The scroll viewport must not paint a separate Window-colored panel.
+  auto* content=new QGroupBox(scroll);content->setObjectName("analysisSettingsContainer");
+  scroll->setWidget(content);content->setAutoFillBackground(false);
+  scroll->setAutoFillBackground(false);scroll->viewport()->setAutoFillBackground(false);
+  auto* v=new QVBoxLayout(content);v->setSpacing(14);
+  auto* title=new QHBoxLayout;title->addWidget(new QLabel("截图放大镜",content));title->addStretch();
+  magnifier_enabled_=new QCheckBox("启用",content);magnifier_enabled_->setObjectName("magnifierEnabledCheck");title->addWidget(magnifier_enabled_);v->addLayout(title);
+  connect(magnifier_enabled_,&QCheckBox::clicked,this,[this]{persist_analysis_defaults();});
+  auto combo=[&](int index,const char* name,const QString& label,const QStringList& labels,const std::vector<double>& values,QFormLayout* form) {
+    auto* c=new QComboBox(content);c->setObjectName(name);analysis_combos_[index]=c;
+    for(int i=0;i<labels.size();++i)c->addItem(labels[i],values[std::size_t(i)]);
+    c->setMinimumHeight(28);form->setHorizontalSpacing(18);form->setVerticalSpacing(14);form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);form->addRow(label,c);connect(c,&QComboBox::currentIndexChanged,this,[this]{persist_analysis_defaults();});
+  };
+  auto* mf=new QFormLayout;v->addLayout(mf);combo(0,"magnifierZoomCombo","放大倍率",{"4×","8×","12×","16×"},{4,8,12,16},mf);
+  magnifier_readings_=new ReadingSelector(magnifier_reading_names(),"magnifierReadings",content);mf->addRow("默认读数",magnifier_readings_);
+  magnifier_readings_->changed=[this]{persist_analysis_defaults();};
+  auto* line=new QFrame(content);line->setFrameShape(QFrame::HLine);line->setStyleSheet("border:0;border-top:1px solid palette(mid);");v->addWidget(line);
+  auto* heading=new QLabel("分析默认设置",content);auto heading_font=heading->font();heading_font.setBold(true);heading->setFont(heading_font);v->addWidget(heading);
+  auto* f=new QFormLayout;v->addLayout(f);
+  combo(1,"analysisHdrSpaceCombo","HDR 默认工作空间",{"P3-PQ","BT.2020-PQ"},{2,3},f);
+  combo(2,"analysisSdrSpaceCombo","SDR 默认工作空间",{"P3-sRGB","sRGB-sRGB"},{1,0},f);
+  combo(3,"analysisWhiteCombo","分析参考白",{"203 nit","100 nit"},{203,100},f);
+  v->addWidget(new QLabel("分析器默认处理",content));auto* processing=new QFormLayout;v->addLayout(processing);
+  combo(4,"analysisBlurCombo","Blur（σ）",{"关闭","0.5 px","1 px","2 px","4 px","8 px"},{0,.5,1,2,4,8},processing);
+  combo(5,"analysisSampleCombo","采样范围",{"1×1","3×3","5×5","11×11","31×31","101×101"},{1,3,5,11,31,101},processing);
+  analyzer_readings_=new ReadingSelector(analyzer_reading_names(),"analyzerReadings",content);processing->addRow("默认读数",analyzer_readings_);
+  analyzer_readings_->changed=[this]{persist_analysis_defaults();};
+  for(auto* form:{mf,f,processing})for(int row=0;row<form->rowCount();++row){auto* item=form->itemAt(row,QFormLayout::LabelRole);if(item&&item->widget())item->widget()->setMinimumWidth(130);}
+  v->addStretch();
+}
+void SettingsWindow::persist_analysis_defaults() {
+  if(loading_controls_)return;
+  auto d=snapshot_.analysis_defaults;d.magnifier_enabled=magnifier_enabled_->isChecked();d.magnifier_zoom=analysis_combos_[0]->currentData().toInt();
+  d.hdr_space=analysis::WorkingSpace(analysis_combos_[1]->currentData().toInt());d.sdr_space=analysis::WorkingSpace(analysis_combos_[2]->currentData().toInt());
+  d.reference_white_nits=analysis_combos_[3]->currentData().toDouble();d.blur_sigma_px=analysis_combos_[4]->currentData().toDouble();d.sample_side=analysis_combos_[5]->currentData().toInt();
+  d.magnifier.selected=magnifier_readings_->selected<9>();d.analyzer.selected=analyzer_readings_->selected<7>();
+  if(d==snapshot_.analysis_defaults)return;
+  SettingsPatch patch;patch.analysis_defaults=d;auto saved=settings_store_.save(patch);
+  if(!saved){restore_controls_from_snapshot();show_status("分析设置保存失败，已恢复",true);return;}
+  snapshot_.analysis_defaults=d;snapshot_.revision=saved.value().revision;finish_saved_change("分析默认设置已生效");
 }
 
 void SettingsWindow::choose_folder() {

@@ -1,5 +1,6 @@
 #include "platform/qt/qt_settings_store_port.hpp"
 #include "test_support.hpp"
+#include "ui/qt/analysis_readings.hpp"
 
 #include <QSettings>
 #include <QTemporaryDir>
@@ -358,6 +359,71 @@ void analyzer_preferences_are_independent_bounded_and_preserved() {
   HDRSHOT_CHECK(reopened.load().value().save_format == before.save_format);
 }
 
+void scalar_readings_are_separate_precise_and_deduplicated() {
+  hdrshot::MagnifierReadings all;all.selected.fill(true);
+  auto r=hdrshot::magnifier_readout({2,.25,.125},203,false);
+  auto rows=hdrshot::magnifier_scalar_rows(r,all);
+  HDRSHOT_CHECK(std::count_if(rows.begin(),rows.end(),[](const auto& x){return x.value=="--";})==9);
+  hdrshot::AnalyzerReadings fields;fields.selected.fill(true);
+  auto readout=hdrshot::analysis::make_readout({2,2,2},{1,1,1},1,0,{hdrshot::analysis::WorkingSpace::display_p3_sdr,203,0});
+  const auto sdr=hdrshot::analyzer_reading_rows(readout,fields,hdrshot::analysis::WorkingSpace::display_p3_sdr);
+  HDRSHOT_CHECK(sdr.filter("L*a*b*").size()==1 && sdr.filter("ITP").empty() && !sdr.join("\n").contains("--"));
+  HDRSHOT_CHECK(std::isfinite(readout.encoded_luma));HDRSHOT_CHECK_NEAR(readout.encoded_luma,1,1e-12);
+}
+
+void analysis_defaults_roundtrip_migration_and_local_isolation() {
+  QTemporaryDir directory;
+  const auto path=directory.filePath("settings.ini");
+  {
+    QSettings old(path,QSettings::IniFormat);
+    old.setValue("schemaVersion",5);
+    old.setValue("globalCaptureHotkey","Command+Option+9");
+    old.setValue("detailedLogging",true);
+    old.setValue("analyzerPreferences",R"({"version":1,"white":100,"blur":4,"sampleSize":31,"readings":[true,false,false,true,true],"vectorGain":2.5})");
+    old.sync();
+  }
+  hdrshot::QtSettingsStorePort store(path.toStdString(),"Command+Shift+2","/Pictures");
+  const auto first=store.load(); HDRSHOT_CHECK(first.has_value());
+  const auto migrated=first.value().analysis_defaults;
+  HDRSHOT_CHECK(migrated==hdrshot::AnalysisDefaults{});
+  auto chosen=migrated;
+  chosen.magnifier_enabled=false; chosen.magnifier_zoom=16;
+  chosen.hdr_space=hdrshot::analysis::WorkingSpace::bt2020_pq;
+  chosen.sdr_space=hdrshot::analysis::WorkingSpace::srgb_sdr;
+  chosen.analyzer.selected={true,true,false,true,true,true,true};
+  chosen.magnifier.selected.fill(true);
+  hdrshot::SettingsPatch patch;patch.analysis_defaults=chosen;
+  HDRSHOT_CHECK(store.save(patch).has_value());
+  hdrshot::QtSettingsStorePort reopened(path.toStdString(),"ignored","ignored");
+  HDRSHOT_CHECK(reopened.load().value().analysis_defaults==chosen);
+  hdrshot::SettingsPatch local;
+  local.analyzer_preferences_json=R"({"version":1,"white":203,"blur":0,"sampleSize":1,"readings":[false,false,true,false,false],"vectorGain":1.5})";
+  HDRSHOT_CHECK(reopened.save(local).has_value());
+  const auto after=reopened.load().value();
+  HDRSHOT_CHECK(after.analysis_defaults==chosen);
+  HDRSHOT_CHECK(after.global_capture_hotkey=="Command+Option+9" && after.detailed_logging);
+  HDRSHOT_CHECK(after.analyzer_preferences_json==*local.analyzer_preferences_json);
+  const auto before=after;
+  chosen.sample_side=2; patch.analysis_defaults=chosen;
+  patch.detailed_logging=false;
+  HDRSHOT_CHECK(!reopened.save(patch));
+  HDRSHOT_CHECK(reopened.load().value()==before); // all fields roll back
+}
+
+void analysis_corrupt_values_recover_without_legacy_reentry() {
+  QTemporaryDir directory;
+  const auto path=directory.filePath("settings.ini");
+  QSettings raw(path,QSettings::IniFormat);
+  raw.setValue("analyzerPreferences",R"({"version":1,"white":100,"blur":4,"sampleSize":31})");
+  raw.setValue("analysisDefaults",R"({"version":1,"white":80,"blur":3,"sampleSize":2,"zoom":0,"hdrSpace":0,"sdrSpace":3})");
+  raw.sync();
+  hdrshot::QtSettingsStorePort store(path.toStdString(),"Command+Shift+2","/Pictures");
+  HDRSHOT_CHECK(store.load().has_value());
+  HDRSHOT_CHECK(store.load().value().analysis_defaults==hdrshot::AnalysisDefaults{});
+  raw.setValue("analysisDefaults","{broken"); raw.sync();
+  HDRSHOT_CHECK(store.load().value().analysis_defaults==hdrshot::AnalysisDefaults{});
+}
+
 void invalid_completion_action_fails_explicitly() {
   QTemporaryDir directory;
   HDRSHOT_CHECK(directory.isValid());
@@ -381,6 +447,9 @@ void invalid_completion_action_fails_explicitly() {
 int main() {
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
+      {"scalar readings preserve precision, separate components, deduplicate I and reject nonfinite", scalar_readings_are_separate_precise_and_deduplicated},
+      {"defaults migrate once, persist independently and reject invalid patch", analysis_defaults_roundtrip_migration_and_local_isolation},
+      {"corrupt defaults recover without reimporting local preferences", analysis_corrupt_values_recover_without_legacy_reentry},
       {"Analyzer preferences independent and bounded", analyzer_preferences_are_independent_bounded_and_preserved},
       {"Qt settings defaults and persistence", defaults_and_patches_persist_across_instances},
       {"Qt settings rejects invalid Windows gain", invalid_windows_gain_never_commits},

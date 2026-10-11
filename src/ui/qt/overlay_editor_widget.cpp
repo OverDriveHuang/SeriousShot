@@ -1,4 +1,5 @@
 #include "ui/qt/overlay_editor_widget.hpp"
+#include "ports/annotation_font_contract.hpp"
 
 #include <QComboBox>
 #include <QCursor>
@@ -293,7 +294,13 @@ OverlayEditorWidget::OverlayEditorWidget(
       text_editor_font_family_(std::move(text_editor_font_family)),
       input_platform_(input_platform),
       selection_(initial_selection) {
+#ifndef Q_OS_WIN
+  // Windows already has one translucent native host above the HDR underlay.
+  // Native child canvases/controls split its backing-store flushes: async
+  // magnifier labels can be updated in memory while the screen keeps "--".
+  // Keep all Windows editor controls in that host; preserve macOS surfaces.
   setAttribute(Qt::WA_NativeWindow);
+#endif
   setAttribute(Qt::WA_TranslucentBackground);
   setMouseTracking(true);
   setFocusPolicy(Qt::StrongFocus);
@@ -422,7 +429,9 @@ void OverlayEditorWidget::build_controls() {
   toolbar_->setObjectName("editorToolbar");
   // Controls must not inherit the drawing canvas's crosshair/resize cursor.
   toolbar_->setCursor(Qt::ArrowCursor);
+#ifndef Q_OS_WIN
   toolbar_->setAttribute(Qt::WA_NativeWindow);
+#endif
   toolbar_layout_ = new QHBoxLayout(toolbar_);
   toolbar_layout_->setContentsMargins(8, 7, 8, 7);
   toolbar_layout_->setSpacing(5);
@@ -541,7 +550,9 @@ void OverlayEditorWidget::build_controls() {
   property_bar_ = new QFrame(this);
   property_bar_->setObjectName("propertyBar");
   property_bar_->setCursor(Qt::ArrowCursor);
+#ifndef Q_OS_WIN
   property_bar_->setAttribute(Qt::WA_NativeWindow);
+#endif
   property_layout_ = new QHBoxLayout(property_bar_);
   property_layout_->setContentsMargins(10, 6, 10, 6);
   property_layout_->setSpacing(6);
@@ -1042,6 +1053,9 @@ void OverlayEditorWidget::paintEvent(QPaintEvent*) {
   painter.setCompositionMode(QPainter::CompositionMode_Source);
   painter.fillRect(rect(), QColor(0, 0, 0, 0));
   painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+  // Clear old marks in the new hole before clipping new editor decoration.
+  // The image itself belongs to the native HDR underlay.
+  if(!magnifier_exclusion_.isEmpty())painter.setClipRegion(QRegion(rect()).subtracted(QRegion(magnifier_exclusion_)));
 
   const auto render_plan = transient_annotation_render_plan_ != nullptr
       ? transient_annotation_render_plan_
@@ -1644,8 +1658,9 @@ void OverlayEditorWidget::update_pending_text_editor_style() {
   if (!text_editor_font_family_.empty()) {
     font.setFamily(QString::fromStdString(text_editor_font_family_));
   }
-  font.setWeight(static_cast<QFont::Weight>(450));
-  font.setHintingPreference(QFont::PreferDefaultHinting);
+  font.setWeight(static_cast<QFont::Weight>(annotation_font::weight));
+  font.setVariableAxis("wght", static_cast<float>(annotation_font::weight));
+  font.setHintingPreference(QFont::PreferNoHinting);
   font.setStyleStrategy(static_cast<QFont::StyleStrategy>(
       QFont::PreferAntialias | QFont::NoFontMerging));
   font.setPixelSize(text_editor_font_pixel_size(pending_text_style_->font_size_pt));

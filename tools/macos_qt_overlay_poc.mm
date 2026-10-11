@@ -21,6 +21,7 @@
 #include "platform/macos/macos_qt_input_platform_adapter.hpp"
 #include "platform/macos/macos_preview_presenter_port.hpp"
 #include "platform/freetype/freetype_text_rasterizer_port.hpp"
+#include "ports/annotation_font_contract.hpp"
 #include "platform/qt/qt_session_diagnostics_port.hpp"
 #include "core/build_metadata.hpp"
 #include "platform/qt/qt_folder_opener_port.hpp"
@@ -152,8 +153,7 @@ class MacApplicationShell final {
             std::move(export_processor.value()));
     ultra_hdr_encoder_ = std::make_shared<hdrshot::LibUltraHdrEncoder>();
 
-    constexpr const char* font_identity =
-        "NotoSansSC-VF.ttf@f8d1575;wght=450;hinting=native#d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964";
+    constexpr const char* font_identity = hdrshot::annotation_font::identity;
     const auto font_path = QCoreApplication::applicationDirPath() +
         QStringLiteral("/assets/fonts/NotoSansSC-VF.ttf");
     text_rasterizer_ = std::make_shared<hdrshot::FreeTypeTextRasterizerPort>(

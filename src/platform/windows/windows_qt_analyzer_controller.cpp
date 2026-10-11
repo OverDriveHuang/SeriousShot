@@ -164,8 +164,9 @@ void WindowsQtAnalyzerController::open(
 void WindowsQtAnalyzerController::install(std::shared_ptr<Window> runtime) {
   std::erase_if(windows_, [](const auto &weak) { return weak.expired(); });
   windows_.push_back(runtime);
+  const auto analysis_defaults = read_settings_().analysis_defaults;
   auto *window = new AnalyzerWindow(runtime->prepared.input,
-                                    read_settings_().analyzer_preferences_json);
+                                    read_settings_().analyzer_preferences_json, nullptr, &analysis_defaults);
   // The Qt native child is the DComp HWND. Suppress its ordinary redirection
   // bitmap so Qt backing-store pixels cannot cover the FP16 Source visual.
   const auto surface = reinterpret_cast<HWND>(

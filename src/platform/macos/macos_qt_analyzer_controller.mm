@@ -139,8 +139,9 @@ void MacQtAnalyzerController::open(ExportSnapshot snapshot,
 void MacQtAnalyzerController::install(std::shared_ptr<Window> runtime) {
   std::erase_if(windows_, [](const auto &weak) { return weak.expired(); });
   windows_.push_back(runtime);
+  const auto analysis_defaults = read_settings_().analysis_defaults;
   auto *window = new AnalyzerWindow(runtime->prepared.input,
-                                    read_settings_().analyzer_preferences_json);
+                                    read_settings_().analyzer_preferences_json, nullptr, &analysis_defaults);
   runtime->widget = window;
   window->setAttribute(Qt::WA_DeleteOnClose);
   const QPointer<MacQtAnalyzerController> guard(this);

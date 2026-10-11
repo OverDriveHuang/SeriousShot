@@ -58,6 +58,16 @@ inline bool a_finite(double x) { return std::isfinite(x); }
 #undef ANALYSIS_MATH_SOURCE
 #undef ANALYSIS_LITERAL
 #undef ANALYSIS_REAL
+// Explicit working-space transfer metadata; independent of perceptual HDR mode.
+inline unsigned int working_transfer(unsigned int space) {
+  return (space == 2u || space == 3u) ? 1u : 0u;
+}
+inline A3 encode_working_rgb(A3 w, unsigned int space, double white) {
+  if (working_transfer(space) == 1u)
+    return a3(pq_encode(w.x * white), pq_encode(w.y * white),
+              pq_encode(w.z * white));
+  return a3(srgb_encode(w.x), srgb_encode(w.y), srgb_encode(w.z));
+}
 } // namespace hdrshot::analysis_math_double
 
 namespace hdrshot::analysis {

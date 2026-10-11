@@ -6,6 +6,13 @@
 #include <QApplication>
 #include <QLineEdit>
 #include <QToolButton>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QImage>
+#include <fstream>
+#include <condition_variable>
+#include <chrono>
+#include <future>
 
 using namespace hdrshot;
 namespace {
@@ -35,6 +42,231 @@ class Presenter final : public PreviewPresenterPort {
         request.model.annotation_document.revision, request.model.initial_highlight.revision}));
   }
 };
+
+class GatedPixelSource final : public LinearSource {
+ public:
+  PixelSize size_px() const override{return {1000,600};}
+  std::size_t byte_count() const override{return 1000*600*16;}
+  Result<bool,Error> wait_until_ready() const override {++waits;return Result<bool,Error>::success(true);}
+  Result<LinearFloatPixels,Error> read_region(PixelRect r) const override {
+    std::unique_lock lock(mutex);regions.push_back(r);entered.notify_all();
+    if(block_first && regions.size()==1) release.wait(lock,[&]{return released;});
+    return Result<LinearFloatPixels,Error>::success(LinearFloatPixels{float(r.x),float(r.y),4.F,1.F});
+  }
+  void unblock(){std::lock_guard lock(mutex);released=true;release.notify_all();}
+  bool await_first(){std::unique_lock lock(mutex);return entered.wait_for(lock,std::chrono::seconds(2),[&]{return !regions.empty();});}
+  mutable std::mutex mutex;mutable std::condition_variable entered,release;
+  mutable std::vector<PixelRect> regions;mutable std::atomic<int> waits{};
+  bool block_first{true},released{};
+};
+FrozenDesktopRef magnifier_source(const std::shared_ptr<GatedPixelSource>& pixel,double scale=1) {
+  auto frozen=std::make_shared<FrozenDesktop>();frozen->frame_id={31};frozen->display_generation=9;
+  CanonicalFrameSegment s;s.display_id={7};s.desktop_frame_points={-800,-400,1000/scale,600/scale};s.point_pixel_scale=scale;s.size_px={1000,600};s.pixel_format=PixelFormat::rgba32_float;s.encoding={ColorPrimaries::display_p3,TransferFunction::linear,AlphaMode::opaque,0};s.linear_source=pixel;frozen->canonical_segments.push_back(std::move(s));return frozen;
+}
+void tiny_sampler_coalesces_stale_results_and_releases_cancelled_owners() {
+  auto pixels=std::make_shared<GatedPixelSource>();auto frozen=magnifier_source(pixels);
+  MagnifierSampler sampler;
+  std::mutex delivered_mutex;std::vector<MagnifierSampleResult> delivered;
+  const auto done=[&](auto result){std::lock_guard lock(delivered_mutex);delivered.push_back(std::move(result));};
+  sampler.submit({frozen,{7},{10,20},1,203},done);
+  const bool entered=pixels->await_first();
+  if(!entered)pixels->unblock(); HDRSHOT_CHECK(entered);
+  for(std::uint64_t r=2;r<=100;++r) sampler.submit({frozen,{7},{int(r),40},r,203},done);
+  const auto busy=sampler.counters();
+  pixels->unblock(); // unblock before any assertion can unwind fixture references
+  HDRSHOT_CHECK(busy.in_flight==1 && busy.pending==1 && busy.readbacks==1 && busy.requested==100);
+  const auto drained=[&]{std::lock_guard lock(delivered_mutex);return delivered.size()==1 && sampler.counters().in_flight==0 && sampler.counters().pending==0;};
+  QElapsedTimer timer;timer.start();while(!drained() && timer.elapsed()<2000) QThread::msleep(1);
+  HDRSHOT_CHECK(drained());
+  {std::lock_guard lock(delivered_mutex);HDRSHOT_CHECK(delivered.size()==1);HDRSHOT_CHECK(delivered[0].revision==100 && delivered[0].point==(PixelPoint{100,40}));HDRSHOT_CHECK(delivered[0].readout.source==(analysis::Rgb{100,40,4}));}
+  HDRSHOT_CHECK(pixels->regions.size()==2 && pixels->waits==0);
+  for(const auto r:pixels->regions)HDRSHOT_CHECK(r.width==1 && r.height==1);
+  for(bool close : {false,true}) {
+    auto blocked=std::make_shared<GatedPixelSource>();auto owner=magnifier_source(blocked);
+    std::weak_ptr<const FrozenDesktop> weak=owner;std::atomic<int> callbacks{};
+    MagnifierSampler cancelled;
+    cancelled.submit({owner,{7},{1,2},1,203},[&](auto){++callbacks;});
+    const bool began=blocked->await_first();if(!began)blocked->unblock();HDRSHOT_CHECK(began);
+    cancelled.submit({owner,{7},{3,4},2,203},[&](auto){++callbacks;});
+    if(close)cancelled.close();else cancelled.invalidate();
+    owner.reset();blocked->unblock();timer.restart();
+    while((cancelled.counters().in_flight || !weak.expired()) && timer.elapsed()<2000) QThread::msleep(1);
+    HDRSHOT_CHECK(!cancelled.counters().in_flight && callbacks==0 && weak.expired());
+    HDRSHOT_CHECK(blocked->regions.size()==1 && cancelled.counters().pending==0);
+  }
+}
+
+void host_magnifier_pairs_physical_coordinates_and_off_does_no_work() {
+  hdrshot::test::TestInputPlatformAdapter input;
+  for(double scale : {1.,1.25,1.5,2.}) for(bool enabled : {false,true}) {
+    auto native=std::make_unique<Window>();
+    QtOverlayHost host(std::move(native),{7},{1,{}},input);
+    host.resize(int(1000/scale),int(600/scale));
+    auto pixels=std::make_shared<GatedPixelSource>();pixels->block_first=enabled;
+    const auto frozen=magnifier_source(pixels,scale);
+    SettingsSnapshot settings;settings.analysis_defaults.magnifier_enabled=enabled;
+    host.set_export_requested({},settings);
+    auto presenter=std::make_shared<Presenter>();
+    host.activate_capture({frozen,{{1},{1},{31},9,1,0}},presenter,std::make_shared<std::atomic<std::uint64_t>>(2));
+    auto* editor=dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));HDRSHOT_CHECK(editor);
+    const auto spin=[&](auto predicate){QElapsedTimer t;t.start();while(!predicate() && t.elapsed()<1500){QApplication::processEvents();QThread::msleep(1);}return predicate();};
+    const auto move=[&](QPointF at){QMouseEvent event(QEvent::MouseMove,at,at,QPointF(editor->mapToGlobal(at.toPoint())),Qt::NoButton,Qt::NoButton,Qt::NoModifier);QApplication::sendEvent(editor,&event);};
+    const QPointF point{123.,87.};move(point);
+    const PixelPoint expected{int(std::floor(123*scale)),int(std::floor(87*scale))};
+    if(enabled) {
+      const bool immediate=host.magnifier_preview().visible && host.magnifier_preview().center==expected;
+      const bool sampling=pixels->await_first();pixels->unblock();
+      HDRSHOT_CHECK(immediate && sampling);
+      HDRSHOT_CHECK(spin([&]{return host.magnifier_preview().visible && host.magnifier_preview().center==expected;}));
+      const auto preview=host.magnifier_preview();HDRSHOT_CHECK(valid_magnifier_preview(preview,{1000,600}));
+      auto* panel=dynamic_cast<CaptureMagnifierPanel*>(host.findChild<QWidget*>("captureMagnifierPanel"));HDRSHOT_CHECK(panel && panel->isVisible());
+      HDRSHOT_CHECK_NEAR(panel->x()*scale,preview.viewport.x,.51);
+      HDRSHOT_CHECK_NEAR((panel->y()+CaptureMagnifierPanel::header_height())*scale,preview.viewport.y,.51);
+      HDRSHOT_CHECK(std::abs(panel->width()*scale-preview.viewport.width)<scale+0.01);
+      const auto values=panel->findChildren<QLabel*>("magnifierScalarValue");HDRSHOT_CHECK(values.size()>=4);
+      for(const auto* value:values) HDRSHOT_CHECK(value->width()>=value->fontMetrics().horizontalAdvance(value->text()));
+      HDRSHOT_CHECK(presenter->last->model.magnifier.center==expected);
+      HDRSHOT_CHECK(spin([&]{return host.magnifier_counters().delivered>0;}));
+      const auto before=host.magnifier_counters().readbacks;
+      for(int i=0;i<50;++i)move(point);
+      QApplication::processEvents();QThread::msleep(10);QApplication::processEvents();
+      HDRSHOT_CHECK(host.magnifier_counters().readbacks==before);
+      host.set_system_dialog_active(true);QApplication::processEvents();
+      HDRSHOT_CHECK(!host.magnifier_preview().visible);
+      const auto stopped=host.magnifier_counters().readbacks;
+      move({100,100});QApplication::processEvents();HDRSHOT_CHECK(host.magnifier_counters().readbacks==stopped);
+    } else {
+      for(int i=0;i<20;++i)move({double(i+100),80});
+      QApplication::processEvents();
+      HDRSHOT_CHECK(host.magnifier_counters().requested==0 && host.magnifier_counters().readbacks==0);
+      HDRSHOT_CHECK(!host.magnifier_preview().visible && pixels->regions.empty());
+    }
+  }
+}
+
+void magnifier_hole_excludes_existing_annotation_during_selection_resize() {
+  hdrshot::test::TestInputPlatformAdapter input;
+  QtOverlayHost host(std::make_unique<Window>(),{7},{1,{0,0,1000,600}},input);
+  host.resize(1000,600);
+  auto pixels=std::make_shared<GatedPixelSource>();pixels->block_first=false;
+  host.activate_capture({magnifier_source(pixels),{{1},{1},{31},9,1,0}},
+      std::make_shared<Presenter>(),std::make_shared<std::atomic<std::uint64_t>>(2));
+  auto* editor=dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));
+  HDRSHOT_CHECK(editor);
+  const auto mouse=[&](QEvent::Type type,QPointF at,Qt::MouseButton button,Qt::MouseButtons buttons){
+    QMouseEvent event(type,at,at,QPointF(editor->mapToGlobal(at.toPoint())),button,buttons,Qt::NoModifier);
+    QApplication::sendEvent(editor,&event);
+  };
+  host.findChild<QToolButton*>("toolRectangle")->click();
+  mouse(QEvent::MouseButtonPress,{180,180},Qt::LeftButton,Qt::LeftButton);
+  mouse(QEvent::MouseMove,{300,300},Qt::NoButton,Qt::LeftButton);
+  mouse(QEvent::MouseButtonRelease,{300,300},Qt::LeftButton,Qt::NoButton);
+  HDRSHOT_CHECK(editor->annotations().objects.size()==1);
+  host.findChild<QToolButton*>("toolSelect")->click();
+  const auto painted=[&] {
+    QImage image(editor->size(),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);
+    QPainter painter(&image);editor->render(&painter,QPoint(),QRegion(),QWidget::RenderFlags{});
+    return image;
+  };
+  HDRSHOT_CHECK(painted().pixelColor(240,180).alpha()>0);
+  mouse(QEvent::MouseButtonPress,{0,300},Qt::LeftButton,Qt::LeftButton);
+  mouse(QEvent::MouseMove,{120,300},Qt::NoButton,Qt::LeftButton);
+  const auto preview=host.magnifier_preview();
+  HDRSHOT_CHECK(preview.visible);
+  const QRect hole(preview.viewport.x,preview.viewport.y,preview.viewport.width,preview.viewport.height);
+  HDRSHOT_CHECK(hole.contains(240,180));
+  const auto excluded=painted();
+  for(int y=hole.top()+2;y<hole.bottom()-1;++y)
+    for(int x=hole.left()+2;x<hole.right()-1;++x)
+      HDRSHOT_CHECK(excluded.pixelColor(x,y).alpha()==0);
+  host.set_system_dialog_active(true);
+  HDRSHOT_CHECK(!host.magnifier_preview().visible);
+  HDRSHOT_CHECK(painted().pixelColor(240,180).alpha()>0);
+}
+
+void magnifier_capture_defaults_are_frozen_and_next_session_reads_new_defaults() {
+  hdrshot::test::TestInputPlatformAdapter input;
+  SettingsSnapshot settings;
+  settings.analysis_defaults.magnifier_zoom=4;
+  settings.analysis_defaults.reference_white_nits=100;
+  for(int session=0;session<3;++session) {
+    const auto expected=settings.analysis_defaults;
+    QtOverlayHost host(std::make_unique<Window>(),{7},{1,{}},input);
+    host.resize(1000,600);
+    host.set_export_requested({},settings);
+    auto pixels=std::make_shared<GatedPixelSource>();pixels->block_first=false;
+    host.activate_capture({magnifier_source(pixels),{{1},{1},{31},9,1,0}},
+        std::make_shared<Presenter>(),std::make_shared<std::atomic<std::uint64_t>>(2));
+    auto* editor=dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));
+    HDRSHOT_CHECK(editor);
+    // A default change after creation belongs to the next capture, including
+    // readings and reference white; ordinary pointer motion cannot reload it.
+    settings.analysis_defaults.magnifier_zoom=16;
+    settings.analysis_defaults.reference_white_nits=203;
+    settings.analysis_defaults.magnifier.selected.fill(false);
+    settings.analysis_defaults.magnifier.selected[3]=true;
+    settings.analysis_defaults.magnifier_enabled=session==0;
+    for(const QPointF at:{QPointF(10,20),QPointF(11,21)}) {
+      QMouseEvent event(QEvent::MouseMove,at,at,QPointF(editor->mapToGlobal(at.toPoint())),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+      QApplication::sendEvent(editor,&event);
+      if(!expected.magnifier_enabled) {
+        HDRSHOT_CHECK(!host.magnifier_preview().visible && host.magnifier_counters().requested==0);
+        continue;
+      }
+      HDRSHOT_CHECK(host.magnifier_preview().zoom==expected.magnifier_zoom);
+      std::vector<QString> values;
+      for(const auto& row:magnifier_scalar_rows(magnifier_readout({at.x(),at.y(),4},expected.reference_white_nits,false),expected.magnifier))
+        if(!row.heading)values.push_back(row.value);
+      const auto correct=[&] {
+        const auto actual=host.findChildren<QLabel*>("magnifierScalarValue");
+        if(std::size_t(actual.size())!=values.size())return false;
+        for(std::size_t i=0;i<values.size();++i)if(actual[qsizetype(i)]->text()!=values[i])return false;
+        return true;
+      };
+      QElapsedTimer timer;timer.start();
+      while(!correct() && timer.elapsed()<2000){QApplication::processEvents();QThread::msleep(1);}
+      HDRSHOT_CHECK(correct());
+    }
+  }
+}
+
+void magnifier_late_readback_cannot_restore_hidden_cancelled_or_destroyed_host() {
+  hdrshot::test::TestInputPlatformAdapter input;
+  for(int action=0;action<4;++action) {
+    auto host=std::make_unique<QtOverlayHost>(std::make_unique<Window>(),DisplayId{7},SelectionSnapshot{1,{}},input);
+    host->resize(1000,600);
+    auto pixels=std::make_shared<GatedPixelSource>();
+    auto presenter=std::make_shared<Presenter>();
+    auto frozen=magnifier_source(pixels);
+    std::weak_ptr<const FrozenDesktop> weak_source=frozen;
+    host->activate_capture({frozen,{{1},{1},{31},9,1,0}},presenter,
+        std::make_shared<std::atomic<std::uint64_t>>(2));
+    frozen.reset();
+    auto* editor=dynamic_cast<OverlayEditorWidget*>(host->findChild<QWidget*>("overlayEditor"));
+    const QPointF at(20,40);
+    QMouseEvent event(QEvent::MouseMove,at,at,QPointF(editor->mapToGlobal(at.toPoint())),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(editor,&event);
+    const bool began=pixels->await_first();
+    if(!began)pixels->unblock();HDRSHOT_CHECK(began);
+    QApplication::processEvents();
+    if(action==0)host->hide();
+    if(action==1)host->set_interaction_locked(true);
+    if(action==2){QKeyEvent escape(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);QApplication::sendEvent(host.get(),&escape);}
+    if(action==3){host.reset();presenter->last.reset();}
+    const bool hidden=!host || !host->magnifier_preview().visible;
+    const auto frames=presenter->frames;
+    pixels->unblock();
+    QElapsedTimer timer;timer.start();
+    const auto finished=[&]{return host ? host->magnifier_counters().in_flight==0 : weak_source.expired();};
+    while(!finished() && timer.elapsed()<2000){QApplication::processEvents();QThread::msleep(1);}
+    QApplication::processEvents();
+    HDRSHOT_CHECK(finished());
+    HDRSHOT_CHECK(hidden);
+    HDRSHOT_CHECK(!host || (!host->magnifier_preview().visible && host->magnifier_counters().delivered==0));
+    HDRSHOT_CHECK(presenter->frames==frames);
+    std::lock_guard lock(pixels->mutex);HDRSHOT_CHECK(pixels->regions.size()==1);
+  }
+}
 
 void session_target_lock_and_stale_finish_are_shared() {
   CaptureInteractionSession session;
@@ -434,7 +666,25 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
 }
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  const auto screenshot=qEnvironmentVariable("HDRSHOT_MAGNIFIER_SCREENSHOT");
+  if(!screenshot.isEmpty()){
+    if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_DARK")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#25282d"));pal.setColor(QPalette::WindowText,Qt::white);app.setPalette(pal);}
+    QWidget parent;CaptureMagnifierPanel panel(&parent);MagnifierReadings fields;
+    if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_ALL"))fields.selected.fill(true);
+    panel.resize(216,CaptureMagnifierPanel::header_height()+216+panel.text_height(fields));
+    analysis::Rgb rgb{.5,.3,.1};const auto rgb_path=qEnvironmentVariable("HDRSHOT_MAGNIFIER_NATIVE_RGB");if(!rgb_path.isEmpty()){std::ifstream file(rgb_path.toStdString());for(auto& c:rgb)file>>c;HDRSHOT_CHECK(file.good());}
+    panel.show_sample({159,240},magnifier_readout(rgb,203,false),fields,216,8);
+    parent.resize(panel.size());parent.show();QApplication::processEvents();
+    auto pixels=panel.grab();const auto native_path=qEnvironmentVariable("HDRSHOT_MAGNIFIER_NATIVE_IMAGE");
+    if(!native_path.isEmpty()){QImage native(native_path);HDRSHOT_CHECK(!native.isNull());QPainter paint(&pixels);paint.drawImage(QRect(0,CaptureMagnifierPanel::header_height(),216,216),native);}
+    HDRSHOT_CHECK(pixels.save(screenshot));return 0;
+  }
   return hdrshot::test::run({
+      {"host DPR mapping and paired native viewport, same-pixel dedup, off zero work", host_magnifier_pairs_physical_coordinates_and_off_does_no_work},
+      {"magnifier image hole excludes annotation and restores on hide", magnifier_hole_excludes_existing_annotation_during_selection_resize},
+      {"capture defaults freeze white/readings and refresh each new session", magnifier_capture_defaults_are_frozen_and_next_session_reads_new_defaults},
+      {"delayed readback cannot restore hidden, cancelled or destroyed host", magnifier_late_readback_cannot_restore_hidden_cancelled_or_destroyed_host},
+      {"tiny sampler bounds, latest completion and cancellation lifetime", tiny_sampler_coalesces_stale_results_and_releases_cancelled_owners},
       {"pending text exports final clean revision before async screen completion",[]{pending_text_exports_final_clean_revision_without_present_completion();}},
       {"analysis commits text, retains failures, waits for ROI handoff",[]{pending_text_exports_final_clean_revision_without_present_completion(true);}},
       {"shared target lock and late session callbacks", session_target_lock_and_stale_finish_are_shared},

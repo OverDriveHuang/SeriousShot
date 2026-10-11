@@ -1,4 +1,5 @@
 #include "ui/qt/analyzer_window.hpp"
+#include "ui/qt/analysis_readings.hpp"
 #include "ui/qt/analyzer_control_style.hpp"
 #include "domain/analysis/engine.hpp"
 #include "domain/analysis/math.hpp"
@@ -244,7 +245,7 @@ double safe_number(const QJsonObject &object, const char *key, double fallback,
 } // namespace
 
 AnalyzerWindow::AnalyzerWindow(analysis::Input input, std::string preferences,
-                               QWidget *parent)
+                               QWidget *parent, const AnalysisDefaults* defaults)
     : QWidget(parent), input_(std::move(input)) {
   setObjectName("analyzerWindow");
   setWindowTitle("SeriousShot · 图像分析");
@@ -256,6 +257,11 @@ AnalyzerWindow::AnalyzerWindow(analysis::Input input, std::string preferences,
   request_.settings.working_space =
       input_.is_hdr ? analysis::WorkingSpace::display_p3_pq
                     : analysis::WorkingSpace::display_p3_sdr;
+  if (defaults) {
+    request_.settings=analysis_settings(*defaults,input_.is_hdr);
+    sample_size_=defaults->sample_side;
+    readings_=defaults->analyzer.selected;
+  }
   if (!input_.is_hdr &&
       request_.scopes.histogram_mode == analysis::HistogramMode::rgb_adobe)
     request_.scopes.histogram_mode = analysis::HistogramMode::rgb;
@@ -574,10 +580,8 @@ void AnalyzerWindow::build_ui() {
             schedule_request();
             persist();
           });
-  const QStringList reading_names{"源线性 RGB / EDR · P3", "工作 R′G′B′ / code",
-                                  "线性 YRGB / nit", "强度 Y′ / I",
-                                  "Lab / ITP · Hue / Chroma"};
-  for (int i = 0; i < 5; ++i) {
+  const auto& reading_names=analyzer_reading_names();
+  for (int i = 0; i < 7; ++i) {
     auto *action = new QWidgetAction(picker_menu);
     auto *check = new QCheckBox(reading_names[i], picker_menu);
     check->setContentsMargins(8, 5, 8, 5);
@@ -587,6 +591,7 @@ void AnalyzerWindow::build_ui() {
     picker_menu->addAction(action);
     connect(check, &QCheckBox::toggled, this, [this, i](bool checked) {
       readings_[std::size_t(i)] = checked;
+
       if (!syncing_)
         set_tool(1);
       refresh_readouts();
@@ -1341,49 +1346,11 @@ QString AnalyzerWindow::reading_text(const analysis::Readout &r,
     return "—";
   if (!r.valid_count)
     return "无有效样本";
-  QStringList rows;
-  const bool hdr = analysis::is_hdr(request_.settings.working_space);
-  if (readings_[0])
-    rows << "源 P3 RGB · EDR   " + rgb(r.source_rgb_edr, 4);
-  if (readings_[1])
-    rows << QString("工作 R′G′B′ · %1   ").arg(hdr ? "PQ" : "sRGB") +
-                rgb(r.signal_rgb, 4);
-  if (readings_[2] ||
-      (fallback && std::none_of(readings_.begin(), readings_.end(),
-                                [](bool v) { return v; }))) {
-    rows << QString("Y · nit   %1").arg(r.y_nits, 0, 'f', 2);
-    rows << "R / G / B · nit   " + rgb(r.work_rgb_nits, 2);
-  }
-  if (readings_[3])
-    rows << QString(hdr ? "I · nit（等效）   %1" : "Y′ · %   %1")
-                .arg(hdr ? r.intensity_nits : r.intensity * 100, 0, 'f', 2);
-  if (readings_[4]) {
-    if (hdr) {
-      rows << QString("I · nit（等效）   %1").arg(r.intensity_nits, 0, 'f', 2);
-      rows << QString("ITP T / P   %1 / %2  |  ICtCp Ct / Cp   %3 / %4")
-                  .arg(r.perceptual[1], 0, 'f', 4)
-                  .arg(r.perceptual[2], 0, 'f', 4)
-                  .arg(2 * r.perceptual[1], 0, 'f', 4)
-                  .arg(r.perceptual[2], 0, 'f', 4);
-    } else
-      rows << "Lab D65 L* / a* / b*   " + rgb(r.perceptual, 2);
-    rows << QString("Hue / Chroma · %1   %2 / %3")
-                .arg(hdr ? "T–P" : "a*b*",
-                     r.hue_degrees
-                         ? QString::number(*r.hue_degrees, 'f', 1) + "°"
-                         : "—",
-                     QString::number(r.chroma, 'f', 4));
-  }
-  return rows.join('\n');
+  return analyzer_reading_rows(r,AnalyzerReadings{readings_},request_.settings.working_space,fallback).join('\n');
 }
 void AnalyzerWindow::refresh_readouts() {
-  const int lines =
-      (readings_[0] ? 1 : 0) + (readings_[1] ? 1 : 0) + (readings_[2] ? 2 : 0) +
-      (readings_[3] ? 1 : 0) +
-      (readings_[4]
-           ? (analysis::is_hdr(request_.settings.working_space) ? 3 : 2)
-           : 0);
-  readout_->setFixedHeight(std::max(2, lines) * 16 + 8);
+  const auto count=analyzer_reading_rows({},AnalyzerReadings{readings_},request_.settings.working_space).size();
+  readout_->setFixedHeight(std::max(2,int(count))*16+8);
   const analysis::SampleResult *hover_result = nullptr;
   if (result_)
     for (const auto &sample : result_->samples)
@@ -1850,9 +1817,7 @@ void AnalyzerWindow::showEvent(QShowEvent *) {
 void AnalyzerWindow::update_minimum_height() {
   if (!source_)
     return;
-  const int rows = (readings_[0] ? 1 : 0) + (readings_[1] ? 1 : 0) +
-                   (readings_[2] ? 2 : 0) + (readings_[3] ? 1 : 0) +
-                   (readings_[4] ? 3 : 0);
+  const int rows = analyzer_reading_rows({},AnalyzerReadings{readings_},request_.settings.working_space).size();
   const int source_required = 110 + std::max(2, rows) * 16 +
                               (request_.mask.enabled ? (rows + 1) * 16 : 0) +
                               (false_color_ ? 40 : 0) + 90;
@@ -1973,8 +1938,8 @@ std::string AnalyzerWindow::preferences_json() const {
   object["copyOriginal"] = export_original_[1];
   // Per-image views are deliberately not preferences. Keep the current
   // window/report view, but every new image starts Source and all scopes Fit.
-  object["white"] = request_.settings.reference_white_nits;
-  object["blur"] = request_.settings.blur_sigma_px;
+
+
   object["wave"] = int(request_.scopes.wave_mode);
   object["lastWave"] = int(last_wave_);
   object["lastParade"] = int(last_parade_);
@@ -1988,13 +1953,11 @@ std::string AnalyzerWindow::preferences_json() const {
   object["picker"] = picker_;
   object["maskArmed"] = mask_armed_;
   object["ellipse"] = ellipse_;
-  object["sampleSize"] = sample_size_;
-  QJsonArray readings, ratios;
-  for (bool value : readings_)
-    readings.append(value);
+
+  QJsonArray ratios;
   for (double value : ratios_)
     ratios.append(value);
-  object["readings"] = readings;
+
   object["ratios"] = ratios;
   QJsonObject refs;
   for (const auto &[key, bank] : references_) {
@@ -2018,16 +1981,6 @@ void AnalyzerWindow::restore_preferences(const std::string &text) {
   const auto o = doc.object();
   if (o.value("version").toInt() != 1)
     return;
-  request_.settings.reference_white_nits =
-      safe_number(o, "white", 203, 100, 203);
-  if (request_.settings.reference_white_nits != 100 &&
-      request_.settings.reference_white_nits != 203)
-    request_.settings.reference_white_nits = 203;
-  request_.settings.blur_sigma_px = safe_number(o, "blur", 0, 0, 8);
-  const std::array<double, 6> sigmas{0, .5, 1, 2, 4, 8};
-  if (std::find(sigmas.begin(), sigmas.end(),
-                request_.settings.blur_sigma_px) == sigmas.end())
-    request_.settings.blur_sigma_px = 0;
   request_.scopes.wave_mode =
       static_cast<analysis::WaveMode>(int(safe_number(o, "wave", 0, 0, 3)));
   last_wave_ =
@@ -2057,14 +2010,6 @@ void AnalyzerWindow::restore_preferences(const std::string &text) {
   request_.scopes.vector_zoom = 1.;
   request_.scopes.vector_pan = {};
   ellipse_ = o.value("ellipse").toBool(false);
-  sample_size_ = o.value("sampleSize").toInt(1);
-  const std::array<int, 6> sizes{1, 3, 5, 11, 31, 101};
-  if (std::find(sizes.begin(), sizes.end(), sample_size_) == sizes.end())
-    sample_size_ = 1;
-  const auto readings = o.value("readings").toArray();
-  if (readings.size() == 5)
-    for (int i = 0; i < 5; ++i)
-      readings_[std::size_t(i)] = readings[i].toBool(i == 2);
   const auto ratios = o.value("ratios").toArray();
   if (ratios.size() == 4)
     for (int i = 0; i < 4; ++i) {

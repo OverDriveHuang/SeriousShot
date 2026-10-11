@@ -201,6 +201,7 @@ void MacPreviewPresenterPort::render(WorkItem work) {
               request.model.frozen_desktop, &segment->rgba_float),
           request.model.clean_content,
           segment->linear_source,
+          request.model.magnifier,
       });
   if (!rendered) {
     work.completion(Result<PresentReceipt, Error>::failure(rendered.error()));

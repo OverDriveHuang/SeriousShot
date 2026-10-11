@@ -66,6 +66,8 @@ Result<bool, Error> validate_request(const MacMetalOverlayRequest& request) {
   }
   const auto frame_width = static_cast<std::int32_t>(request.width_px);
   const auto frame_height = static_cast<std::int32_t>(request.height_px);
+  if(!valid_magnifier_preview(request.magnifier,{int(request.width_px),int(request.height_px)}))
+    return Result<bool, Error>::failure(presenter_error(ErrorCode::invalid_input,Retryability::never,{{"reason","invalid_magnifier"}}));
   const bool has_selection = !request.selection_px.empty();
   const bool canonical_empty_selection = request.selection_px == PixelRect{};
   if ((!has_selection && !canonical_empty_selection) ||
@@ -127,6 +129,7 @@ struct ShaderParameters {
   std::uint32_t source_is_linear;
   std::uint32_t clean_span_count;
   std::uint32_t source_is_float32;
+  std::int32_t magnifier[8];
 };
 
 constexpr const char* kMetalSource = R"METAL(
@@ -148,6 +151,7 @@ struct ShaderParameters {
   uint source_is_linear;
   uint clean_span_count;
   uint source_is_float32;
+  int magnifier[8];
 };
 
 float3 extended_srgb_to_linear(float3 encoded) {
@@ -174,6 +178,27 @@ float3 clean_color(texture2d<float, access::read> source,
   }
   const float3 value = params.source_is_float32 != 0u ? float_source[pixel].rgb : source.read(gid).rgb;
   return params.source_is_linear != 0u ? value : extended_srgb_to_linear(value);
+}
+float3 apply_ui(float3 color, constant ShaderParameters& params, uint2 gid);
+float3 overlay_color(texture2d<float, access::read> source, constant ShaderParameters& params,
+    device const uint4* spans, device const float4* samples, device const uint2* rows,
+    device const float4* float_source, uint2 gid) {
+  constant int* m=params.magnifier;
+  int2 p=int2(gid)-int2(m[0],m[1]);
+  if(m[7]!=0 && all(p>=int2(0)) && p.x<m[2] && p.y<m[3]) {
+    int2 cell=p/m[6];int2 center=int2(m[2],m[3])/m[6]/2;
+    int2 q=int2(m[4],m[5])+cell-center;
+    float3 color=float3(0.025f);
+    if(all(q>=int2(0)) && q.x<int(params.width) && q.y<int(params.height)) {
+      float3 value=params.source_is_float32!=0u?float_source[q.y*params.width+q.x].rgb:source.read(uint2(q)).rgb;
+      color=params.source_is_linear!=0u?value:extended_srgb_to_linear(value);
+    }
+    int2 within=p%m[6];
+    bool box=all(cell==center) && (within.x==0 || within.y==0 || within.x==m[6]-1 || within.y==m[6]-1);
+    bool cross=(p.x==m[2]/2 && abs(p.y-m[3]/2)>m[6]) || (p.y==m[3]/2 && abs(p.x-m[2]/2)>m[6]);
+    return box || cross?float3(params.ui_white_edr):color;
+  }
+  return apply_ui(clean_color(source,params,spans,samples,rows,float_source,gid),params,gid);
 }
 float3 apply_ui(float3 color, constant ShaderParameters& params, uint2 gid) {
   const int x = int(gid.x);
@@ -211,7 +236,7 @@ kernel void compose_overlay(
     device const float4* float_source [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (gid.x >= params.width || gid.y >= params.height) return;
-  output.write(half4(half3(apply_ui(clean_color(source, params, spans, samples, rows, float_source, gid), params, gid)), 1.0h), gid);
+  output.write(half4(half3(overlay_color(source, params, spans, samples, rows, float_source, gid)), 1.0h), gid);
 }
 
 struct VertexOut {
@@ -237,7 +262,7 @@ fragment half4 fullscreen_fragment(
     device const float4* float_source [[buffer(4)]]) {
   const uint2 gid = min(uint2(in.uv * float2(params.width, params.height)),
                        uint2(params.width - 1, params.height - 1));
-  return half4(half3(apply_ui(clean_color(source, params, spans, samples, rows, float_source, gid), params, gid)), 1.0h);
+  return half4(half3(overlay_color(source, params, spans, samples, rows, float_source, gid)), 1.0h);
 }
 
 )METAL";
@@ -418,6 +443,7 @@ struct MacMetalEdrPresenter::Impl {
         request.source_is_linear ? 1U : 0U,
         clean_span_count,
         source_uses_buffer ? 1U : 0U,
+        {request.magnifier.viewport.x,request.magnifier.viewport.y,request.magnifier.viewport.width,request.magnifier.viewport.height,request.magnifier.center.x,request.magnifier.center.y,request.magnifier.zoom,request.magnifier.visible?1:0},
     };
     if (!dispatch) return Result<id<MTLTexture>, Error>::success(cached_source_texture);
     id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];

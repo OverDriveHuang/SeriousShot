@@ -1,6 +1,7 @@
 #include "platform/windows/windows_gpu_source.hpp"
 #include "platform/windows/windows_capture_policy.hpp"
 #include "platform/windows/windows_color.hpp"
+#include "domain/color/extended_p3_mapper.hpp"
 #include "test_support.hpp"
 #include <cmath>
 #include <limits>
@@ -77,11 +78,48 @@ void negative_linear_input_is_preserved() {
   HDRSHOT_CHECK_NEAR(pixel.value()[0], -0.25 * 0.82246197, 2e-6);
   HDRSHOT_CHECK_NEAR(pixel.value()[1], -0.25 * 0.03319420, 2e-6);
 }
+void bounded_single_pixel_readback_matches_full_float_source() {
+  constexpr PixelSize size{17,9};
+  std::vector<std::uint16_t> raw;
+  for(int y=0;y<size.height;++y) for(int x=0;x<size.width;++x) {
+    // Binary16-exact inputs. The matrix, white and gain yield FP32 values
+    // whose precision must survive an isolated 1x1 staging readback.
+    raw.insert(raw.end(),{static_cast<std::uint16_t>(0x3400+x*16),
+        static_cast<std::uint16_t>(0x3800+y*32),
+        static_cast<std::uint16_t>(0x3c00+(x+y)*8),0x7e00});
+  }
+  const auto source=windows_normalize_scrgb_source(size,raw,80.F/203.F,0.5);
+  HDRSHOT_CHECK(source.has_value());
+  HDRSHOT_CHECK(source.value()->wait_until_ready().has_value());
+  const auto full=source.value()->read_region({0,0,17,9}); HDRSHOT_CHECK(full.has_value());
+  bool has_non_half_value=false;
+  for(int y=0;y<size.height;++y) for(int x=0;x<size.width;++x) {
+    const auto pixel=source.value()->read_region({x,y,1,1});
+    HDRSHOT_CHECK(pixel.has_value() && pixel.value().size()==4);
+    const auto offset=static_cast<std::size_t>(y*17+x)*4;
+    for(int c=0;c<4;++c) HDRSHOT_CHECK(pixel.value()[c]==full.value()[offset+c]);
+    for(int c=0;c<3;++c) {
+      const auto half=ExtendedP3Mapper::encode_binary16(pixel.value()[c]);
+      has_non_half_value|=ExtendedP3Mapper::decode_binary16(half).value()!=pixel.value()[c];
+    }
+    HDRSHOT_CHECK(pixel.value()[3]==1.F);
+  }
+  HDRSHOT_CHECK(has_non_half_value);
+  const auto edge=source.value()->read_region({14,7,3,2}); HDRSHOT_CHECK(edge.has_value());
+  for(int y=0;y<2;++y) for(int x=0;x<3;++x) for(int c=0;c<4;++c)
+    HDRSHOT_CHECK(edge.value()[static_cast<std::size_t>(y*3+x)*4+c]==
+        full.value()[static_cast<std::size_t>((y+7)*17+x+14)*4+c]);
+  for(PixelRect invalid:{PixelRect{-1,0,1,1},PixelRect{0,-1,1,1},PixelRect{17,0,1,1},
+      PixelRect{0,9,1,1},PixelRect{0,0,0,1},PixelRect{0,0,1,0},PixelRect{16,8,2,1},
+      PixelRect{16,8,1,2},PixelRect{1,0,std::numeric_limits<int>::max(),1}})
+    HDRSHOT_CHECK(!source.value()->read_region(invalid));
+}
 } // namespace
 int main() {
   return test::run({{"capture compatibility options reach GPU once", compatibility_options_reach_gpu_once},
                     {"GPU source gain vectors", gain_vectors_and_alpha},
                     {"GPU source input validation", invalid_source_and_gain},
                     {"GPU source retains negative linear input",
-                     negative_linear_input_is_preserved}});
+                     negative_linear_input_is_preserved},
+                    {"bounded FP32 single-pixel and edge readback",bounded_single_pixel_readback_matches_full_float_source}});
 }

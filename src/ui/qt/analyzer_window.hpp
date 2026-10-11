@@ -1,5 +1,6 @@
 #pragma once
 #include "domain/analysis/types.hpp"
+#include "domain/analysis/defaults.hpp"
 #include "ui/qt/analyzer_source_view.hpp"
 #include <QWidget>
 #include <functional>
@@ -25,7 +26,7 @@ class AnalyzerSwatchPanel;
 class AnalyzerWindow final : public QWidget {
 public:
   explicit AnalyzerWindow(analysis::Input input, std::string preferences = {},
-                          QWidget *parent = nullptr);
+                          QWidget *parent = nullptr, const AnalysisDefaults* defaults = nullptr);
   ~AnalyzerWindow() override;
   void set_request_handler(std::function<void(analysis::Request)> handler);
   void set_export_handler(
@@ -124,7 +125,7 @@ private:
   QSize preferred_size_{1280, 720};
   double scope_gain_{1.};
   std::array<bool, 2> export_original_{};
-  std::array<bool, 5> readings_{false, false, true, false, false};
+  std::array<bool, 7> readings_{false, false, true, false, false, false, false};
   int sample_size_{1};
   std::uint64_t next_swatch_id_{1};
   std::optional<QPointF> hover_;

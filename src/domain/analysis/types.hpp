@@ -148,7 +148,7 @@ struct Readout {
   std::uint64_t valid_count{}, invalid_count{};
   Rgb source_rgb_edr{}, work_rgb_edr{}, signal_rgb{};
   Rgb work_rgb_nits{};
-  double y_nits{}, intensity{}, intensity_nits{};
+  double y_nits{}, encoded_luma{}, intensity{}, intensity_nits{};
   std::array<double, 3> perceptual{}; // HDR I,T,P / SDR L*,a*,b*
   std::array<double, 2> chroma_plane{}, ycbcr{};
   std::optional<double> hue_degrees;

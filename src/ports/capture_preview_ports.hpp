@@ -1,4 +1,5 @@
 #pragma once
+#include "domain/capture/magnifier.hpp"
 
 #include "core/error.hpp"
 #include "core/frame.hpp"
@@ -59,6 +60,7 @@ struct PreviewModel {
   DisplayGeneration display_generation{};
   PreviewHighlight initial_highlight{};
   std::shared_ptr<const CleanContentSnapshot> clean_content;
+  MagnifierPreview magnifier{};
 };
 
 // Hover/initial drag are display-only. They never become export selections or

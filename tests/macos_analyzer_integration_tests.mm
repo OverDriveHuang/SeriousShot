@@ -293,8 +293,7 @@ void production_controller_window_export_and_close() {
   HDRSHOT_CHECK(controller.close_windows());
   QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   HDRSHOT_CHECK(window.isNull());
-  HDRSHOT_CHECK(settings.analyzer_preferences_json.find("100") !=
-                std::string::npos);
+  HDRSHOT_CHECK(settings.analyzer_preferences_json.find("\"white\"") == std::string::npos);
   controller.shutdown();
 }
 } // namespace

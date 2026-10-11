@@ -341,8 +341,10 @@ Readout make_readout(const Rgb &source, const Rgb &work, std::uint64_t valid,
   auto v = analysis_math_double::signals_from_work(
       analysis_math_double::a3(work[0], work[1], work[2]),
       unsigned(s.working_space), double(s.reference_white_nits));
-  r.signal_rgb = {v.encoded.x, v.encoded.y, v.encoded.z};
+  const auto encoded=analysis_math_double::encode_working_rgb(analysis_math_double::a3(work[0],work[1],work[2]),unsigned(s.working_space),s.reference_white_nits);
+  r.signal_rgb = {encoded.x, encoded.y, encoded.z};
   r.y_nits = v.y_nit;
+  r.encoded_luma = analysis_math_double::dot3(analysis_math_double::y_coefficients(analysis_math_double::working_gamut(unsigned(s.working_space))),encoded);
   r.intensity = v.intensity;
   r.intensity_nits =
       is_hdr(s.working_space) ? analysis_math_double::pq_decode(v.intensity) : 0;

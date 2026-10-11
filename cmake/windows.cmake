@@ -105,6 +105,9 @@ if(HDRSHOT_ENABLE_QT_HOST)
     add_test(NAME hdrshot_windows_overlay_replay_tests COMMAND hdrshot_windows_overlay_session_tests --message-replay)
     set_tests_properties(hdrshot_windows_overlay_replay_tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 45 RUN_SERIAL TRUE)
+    add_test(NAME hdrshot_windows_magnifier_screen_tests COMMAND hdrshot_windows_overlay_session_tests --visual-readings)
+    set_tests_properties(hdrshot_windows_magnifier_screen_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 45 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     add_executable(hdrshot_windows_window_catalog_tests tests/windows_window_catalog_tests.cpp)
     target_link_libraries(hdrshot_windows_window_catalog_tests PRIVATE hdrshot_windows_qt_ports hdrshot_geometry)
     target_include_directories(hdrshot_windows_window_catalog_tests PRIVATE tests)

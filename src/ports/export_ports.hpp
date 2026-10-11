@@ -1,4 +1,5 @@
 #pragma once
+#include "domain/analysis/defaults.hpp"
 
 #include "core/error.hpp"
 #include "core/byte_sink.hpp"
@@ -163,10 +164,13 @@ struct SettingsSnapshot {
   bool windows_capture_gain_enabled{false};
   bool windows_capture_bypass_sdr_white_enabled{false};
 
+  AnalysisDefaults analysis_defaults{};
+
   friend bool operator==(const SettingsSnapshot&, const SettingsSnapshot&) = default;
 };
 
 struct SettingsPatch {
+  std::optional<AnalysisDefaults> analysis_defaults;
   std::optional<std::string> global_capture_hotkey;
   std::optional<std::string> default_save_folder;
   std::optional<SaveFormat> save_format;

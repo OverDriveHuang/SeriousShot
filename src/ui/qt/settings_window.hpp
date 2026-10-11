@@ -1,4 +1,5 @@
 #pragma once
+#include "ui/qt/reading_selector.hpp"
 
 #include "application/settings_workflow.hpp"
 #include "ports/system_shell_port.hpp"
@@ -48,6 +49,12 @@ class SettingsWindow final : public QWidget {
 
  private:
   void choose_folder();
+  void build_analysis_tab(QWidget*);
+  void persist_analysis_defaults();
+  QCheckBox* magnifier_enabled_{};
+  std::array<QComboBox*,6> analysis_combos_{};
+  ReadingSelector* magnifier_readings_{};
+  ReadingSelector* analyzer_readings_{};
   void open_folder(const std::string& folder, const QString& label);
   void restore_controls_from_snapshot();
   void finish_saved_change(const QString& success_message);

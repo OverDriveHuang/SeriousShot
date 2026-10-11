@@ -123,9 +123,9 @@ struct Fixture {
   int requests{}, work_preparations{};
   analysis::ResultRef last_result;
   AnalyzerWindow window;
-  explicit Fixture(bool hdr = true, std::string preferences = {})
+  explicit Fixture(bool hdr = true, std::string preferences = {}, const AnalysisDefaults* defaults = nullptr)
       : window({std::make_shared<FixtureSource>(), 1, hdr},
-               std::move(preferences)) {
+               std::move(preferences), nullptr, defaults) {
     pixels.resize(180 * 112);
     for (int y = 0; y < 112; ++y)
       for (int x = 0; x < 180; ++x) {
@@ -234,13 +234,42 @@ void new_inputs_and_preferences() {
   HDRSHOT_CHECK(next.window.current_request().settings.working_space ==
                 analysis::WorkingSpace::display_p3_sdr);
   HDRSHOT_CHECK(next.window.current_request().settings.reference_white_nits ==
-                100);
-  HDRSHOT_CHECK(next.window.current_request().settings.blur_sigma_px == .5);
+                203);
+  HDRSHOT_CHECK(next.window.current_request().settings.blur_sigma_px == 0);
   HDRSHOT_CHECK(!next.window.current_request().scopes.vector_visible);
   HDRSHOT_CHECK(next.window.current_request().samples.empty());
   Fixture malformed(true, "{broken");
   HDRSHOT_CHECK(
       malformed.window.current_request().settings.reference_white_nits == 203);
+}
+
+void global_defaults_enter_real_windows_without_local_writeback() {
+  AnalysisDefaults d;
+  d.hdr_space=analysis::WorkingSpace::bt2020_pq; d.sdr_space=analysis::WorkingSpace::srgb_sdr;
+  d.reference_white_nits=100; d.blur_sigma_px=2; d.sample_side=101;
+  d.analyzer.selected={false,false,true,false,false,true,false};
+  Fixture hdr(true,R"({"version":1,"white":203,"blur":8,"sampleSize":3,"vectorGain":2.5})",&d);
+  Fixture sdr(false,{},&d);
+  HDRSHOT_CHECK(hdr.window.current_request().settings==analysis_settings(d,true));
+  HDRSHOT_CHECK(sdr.window.current_request().settings==analysis_settings(d,false));
+  HDRSHOT_CHECK(child<QComboBox>(hdr.window,"analyzerSampleSize")->currentText().contains("101"));
+  hdr.window.source_widget()->hover_changed(QPointF(48,38)); events();
+  auto* readout=child<QLabel>(hdr.window,"analyzerHoverReadout");
+  HDRSHOT_CHECK(readout->text().contains("Y · nit") && readout->text().contains("ICtCp I / Ct / Cp"));
+  HDRSHOT_CHECK(!readout->text().contains("线性 · nit · R") && !readout->text().contains("ITP T"));
+  // Selecting an unrelated field must not expand existing Y-only or CtCp-only choices.
+  child<QCheckBox>(hdr.window,"analyzerReading0")->click(); events();
+  HDRSHOT_CHECK(readout->text().contains("源线性 RGB / EDR · P3"));
+  HDRSHOT_CHECK(!readout->text().contains("线性 · nit · R") && !readout->text().contains("ITP T"));
+  child<QComboBox>(hdr.window,"analyzerReferenceWhite")->setCurrentIndex(0);
+  child<QComboBox>(hdr.window,"analyzerBlur")->setCurrentIndex(0); events();
+  const auto prefs=hdr.window.preferences_json();
+  const auto object=QJsonDocument::fromJson(QByteArray::fromStdString(prefs)).object();
+  HDRSHOT_CHECK(!object.contains("white") && !object.contains("blur") && !object.contains("sampleSize") && !object.contains("readings"));
+  Fixture next(true,prefs,&d);
+  HDRSHOT_CHECK(next.window.current_request().settings==analysis_settings(d,true));
+  HDRSHOT_CHECK(sdr.window.current_request().settings==analysis_settings(d,false));
+  HDRSHOT_CHECK(d.reference_white_nits==100 && d.blur_sigma_px==2);
 }
 
 void bounded_layout_and_visibility() {
@@ -1027,7 +1056,7 @@ void preferences_reset_views_without_pixels_or_stale_close_write() {
   HDRSHOT_CHECK(restored.window.current_request().scopes.amplitude_view == analysis::AxisView{});
   HDRSHOT_CHECK(restored.window.current_request().scopes.histogram_view == analysis::AxisView{});
   HDRSHOT_CHECK_NEAR(restored.window.current_request().scopes.vector_zoom, 1., 1e-9);
-  HDRSHOT_CHECK_NEAR(restored.window.current_request().settings.blur_sigma_px, .5, 1e-9);
+  HDRSHOT_CHECK_NEAR(restored.window.current_request().settings.blur_sigma_px, 0., 1e-9);
   HDRSHOT_CHECK(f.window.current_request().scopes.amplitude_view == before.scopes.amplitude_view);
   HDRSHOT_CHECK(f.window.current_request().scopes.histogram_view == before.scopes.histogram_view);
   HDRSHOT_CHECK_NEAR(f.window.current_request().scopes.vector_zoom, before.scopes.vector_zoom, 1e-9);
@@ -1655,9 +1684,9 @@ void swatch_pairs_use_real_clicks_and_local_updates() {
   auto *primary = child<QLabel>(f.window, "analyzerSwatchReadout1");
   HDRSHOT_CHECK(primary->text().contains("Y · nit"));
   HDRSHOT_CHECK(primary->text().contains("R / G / B · nit"));
-  child<QCheckBox>(f.window, "analyzerReading4")->setChecked(true);
+  for(const auto* name : {"analyzerReading4","analyzerReading5","analyzerReading6"}) child<QCheckBox>(f.window,name)->setChecked(true);
   primary = child<QLabel>(f.window, "analyzerSwatchReadout1");
-  HDRSHOT_CHECK(primary->text().contains("Hue / Chroma"));
+  HDRSHOT_CHECK(primary->text().contains("Hue / Chroma · TP"));
   QPointer<QWidget> stable_handle =
       child<QToolButton>(f.window, "analyzerSwatchPairHandle1");
   const auto value_before =
@@ -2110,7 +2139,7 @@ void swatch_pair_rows_fit_narrow_viewports() {
                                         "analyzerCopySwatch1")->icon());
   panel.raise();
   panel.set_reading_formatter([](const analysis::Readout &readout, bool) {
-    return QString("Y · nit   %1\nITP T / P   0.1234 / 0.5678  |  ICtCp Ct / Cp   0.2468 / 0.5678")
+    return QString("Y · nit   %1\nITP T / P   0.1234 / 0.5678  |  ICtCp I / Ct / Cp / Cp   0.2468 / 0.5678")
         .arg(readout.y_nits, 0, 'f', 2);
   });
   panel.set_samples_and_result(request, result);
@@ -2253,24 +2282,18 @@ void swatch_pair_rows_fit_narrow_viewports() {
 void swatch_itp_copy_and_danger_buttons() {
   Fixture f;
   f.add_samples();
-  auto *field = child<QCheckBox>(f.window, "analyzerReading4");
-  field->setChecked(true);
+  for(const auto* name : {"analyzerReading4","analyzerReading5","analyzerReading6"}) child<QCheckBox>(f.window,name)->setChecked(true);
   events();
   auto *readout = child<QLabel>(f.window, "analyzerSwatchReadout1");
   const auto &sample = f.last_result->samples.front().mean;
-  const QString expected = QString("ITP T / P   %1 / %2  |  ICtCp Ct / Cp   %3 / %4")
-      .arg(sample.perceptual[1], 0, 'f', 4)
-      .arg(sample.perceptual[2], 0, 'f', 4)
-      .arg(2 * sample.perceptual[1], 0, 'f', 4)
-      .arg(sample.perceptual[2], 0, 'f', 4);
-  HDRSHOT_CHECK(readout->text().contains(expected));
-  HDRSHOT_CHECK(readout->text().split('\n').filter("ITP T / P").size() == 1);
+  HDRSHOT_CHECK(readout->text().contains("ITP I / T / P"));
+  HDRSHOT_CHECK(readout->text().contains("ICtCp I / Ct / Cp"));
   HDRSHOT_CHECK(readout->toolTip() == readout->text());
   f.window.source_widget()->hover_changed(QPointF(20, 20));
   events();
   auto *hover = child<QLabel>(f.window, "analyzerHoverReadout");
-  HDRSHOT_CHECK(hover->text().contains("ITP T / P"));
-  HDRSHOT_CHECK(hover->text().contains("  |  ICtCp Ct / Cp   "));
+  HDRSHOT_CHECK(hover->text().contains("ITP I / T / P"));
+  HDRSHOT_CHECK(hover->text().contains("ICtCp I / Ct / Cp"));
   HDRSHOT_CHECK(hover->toolTip() == hover->text());
   auto *copy = child<QToolButton>(f.window, "analyzerCopySwatch1");
   copy->click();
@@ -2278,7 +2301,7 @@ void swatch_itp_copy_and_danger_buttons() {
   HDRSHOT_CHECK(copied == child<QLabel>(f.window, "analyzerSwatchLabel1")->text() +
                               "\n" + readout->text());
   HDRSHOT_CHECK(copied.contains("#1 · 20, 20 · 1×1"));
-  HDRSHOT_CHECK(copied.contains(expected));
+  HDRSHOT_CHECK(copied.contains("ICtCp I / Ct / Cp"));
   HDRSHOT_CHECK(QGuiApplication::clipboard()->mimeData()->hasText());
   HDRSHOT_CHECK(!QGuiApplication::clipboard()->mimeData()->hasImage());
   auto *panel = child<AnalyzerSwatchPanel>(f.window, "analyzerSwatchPanel");
@@ -2315,15 +2338,15 @@ void swatch_itp_copy_and_danger_buttons() {
                               analyzer_control_style::danger_foreground})
       HDRSHOT_CHECK(danger->styleSheet().contains(color));
   }
-  field->setChecked(false);
+  child<QCheckBox>(f.window,"analyzerReading5")->setChecked(false);
   child<QComboBox>(f.window, "analyzerWorkingSpace")->setCurrentIndex(0);
-  field->setChecked(true);
+  child<QCheckBox>(f.window,"analyzerReading5")->setChecked(true);
   events();
   readout = child<QLabel>(f.window, "analyzerSwatchReadout1");
-  HDRSHOT_CHECK(readout->text().contains("Lab D65 L* / a* / b*"));
-  HDRSHOT_CHECK(!readout->text().contains("ICtCp Ct / Cp"));
+  HDRSHOT_CHECK(readout->text().contains("L*a*b* · D65"));
+  HDRSHOT_CHECK(!readout->text().contains("ICtCp I / Ct / Cp"));
   child<QToolButton>(f.window, "analyzerCopySwatch1")->click();
-  HDRSHOT_CHECK(QGuiApplication::clipboard()->text().contains("Lab D65"));
+  HDRSHOT_CHECK(QGuiApplication::clipboard()->text().contains("L*a*b* · D65"));
 }
 
 void danger_palette_matches_linear_display_p3_reference() {
@@ -2361,7 +2384,7 @@ void visual_artifacts() {
   Fixture f;
   f.add_samples();
   save(f, "hdr_default_1280x720");
-  child<QCheckBox>(f.window, "analyzerReading4")->setChecked(true);
+  for(const auto* name : {"analyzerReading4","analyzerReading5","analyzerReading6"}) child<QCheckBox>(f.window,name)->setChecked(true);
   save(f, "hdr_itp_ct_cp_swatches_1280x720");
   const auto hdr_plan = f.window.report_plan();
   QImage hdr_report(hdr_plan.underlay.rgba.data(), hdr_plan.underlay.size.width,
@@ -2450,6 +2473,10 @@ int main(int argc, char **argv) {
       QDir::current().relativeFilePath(platform_config.fileName()).toUtf8());
   QApplication app(argc, argv);
   app.setFont(QFont("Arial", 10));
+  if(qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_VISUAL_ONLY")){
+    if(qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_DARK")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#25272c"));pal.setColor(QPalette::WindowText,Qt::white);app.setPalette(pal);}
+    return hdrshot::test::run({{"native production-window visual artifacts",visual_artifacts}});
+  }
   std::cout << "TEST_SCREEN logical=" << app.primaryScreen()->size().width()
             << 'x' << app.primaryScreen()->size().height()
             << " dpr=" << app.primaryScreen()->devicePixelRatio() << '\n';
@@ -2472,7 +2499,8 @@ int main(int argc, char **argv) {
          {"danger palette matches linear Display P3 reference",
           danger_palette_matches_linear_display_p3_reference}});
   return hdrshot::test::run(
-      {{"new source defaults and safe preference restore",
+      {{"global defaults initialize real windows and local toggles stay independent", global_defaults_enter_real_windows_without_local_writeback},
+       {"new source defaults and safe preference restore",
         new_inputs_and_preferences},
        {"bounded three-size eight-visibility layout",
         bounded_layout_and_visibility},

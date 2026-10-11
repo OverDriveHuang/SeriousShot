@@ -1,3 +1,4 @@
+#include <QGroupBox>
 #include "ui/qt/settings_window.hpp"
 #include "core/build_metadata.hpp"
 #include "ui/qt/qt_window_activation_port.hpp"
@@ -23,7 +24,9 @@
 #include <QPalette>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QStyleHints>
 #include <QWindow>
+#include <QTabWidget>
 
 #include <cstdio>
 #include <string>
@@ -55,6 +58,7 @@ class MemorySettingsStore final : public SettingsStorePort {
       });
     }
     if (patch.detailed_logging) snapshot.detailed_logging = *patch.detailed_logging;
+    if (patch.analysis_defaults) snapshot.analysis_defaults = *patch.analysis_defaults;
     if (patch.global_capture_hotkey.has_value()) {
       snapshot.global_capture_hotkey = *patch.global_capture_hotkey;
     }
@@ -293,8 +297,9 @@ void general_rows_are_wide_aligned_and_folder_actions_are_explicit() {
                     QStringLiteral("completionActionSeparator")) == nullptr);
   HDRSHOT_CHECK(fixture.window.windowTitle() == QStringLiteral("SeriousShot 设置"));
   const auto description_x = description->mapTo(&fixture.window, QPoint{}).x();
-  HDRSHOT_CHECK(general_label->mapTo(&fixture.window, QPoint{}).x() == description_x);
-  HDRSHOT_CHECK(fixed_label->mapTo(&fixture.window, QPoint{}).x() == description_x);
+  HDRSHOT_CHECK(general_label->mapTo(&fixture.window, QPoint{}).x() >= description_x);
+  HDRSHOT_CHECK(fixed_label->mapTo(&fixture.window, QPoint{}).x() ==
+      general_label->mapTo(&fixture.window, QPoint{}).x());
   HDRSHOT_CHECK(general_label->font().pointSizeF() == description->font().pointSizeF());
   HDRSHOT_CHECK(fixed_label->font().pointSizeF() == description->font().pointSizeF());
   HDRSHOT_CHECK(general_label->geometry().bottom() < general_container->geometry().top());
@@ -569,6 +574,7 @@ void save_format_switches_only_the_relevant_quality_rows() {
       quality != nullptr);
   const auto png_position = format->mapTo(&fixture.window, QPoint{});
   const auto png_width = format->width();
+  const auto png_viewport_width = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea")->viewport()->width();
   auto* format_scroll = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
 
   format->setCurrentIndex(format->findData(
@@ -598,12 +604,58 @@ void save_format_switches_only_the_relevant_quality_rows() {
   HDRSHOT_CHECK(precision->isVisible());
   HDRSHOT_CHECK(!quality->isVisible());
   HDRSHOT_CHECK(format->mapTo(&fixture.window, QPoint{}) == png_position);
-  const int scrollbar_width = format_scroll && format_scroll->verticalScrollBar()->isVisible()
-      ? format_scroll->verticalScrollBar()->width() : 0;
-  HDRSHOT_CHECK(format->width() == png_width - scrollbar_width);
+  HDRSHOT_CHECK(format_scroll);
+  HDRSHOT_CHECK(format->width() - png_width ==
+      format_scroll->viewport()->width() - png_viewport_width);
   HDRSHOT_CHECK(
       fixture.store.snapshot.ultra_hdr_jpeg_quality ==
       UltraHdrJpegQuality::compact);
+}
+
+void general_sections_scroll_together_without_overlap() {
+  Fixture fixture;
+  fixture.window.setMinimumHeight(480);
+  fixture.window.reload_and_show();
+  for (int height : {770, 730, 480}) {
+    fixture.window.resize(860, height);
+    HDRSHOT_CHECK(fixture.window.height()==height);
+    int previous_range=-1;
+    for (int format_value : {1, 0, 1, 0}) {
+      auto* format = fixture.window.findChild<QComboBox*>("saveFormatCombo");
+      format->setCurrentIndex(format_value);
+      auto* status = fixture.window.findChild<QLabel*>("settingsStatusLabel");
+      for (bool show_status : {true, false}) {
+        status->setVisible(show_status);
+        for (int i=0; i<6; ++i) QApplication::processEvents();
+        auto* scroll=fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
+        HDRSHOT_CHECK(scroll);
+        auto* general=fixture.window.findChild<QGroupBox*>("generalSettingsContainer");
+        auto* fixed=fixture.window.findChild<QGroupBox*>("fixedOperationsContainer");
+        auto* label=fixture.window.findChild<QLabel*>("fixedOperationsSectionLabel");
+        auto* content=scroll->widget();
+        HDRSHOT_CHECK(content->isAncestorOf(general) && content->isAncestorOf(fixed));
+        HDRSHOT_CHECK(general->mapTo(content,QPoint(0,general->height())).y()+12 <= label->mapTo(content,QPoint{}).y());
+        HDRSHOT_CHECK(label->mapTo(content,QPoint(0,label->height())).y() <= fixed->mapTo(content,QPoint{}).y());
+        HDRSHOT_CHECK(general->height() >= general->minimumSizeHint().height());
+        HDRSHOT_CHECK(fixed->height() >= fixed->minimumSizeHint().height());
+        if (height==480) HDRSHOT_CHECK(scroll->verticalScrollBar()->maximum()>0);
+        if (show_status && height==480 && previous_range>=0) {
+          const auto save_format=static_cast<SaveFormat>(format->currentData().toInt());
+          if (save_format==SaveFormat::png_display_p3_dual_range)
+            HDRSHOT_CHECK(scroll->verticalScrollBar()->maximum()>previous_range);
+          else HDRSHOT_CHECK(scroll->verticalScrollBar()->maximum()<previous_range);
+        }
+        if (show_status) previous_range=scroll->verticalScrollBar()->maximum();
+        scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+        for (int i=0; i<3; ++i) QApplication::processEvents();
+        const int bottom=fixed->mapTo(scroll->viewport(),QPoint(0,fixed->height())).y();
+        HDRSHOT_CHECK(bottom<=scroll->viewport()->height());
+        auto* page=scroll->parentWidget();
+        HDRSHOT_CHECK(page->height()-fixed->mapTo(page,QPoint(0,fixed->height())).y() >= page->layout()->contentsMargins().bottom());
+        scroll->verticalScrollBar()->setValue(0);
+      }
+    }
+  }
 }
 
 void iso_jpeg_label_preserves_existing_format_and_quality() {
@@ -697,6 +749,86 @@ void detailed_logging_applies_and_rolls_back_on_failure() {
   check->click();
   HDRSHOT_CHECK(!active && !fixture.store.snapshot.detailed_logging && changes==2);
 }
+void analysis_tab_defaults_are_shared_independent_and_rollback_immediately() {
+  Fixture f;
+  f.window.reload_and_show(); QApplication::processEvents();
+  auto* tabs=f.window.findChild<QTabWidget*>("settingsTabs");
+  HDRSHOT_CHECK(tabs && tabs->count()==2 && tabs->tabText(0)=="通用" && tabs->tabText(1)=="分析");
+  tabs->setCurrentIndex(1); QApplication::processEvents();
+  for(const auto* name : {"analysisHdrSpaceCombo","analysisSdrSpaceCombo","analysisWhiteCombo","analysisBlurCombo","analysisSampleCombo","magnifierZoomCombo"})
+    HDRSHOT_CHECK(f.window.findChildren<QComboBox*>(name).size()==1);
+  auto* enabled=f.window.findChild<QCheckBox*>("magnifierEnabledCheck");
+  auto* zoom=f.window.findChild<QComboBox*>("magnifierZoomCombo");
+  auto* blur=f.window.findChild<QComboBox*>("analysisBlurCombo");
+  auto* sample=f.window.findChild<QComboBox*>("analysisSampleCombo");
+  HDRSHOT_CHECK(enabled->isChecked() && zoom->currentData().toInt()==8);
+  HDRSHOT_CHECK(blur->currentData().toDouble()==0 && sample->currentData().toInt()==1);
+  auto* magnifier=f.window.findChild<QCheckBox*>("magnifierReadingsOption0");
+  auto* analyzer=f.window.findChild<QCheckBox*>("analyzerReadingsOption0");
+  HDRSHOT_CHECK(magnifier->isChecked() && !analyzer->isChecked());
+  magnifier->click(); HDRSHOT_CHECK(!f.store.snapshot.analysis_defaults.magnifier.selected[0]);
+  HDRSHOT_CHECK(!analyzer->isChecked() && !f.store.snapshot.analysis_defaults.analyzer.selected[0]);
+  f.store.fail_next_save=true;
+  enabled->click();
+  HDRSHOT_CHECK(enabled->isChecked() && f.store.snapshot.analysis_defaults.magnifier_enabled);
+  f.store.fail_next_save=true;
+  zoom->setCurrentIndex(3);
+  HDRSHOT_CHECK(zoom->currentData().toInt()==8 && f.store.snapshot.analysis_defaults.magnifier_zoom==8);
+  blur->setCurrentIndex(5); sample->setCurrentIndex(5);
+  HDRSHOT_CHECK(f.store.snapshot.analysis_defaults.blur_sigma_px==8 && f.store.snapshot.analysis_defaults.sample_side==101);
+  HDRSHOT_CHECK(f.window.findChild<QCheckBox*>("magnifierReadingsOption4")->text()=="L*a*b* · D65（SDR）");
+  for(int i=0;i<9;++i)f.window.findChild<QCheckBox*>("magnifierReadingsOption"+QString::number(i))->setChecked(true);
+  HDRSHOT_CHECK(f.window.findChildren<QWidget*>("magnifierReadingsChip8").size()==1);
+  auto* scroll=f.window.findChild<QScrollArea*>("analysisSettingsScrollArea");
+  HDRSHOT_CHECK(scroll && scroll->widgetResizable());
+  // Explicitly lower the production minimum for this short-window stress
+  // case; resize(480) alone is clamped to the platform's normal minimum.
+  f.window.setMinimumHeight(480);
+  f.window.resize(f.window.minimumWidth(),480); QApplication::processEvents();
+  HDRSHOT_CHECK(f.window.height()==480);
+  HDRSHOT_CHECK(scroll->verticalScrollBar()->maximum()>0);
+  auto* last=f.window.findChild<QWidget*>("magnifierReadingsChip8");
+  scroll->ensureWidgetVisible(last); QApplication::processEvents();
+  HDRSHOT_CHECK(last->mapTo(scroll->viewport(),QPoint{}).y()>=0);
+  HDRSHOT_CHECK(last->mapTo(scroll->viewport(),QPoint(0,last->height())).y()<=scroll->viewport()->height());
+}
+
+void reading_selector_blank_area_opens_menu_and_chips_stay_independent() {
+  Fixture fixture;
+  fixture.window.reload_and_show();
+  fixture.window.findChild<QTabWidget*>("settingsTabs")->setCurrentIndex(1);
+  QApplication::processEvents();
+  const auto press = [](QWidget* widget, QPoint point) {
+    const auto global = widget->mapToGlobal(point);
+    QMouseEvent event(QEvent::MouseButtonPress, QPointF(point), QPointF(global),
+        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(widget, &event);
+    QApplication::processEvents();
+  };
+  for (const auto* name : {"magnifierReadings", "analyzerReadings"}) {
+    auto* selector = fixture.window.findChild<QWidget*>(name);
+    auto* menu = selector->findChild<QMenu*>();
+    HDRSHOT_CHECK(menu);
+    press(selector, QPoint(2, 2));
+    HDRSHOT_CHECK(menu->isVisible());
+    menu->hide();
+    auto* chips = selector->findChild<QWidget*>(QString(name) + "Chips");
+    const QPoint blank(chips->width() - 1, chips->height() - 1);
+    HDRSHOT_CHECK(chips->childAt(blank) == nullptr);
+    press(chips, blank);
+    HDRSHOT_CHECK(menu->isVisible());
+    menu->hide();
+    auto* chip = chips->findChildren<QWidget*>(
+        QRegularExpression(QString(name) + "Chip[0-9]+"), Qt::FindDirectChildrenOnly).first();
+    press(chip->findChild<QLabel*>(), QPoint(2, 2));
+    HDRSHOT_CHECK(!menu->isVisible());
+    const auto before = fixture.store.save_attempts;
+    chip->findChild<QToolButton*>()->click();
+    QApplication::processEvents();
+    HDRSHOT_CHECK(fixture.store.save_attempts == before + 1 && !menu->isVisible());
+  }
+}
+
 void releases_open_only_on_click() {
   Fixture fixture;
   int calls = 0;
@@ -730,8 +862,17 @@ void releases_open_only_on_click() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  qputenv("QT_QPA_PLATFORM", "offscreen");
+#ifdef Q_OS_WIN
+  constexpr auto native_platform="windows";
+#else
+  constexpr auto native_platform="cocoa";
+#endif
+  qputenv("QT_QPA_PLATFORM",qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_NATIVE")?native_platform:"offscreen");
   QApplication application(argc, argv);
+  if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_LIGHT")) {
+    application.styleHints()->setColorScheme(Qt::ColorScheme::Light);
+    QApplication::processEvents();
+  }
   if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_DARK")) {
     auto palette = application.palette();
     palette.setColor(QPalette::Window, QColor(30, 30, 30));
@@ -761,9 +902,24 @@ int main(int argc, char** argv) {
     }
     fixture.window.reload_and_show();
     QApplication::processEvents();
+    if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS")) {
+      fixture.window.findChild<QTabWidget*>("settingsTabs")->setCurrentIndex(1);
+      QApplication::processEvents();
+    }
+    if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ALL_READINGS")){
+      for(int i=0;i<9;++i)fixture.window.findChild<QCheckBox*>("magnifierReadingsOption"+QString::number(i))->setChecked(true);
+      for(int i=0;i<7;++i)fixture.window.findChild<QCheckBox*>("analyzerReadingsOption"+QString::number(i))->setChecked(true);
+      QApplication::processEvents();
+    }
     if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_MINIMUM")) {
       fixture.window.resize(fixture.window.minimumSize());
       QApplication::processEvents();
+    }
+    if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_SHORT")) {
+      fixture.window.setMinimumHeight(480);
+      fixture.window.resize(fixture.window.minimumWidth(),480);
+      QApplication::processEvents();
+      HDRSHOT_CHECK(fixture.window.height()==480);
     }
     if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_SHOW_COMPATIBILITY")) {
       auto* scroll = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
@@ -775,6 +931,17 @@ int main(int argc, char** argv) {
       }
     }
     QApplication::processEvents();
+    const auto scroll_to_bottom=[&] {
+      if(!qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_BOTTOM"))return;
+      QApplication::processEvents();
+      auto* scroll=fixture.window.findChild<QScrollArea*>(
+          qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS")?"analysisSettingsScrollArea":"generalSettingsScrollArea");
+      HDRSHOT_CHECK(scroll);
+      scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+      QApplication::processEvents();
+      HDRSHOT_CHECK(scroll->verticalScrollBar()->value()==scroll->verticalScrollBar()->maximum());
+    };
+    scroll_to_bottom();
     if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_REPORT_SCROLL")) {
       auto* scroll = fixture.window.findChild<QScrollArea*>("generalSettingsScrollArea");
       if (scroll != nullptr) {
@@ -783,23 +950,39 @@ int main(int argc, char** argv) {
             scroll->verticalScrollBar()->maximum(),
             scroll->verticalScrollBar()->isVisible() ? 1 : 0);
       }
+      auto* analysis_scroll=fixture.window.findChild<QScrollArea*>("analysisSettingsScrollArea");
+      if(analysis_scroll)
+        std::printf("analysis_scroll_max=%d analysis_scroll_visible=%d platform=%s dpr=%.2f\n",
+            analysis_scroll->verticalScrollBar()->maximum(),
+            analysis_scroll->verticalScrollBar()->isVisible()?1:0,
+            QGuiApplication::platformName().toUtf8().constData(),fixture.window.devicePixelRatioF());
     }
     if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path))) {
       return 1;
+    }
+    if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS")){
+      auto* scroll=fixture.window.findChild<QScrollArea*>("analysisSettingsScrollArea");
+      if(!scroll->widget()->grab().save(QString::fromUtf8(screenshot_path)+".full.png"))return 1;
     }
     // Also inspect the only locally colored text in Settings in both palettes.
     auto* logging = fixture.window.findChild<QCheckBox*>("detailedLoggingCheckBox");
     logging->click();
     QApplication::processEvents();
+    scroll_to_bottom();
     if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path) + ".success.png"))
       return 1;
     fixture.store.fail_next_save = true;
     logging->click();
     QApplication::processEvents();
+    scroll_to_bottom();
     if (!fixture.window.grab().save(QString::fromUtf8(screenshot_path) + ".error.png"))
       return 1;
+    if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_NATIVE"))return 0;
   }
   return hdrshot::test::run({
+      {"general sections share dynamic scroll without overlap", general_sections_scroll_together_without_overlap},
+      {"reading selector blank hit area and independent chips", reading_selector_blank_area_opens_menu_and_chips_stay_independent},
+      {"two-tab defaults, separate readings, bounded scroll and error rollback", analysis_tab_defaults_are_shared_independent_and_rollback_immediately},
       {"releases opens fixed URL only on explicit click", releases_open_only_on_click},
       {"detailed log checkbox autosaves and restores on error", detailed_logging_applies_and_rolls_back_on_failure},
       {"fresh settings opens with either legacy flag and close stays closed", fresh_settings_window_ignores_legacy_presentation_flag_and_close_stays_closed},

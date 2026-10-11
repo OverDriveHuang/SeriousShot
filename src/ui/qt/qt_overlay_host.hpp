@@ -1,5 +1,8 @@
 #pragma once
 #include "application/capture_session.hpp"
+#include "application/magnifier_sampler.hpp"
+#include "ui/qt/capture_magnifier_panel.hpp"
+#include "domain/color/capture_edr_boundary.hpp"
 #include "application/export_workflow.hpp"
 #include "application/overlay_input_recovery.hpp"
 #include "ui/qt/overlay_editor_widget.hpp"
@@ -25,6 +28,8 @@ inline void print_overlay_error(const Error& error) {
 // selection policy, annotation geometry, output format or export snapshots.
 class QtOverlayHost final : public QWidget {
  public:
+  MagnifierSampler::Counters magnifier_counters() const{return magnifier_sampler_.counters();}
+  MagnifierPreview magnifier_preview() const{return magnifier_;}
   void set_diagnostics(std::shared_ptr<hdrshot::DiagnosticsPort> diagnostics) {
     diagnostics_ = std::move(diagnostics);
   }
@@ -63,6 +68,7 @@ class QtOverlayHost final : public QWidget {
 
   ~QtOverlayHost() override {
     capture_active_ = false;
+    magnifier_sampler_.close();
     window_->set_input_interrupted({});
     if (qApp) qApp->removeEventFilter(this);
     // QWidget's base destructor hides children AFTER our members are gone.
@@ -107,6 +113,7 @@ class QtOverlayHost final : public QWidget {
 
   void set_interaction_locked(const bool locked) {
     interaction_locked_ = locked;
+    if(locked)hide_magnifier();
     if (editor_ != nullptr) {
       editor_->set_interaction_locked(locked);
       editor_->setVisible(!locked);
@@ -115,6 +122,7 @@ class QtOverlayHost final : public QWidget {
 
   void set_system_dialog_active(const bool active, const bool restore_focus = false) {
     system_dialog_active_ = active;
+    if(active)hide_magnifier();
     window_->set_system_dialog_active(*this, active, restore_focus);
     if (!active) {
       if (restore_focus && editor_ != nullptr && !interaction_locked_) editor_->setFocus();
@@ -276,6 +284,7 @@ class QtOverlayHost final : public QWidget {
       }
     });
 
+    magnifier_panel_=new CaptureMagnifierPanel(editor_);
     capture_active_ = true;
     show();
     window_->configure(*this, true);
@@ -288,6 +297,7 @@ class QtOverlayHost final : public QWidget {
     QTimer::singleShot(0, this, [this] {
       if (!interaction_locked_ && isVisible())
         editor_->refresh_window_candidate(editor_->mapFromGlobal(QCursor::pos()));
+      if(magnifier_revision_==0)request_magnifier(editor_->mapFromGlobal(QCursor::pos()));
       present();
     });
     std::cout << "qtHostReady=1 displayId=" << target_display_id_.value
@@ -297,6 +307,10 @@ class QtOverlayHost final : public QWidget {
 
  protected:
   bool eventFilter(QObject* watched, QEvent* event) override {
+    if (capture_active_ && watched == this &&
+        (event->type() == QEvent::Hide ||
+         (event->type() == QEvent::Leave && !rect().contains(mapFromGlobal(QCursor::pos())))))
+      hide_magnifier();
     if (!capture_active_ || !isVisible() || system_dialog_active_)
       return QWidget::eventFilter(watched, event);
     if (watched == qApp && event->type() == QEvent::ApplicationDeactivate) {
@@ -316,7 +330,12 @@ class QtOverlayHost final : public QWidget {
     auto* mouse = static_cast<QMouseEvent*>(event);
     if (kind != RecoveryPointerEvent::move && mouse->button() != Qt::LeftButton) return false;
     const auto action = recovery_->pointer(kind);
-    if (action == RecoveryPointerAction::forward) return false;
+    if (action == RecoveryPointerAction::forward) {
+      if(kind==RecoveryPointerEvent::move) request_magnifier(editor_->mapFromGlobal(mouse->globalPosition()));
+      if(kind!=RecoveryPointerEvent::move) QTimer::singleShot(0,this,[this]{if(editor_)request_magnifier(editor_->mapFromGlobal(QCursor::pos()));});
+      return false;
+    }
+    hide_magnifier();
     if (action == RecoveryPointerAction::ordinary_press) {
       // Qt may label the next press a double click because it counted the
       // recovery click. Deliver an ordinary press, including to child controls.
@@ -380,8 +399,57 @@ class QtOverlayHost final : public QWidget {
   }
 
  private:
+
+  void hide_magnifier() {
+    ++magnifier_revision_;magnifier_sampler_.invalidate();
+    const bool shown=magnifier_.visible;magnifier_.visible=false;
+    if(magnifier_panel_)magnifier_panel_->hide();
+    if(editor_)editor_->set_magnifier_exclusion({});
+    if(shown)present();
+  }
+  void request_magnifier(QPointF position) {
+    if(!editor_ || !capture_active_ || interaction_locked_ || system_dialog_active_ || exporting_ || recovery_->pending() || recovery_->swallowing() ||
+       !export_settings_.analysis_defaults.magnifier_enabled || !editor_->magnifier_applicable() || !editor_->rect().contains(position.toPoint())) {hide_magnifier();return;}
+    const auto* segment=target_segment();if(!segment)return;
+    const auto point=magnifier_source_point(position.x(),position.y(),segment->point_pixel_scale,segment->size_px);
+    if(magnifier_.visible && magnifier_.center==point)return;
+    const auto revision=++magnifier_revision_;
+    // Native image follows the cursor immediately; pending values are cleared.
+    show_magnifier({point,revision,{}});
+    const QPointer<QtOverlayHost> guard(this);
+    magnifier_sampler_.submit({frozen_desktop_,target_display_id_,point,revision,export_settings_.analysis_defaults.reference_white_nits},
+      [guard](MagnifierSampleResult result){QMetaObject::invokeMethod(qApp,[guard,result=std::move(result)]{
+        if(!guard || !guard->capture_active_ || result.revision!=guard->magnifier_revision_)return;
+        guard->show_magnifier(result);
+      },Qt::QueuedConnection);});
+  }
+  void show_magnifier(const MagnifierSampleResult& sample) {
+    const auto* segment=target_segment();if(!segment || !magnifier_panel_)return;
+    const auto& d=export_settings_.analysis_defaults;
+    const double scale=segment->point_pixel_scale;const int zoom=d.magnifier_zoom;
+    const int available=std::min({int(std::floor(220*scale)),segment->size_px.width,segment->size_px.height-int(std::ceil(CaptureMagnifierPanel::header_height()*scale))});
+    if(available<zoom)return;
+    const int image_px=magnifier_odd_pixels(available,zoom)*zoom;
+    const int panel_width=int(std::ceil(image_px/scale));const int image_height=panel_width;
+    const int max_height=std::max(1,editor_->height()-8);
+    const int panel_height=std::min(max_height,image_height+CaptureMagnifierPanel::header_height()+magnifier_panel_->text_height(d.magnifier));
+    int x=int(sample.point.x/scale)+24,y=int(sample.point.y/scale)+24;
+    if(x+panel_width>editor_->width()-8)x=int(sample.point.x/scale)-panel_width-24;
+    if(y+panel_height>editor_->height()-8)y=int(sample.point.y/scale)-panel_height-24;
+    x=std::clamp(x,0,std::max(0,editor_->width()-panel_width));y=std::clamp(y,0,std::max(0,editor_->height()-panel_height));
+    const int native_x=std::min(int(std::round(x*scale)),segment->size_px.width-image_px);
+    const int native_y=std::min(int(std::round((y+CaptureMagnifierPanel::header_height())*scale)),segment->size_px.height-image_px);
+    const MagnifierPreview next{true,sample.point,{native_x,native_y,image_px,image_px},zoom,sample.revision};
+    const bool image_changed=next!=magnifier_;magnifier_=next;
+    magnifier_panel_->setGeometry(x,y,panel_width,panel_height);
+    editor_->set_magnifier_exclusion(magnifier_panel_->geometry());
+    magnifier_panel_->show_sample(sample.point,sample.readout,d.magnifier,image_height,zoom);
+    if(image_changed)present();
+  }
+
   void input_interrupted() {
     if (!capture_active_ || !isVisible() || system_dialog_active_) return;
+    hide_magnifier();
     recovery_->interrupt();
     if (editor_) editor_->interrupt_pointer_gesture();
   }
@@ -417,6 +485,8 @@ class QtOverlayHost final : public QWidget {
 
   void finish_capture() {
     capture_active_ = false;
+    hide_magnifier();
+    magnifier_sampler_.close();
     hide();
     if (finished_) {
       finished_();
@@ -472,6 +542,7 @@ class QtOverlayHost final : public QWidget {
                 frozen_desktop_->display_generation,
                 initial_highlight_,
                 clean_content_,
+                magnifier_,
             },
             target_display_id_,
         },
@@ -523,6 +594,10 @@ class QtOverlayHost final : public QWidget {
   SelectionEstablished selection_established_;
   InitialGestureChanged initial_gesture_changed_;
   hdrshot::SettingsSnapshot export_settings_{};
+  MagnifierSampler magnifier_sampler_;
+  CaptureMagnifierPanel* magnifier_panel_{};
+  MagnifierPreview magnifier_{};
+  std::uint64_t magnifier_revision_{};
 };
 
 

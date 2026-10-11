@@ -1,4 +1,5 @@
 #pragma once
+#include "domain/capture/magnifier.hpp"
 
 #include "core/error.hpp"
 #include "core/geometry.hpp"
@@ -32,6 +33,7 @@ struct MacMetalOverlayRequest {
   std::shared_ptr<const LinearFloatPixels> rgba_float_linear_p3;
   std::shared_ptr<const CleanContentSnapshot> clean_content;
   LinearSourceRef linear_source;
+  MagnifierPreview magnifier{};
 };
 
 struct MacMetalOverlayReadback {

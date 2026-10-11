@@ -1,12 +1,17 @@
 #include "application/capture_interaction_session.hpp"
 #include "platform/windows/windows_d3d_presenter.hpp"
+#include "platform/windows/windows_gpu_source.hpp"
 #include "platform/windows/windows_qt_ports.hpp"
 #include "test_support.hpp"
 #include "ui/qt/qt_overlay_host.hpp"
 
 #include <QApplication>
+#include <QBackingStore>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFrame>
+#include <QImage>
+#include <QLabel>
 #include <QScreen>
 #include <QToolButton>
 #include <QWindow>
@@ -123,9 +128,14 @@ struct Presenter final : PreviewPresenterPort {
     last = request;
     actual->present(request, [completed = completed, failed = failed,
                               done = std::move(done)](auto result) mutable {
-      if (!result)
+      // The real presenter intentionally coalesces pending pointer previews.
+      // Superseded requests are cancelled; readiness requires an actual frame.
+      if (!result && result.error().code != ErrorCode::operation_cancelled) {
+        std::cerr << "native fixture presentation failure "
+                  << to_string(result.error().code) << '\n';
         failed->store(true);
-      completed->fetch_add(1);
+      }
+      if (result) completed->fetch_add(1);
       done(std::move(result));
     });
   }
@@ -182,6 +192,181 @@ bool wait_until(const std::function<bool()> &condition, int timeout_ms = 1500) {
     Sleep(5);
   }
   return condition();
+}
+
+void settle_visual_events() {
+  QElapsedTimer clock;
+  clock.start();
+  while (clock.elapsed() < 300) {
+    QApplication::processEvents(QEventLoop::AllEvents, 20);
+    Sleep(5);
+  }
+}
+
+std::vector<bool> text_ink(const QImage& image) {
+  HDRSHOT_CHECK(!image.isNull());
+  // Each ROI contains one right-aligned scalar, on an opaque uniform panel.
+  // Compare glyph coverage, allowing SDR/HDR composition to change color.
+  const int background = qGray(image.pixel(0, 0));
+  std::vector<bool> mask;
+  mask.reserve(std::size_t(image.width()) * image.height());
+  for (int y = 0; y < image.height(); ++y)
+    for (int x = 0; x < image.width(); ++x)
+      mask.push_back(std::abs(qGray(image.pixel(x, y)) - background) > 55);
+  return mask;
+}
+
+void actual_screen_magnifier_readings(bool native_control = false) {
+  CursorRestore restore_cursor(false);
+  auto* screen = QGuiApplication::primaryScreen();
+  HDRSHOT_CHECK(screen);
+  const auto available = screen->availableGeometry();
+  const double scale = screen->devicePixelRatio();
+  MONITORINFO monitor{sizeof(monitor)};
+  HDRSHOT_CHECK(GetMonitorInfoW(
+      MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &monitor));
+  constexpr int width = 420, height = 600;
+  const int x = available.left() + 20, y = available.top() + 20;
+  WindowsDisplayInfo display;
+  display.snapshot.id = {17};
+  display.snapshot.desktop_frame_points = {double(x), double(y), width, height};
+  display.snapshot.point_pixel_scale = scale;
+  display.snapshot.capture_size_px = {qRound(width * scale), qRound(height * scale)};
+  display.physical_x = monitor.rcMonitor.left +
+      qRound((x - screen->geometry().left()) * scale);
+  display.physical_y = monitor.rcMonitor.top +
+      qRound((y - screen->geometry().top()) * scale);
+  WindowsQtInputPlatformAdapter input;
+  auto native = std::make_unique<WindowsQtOverlayWindow>(display);
+  auto* window = native.get();
+  QtOverlayHost host(std::move(native), {17}, SelectionSnapshot{1, {}}, input);
+  host.setGeometry(x, y, width, height);
+  host.prepare_hidden_native_surface();
+  host.windowHandle()->setScreen(screen);
+  OverlayEditorWidget editor(display.snapshot.capture_size_px, scale, nullptr,
+                             "", input, SelectionSnapshot{1, {}}, &host);
+  auto* toolbar = editor.findChild<QFrame*>("editorToolbar");
+  auto* property = editor.findChild<QFrame*>("propertyBar");
+  HDRSHOT_CHECK(toolbar && property);
+  if (native_control) {
+    // Diagnostic A/B control: reproduce the former child-HWND topology without
+    // changing production code. A failure must come from desktop glyphs.
+    editor.setAttribute(Qt::WA_NativeWindow);
+    toolbar->setAttribute(Qt::WA_NativeWindow);
+    property->setAttribute(Qt::WA_NativeWindow);
+  }
+  editor.setGeometry(host.rect());
+  CaptureMagnifierPanel panel(&editor);
+  const MagnifierReadings fields;
+  constexpr int image_height = 216;
+  panel.setGeometry(30, 30, 216,
+                    panel.header_height() + image_height + panel.text_height(fields));
+  editor.set_magnifier_exclusion(panel.geometry());
+  editor.show();
+  window->configure(host, true);
+  // Test only: actual desktop capture must include our owned transparent host.
+  HDRSHOT_CHECK(SetWindowDisplayAffinity(reinterpret_cast<HWND>(host.winId()), WDA_NONE));
+  HDRSHOT_CHECK(SetWindowDisplayAffinity(static_cast<HWND>(host.native_surface()), WDA_NONE));
+
+  const QString output = qEnvironmentVariable("HDRSHOT_MAGNIFIER_SCREEN_OUTPUT");
+  if (!output.isEmpty()) HDRSHOT_CHECK(QDir().mkpath(output));
+  auto verify = [&](const char* stage, const QString& source, const QString& nit) {
+    settle_visual_events();
+    const auto labels = panel.findChildren<QLabel*>("magnifierScalarValue");
+    HDRSHOT_CHECK(labels.size() == 7);
+    const std::array<QString, 7> expected{source, source, source, nit, nit, nit, nit};
+    auto* store = panel.backingStore();
+    HDRSHOT_CHECK(store);
+    const auto* image = dynamic_cast<const QImage*>(store->paintDevice());
+    HDRSHOT_CHECK(image && !image->isNull());
+    // Read only. QWidget::grab/render/repaint would flush the stale native
+    // child surface and hide this regression. Save only owned label crops.
+    std::vector<QImage> backing;
+    for (qsizetype i = 0; i < labels.size(); ++i) {
+      HDRSHOT_CHECK(labels[i]->text() == expected[std::size_t(i)]);
+      const QPoint offset = labels[i]->mapTo(&host, QPoint{});
+      const QRect roi(qRound(offset.x() * scale), qRound(offset.y() * scale),
+                      qRound(labels[i]->width() * scale), qRound(labels[i]->height() * scale));
+      HDRSHOT_CHECK(image->rect().contains(roi));
+      backing.push_back(image->copy(roi));
+    }
+    const QImage desktop = screen->grabWindow(0).toImage();
+    HDRSHOT_CHECK(!desktop.isNull());
+    HDRSHOT_CHECK(desktop.width() == monitor.rcMonitor.right - monitor.rcMonitor.left);
+    HDRSHOT_CHECK(desktop.height() == monitor.rcMonitor.bottom - monitor.rcMonitor.top);
+    POINT host_origin{};
+    HDRSHOT_CHECK(ClientToScreen(reinterpret_cast<HWND>(host.winId()), &host_origin));
+    for (qsizetype i = 0; i < labels.size(); ++i) {
+      const QPoint offset = labels[i]->mapTo(&host, QPoint{});
+      const QRect roi(host_origin.x - monitor.rcMonitor.left + qRound(offset.x() * scale),
+                      host_origin.y - monitor.rcMonitor.top + qRound(offset.y() * scale),
+                      backing[std::size_t(i)].width(), backing[std::size_t(i)].height());
+      HDRSHOT_CHECK(desktop.rect().contains(roi));
+      const QImage actual = desktop.copy(roi);
+      if (!output.isEmpty()) {
+        const QString prefix = QDir(output).filePath(QString("%1-row%2").arg(stage).arg(i));
+        HDRSHOT_CHECK(backing[std::size_t(i)].save(prefix + "-backing.png"));
+        HDRSHOT_CHECK(actual.save(prefix + "-screen.png"));
+      }
+      const auto expected_ink = text_ink(backing[std::size_t(i)]);
+      const auto actual_ink = text_ink(actual);
+      HDRSHOT_CHECK(expected_ink.size() == actual_ink.size());
+      int expected_count = 0, actual_count = 0, different = 0;
+      for (std::size_t pixel = 0; pixel < expected_ink.size(); ++pixel) {
+        expected_count += expected_ink[pixel];
+        actual_count += actual_ink[pixel];
+        different += expected_ink[pixel] != actual_ink[pixel];
+      }
+      std::cerr << "actual screen " << stage << " row=" << i
+                << " value=" << labels[i]->text().toStdString()
+                << " backingInk=" << expected_count << " screenInk=" << actual_count
+                << " different=" << different << '\n';
+      HDRSHOT_CHECK(expected_count >= 8);
+      HDRSHOT_CHECK(different <= std::max(3, expected_count * 12 / 100));
+    }
+  };
+  // The GPU/sampler path is covered separately by the two-host tests. This
+  // case isolates delivery to the real Windows desktop, without mouse input.
+  panel.show_sample({100, 100}, {}, fields, image_height, 8);
+  verify("placeholder", "--", "--");
+  panel.show_sample({100, 100}, magnifier_readout({.5, .5, .5}, 203, false),
+                    fields, image_height, 8);
+  verify("half", "0.5000", "101.50");
+  panel.show_sample({100, 100}, magnifier_readout({.75, .75, .75}, 203, false),
+                    fields, image_height, 8);
+  verify("three-quarters", "0.7500", "152.25");
+  if (!native_control) {
+    HDRSHOT_CHECK(!editor.testAttribute(Qt::WA_NativeWindow));
+    HDRSHOT_CHECK(!toolbar->testAttribute(Qt::WA_NativeWindow));
+    HDRSHOT_CHECK(!property->testAttribute(Qt::WA_NativeWindow));
+  }
+}
+
+void check_magnifier_values(QtOverlayHost& host, const char* step,
+                            const QString& source_value, const QString& nit_value) {
+  // Independent exact gray fixtures: 0.25/0.5/0.75 EDR * default 203 nit.
+  // Assert the actual scalar widgets, not only delivery or native visibility.
+  const std::array<QString,7> expected{source_value,source_value,source_value,
+      nit_value,nit_value,nit_value,nit_value};
+  const auto correct=[&] {
+    if(!host.magnifier_preview().visible)return false;
+    const auto actual=host.findChildren<QLabel*>("magnifierScalarValue");
+    if(actual.size()!=qsizetype(expected.size()))return false;
+    for(qsizetype i=0;i<actual.size();++i)
+      if(actual[i]->text()!=expected[std::size_t(i)])return false;
+    return true;
+  };
+  const bool complete=wait_until(correct);
+  const auto counts=host.magnifier_counters();
+  std::cerr<<step<<" point="<<host.magnifier_preview().center.x<<','
+      <<host.magnifier_preview().center.y<<" revision="<<host.magnifier_preview().revision
+      <<" requested="<<counts.requested<<" readbacks="<<counts.readbacks
+      <<" delivered="<<counts.delivered<<" inFlight="<<counts.in_flight
+      <<" pending="<<counts.pending<<" actual=";
+  for(const auto* value:host.findChildren<QLabel*>("magnifierScalarValue"))
+    std::cerr<<value->text().toStdString()<<' ';
+  std::cerr<<'\n';
+  HDRSHOT_CHECK(complete);
 }
 
 POINT physical_point(const QWidget &widget, QPoint local) {
@@ -311,10 +496,20 @@ void two_top_level_native_overlay_session(bool drag_selection,
     segment.size_px = display.snapshot.capture_size_px;
     segment.point_pixel_scale = scale;
     segment.encoding = WindowsColor::linear_p3_encoding();
-    for (int pixel = 0; pixel < segment.size_px.width * segment.size_px.height;
-         ++pixel)
-      segment.rgba_half.insert(segment.rgba_half.end(),
-                               {0x3800, 0x3800, 0x3800, 0x3c00});
+    std::vector<std::uint16_t> raw;
+    raw.reserve(std::size_t(segment.size_px.width)*segment.size_px.height*4);
+    for(int py=0;py<segment.size_px.height;++py)
+      for(int px=0;px<segment.size_px.width;++px) {
+        const std::uint16_t gray=px<segment.size_px.width/3 ? 0x3400 :
+            px<2*segment.size_px.width/3 ? 0x3800 : 0x3a00;
+        raw.insert(raw.end(),{gray,gray,gray,0x3c00});
+      }
+    // Match the production frozen-frame representation: normalize once to a
+    // real native GPU source; no CPU half/float fallback may mask read failure.
+    auto normalized=windows_normalize_scrgb_source(segment.size_px,std::move(raw),1.F,1.);
+    HDRSHOT_CHECK(normalized.has_value());
+    segment.pixel_format=PixelFormat::rgba32_float;
+    segment.linear_source=std::move(normalized.value());
     frozen->canonical_segments.push_back(segment);
     display.source_white = {false, 80};
     display.advanced_color_mode = 1; // This fixture models an ACM target, without a Legacy ICC.
@@ -372,6 +567,9 @@ void two_top_level_native_overlay_session(bool drag_selection,
 
   const auto payload = CaptureReadyPayload{frozen, ready, windows};
   const auto sequence = std::make_shared<std::atomic<std::uint64_t>>(2);
+  // Initial display must use the frozen source before any pointer move.
+  const auto initial_pointer=physical_point(*hosts[1],{width/2,90});
+  HDRSHOT_CHECK(SetCursorPos(initial_pointer.x,initial_pointer.y));
   for (int index = 0; index < 2; ++index)
     hosts[index]->activate_capture(payload, presenters[index], sequence);
   std::cerr << "fixture raw0=" << underlays[0]
@@ -385,6 +583,9 @@ void two_top_level_native_overlay_session(bool drag_selection,
   }));
   HDRSHOT_CHECK(!presenters[0]->failed->load() &&
                 !presenters[1]->failed->load());
+  HDRSHOT_CHECK(wait_until([&]{return hosts[1]->magnifier_preview().visible;}));
+  HDRSHOT_CHECK(!hosts[0]->magnifier_preview().visible);
+  check_magnifier_values(*hosts[1],"initial GPU sample before pointer move","0.5000","101.50");
   if (message_replay) {
     // Protocol replay only: establish this thread's Qt active window without
     // sending system input through the external lock-screen desktop.
@@ -418,6 +619,9 @@ void two_top_level_native_overlay_session(bool drag_selection,
   };
   auto message_at = [&](HWND hwnd, UINT message, WPARAM wparam, POINT point) {
     HDRSHOT_CHECK(SetCursorPos(point.x, point.y));
+    // Drain OS moves caused by relocating the cursor before replaying our
+    // final protocol event; otherwise an older queued move can overwrite it.
+    QApplication::processEvents();
     POINT client = point;
     HDRSHOT_CHECK(ScreenToClient(hwnd, &client));
     SendMessageW(hwnd, message, wparam, MAKELPARAM(client.x, client.y));
@@ -454,6 +658,10 @@ void two_top_level_native_overlay_session(bool drag_selection,
     return presenters[0]->last &&
            preview_selection_rect(presenters[0]->last->model) == candidates[0];
   }));
+  HDRSHOT_CHECK(hosts[0]->magnifier_preview().visible);
+  HDRSHOT_CHECK(valid_magnifier_preview(hosts[0]->magnifier_preview(),
+                                      frozen->canonical_segments[0].size_px));
+  check_magnifier_values(*hosts[0],"first host GPU sample","0.5000","101.50");
   HDRSHOT_CHECK(locks == 0);
 
   move_to(center(1));
@@ -466,6 +674,21 @@ void two_top_level_native_overlay_session(bool drag_selection,
     return presenters[1]->last &&
            preview_selection_rect(presenters[1]->last->model) == candidates[1];
   }));
+  HDRSHOT_CHECK(hosts[1]->magnifier_preview().visible);
+  HDRSHOT_CHECK(!hosts[0]->magnifier_preview().visible);
+  check_magnifier_values(*hosts[1],"second host GPU sample","0.5000","101.50");
+  // Move across distinct source values without waiting for any readout. Once
+  // stationary, the final 0.75 gray must replace both pending and stale values.
+  for(int offset=0;offset<18;++offset)
+    move_to(physical_point(*hosts[1],{50+(width-110)*offset/17,90}));
+  HDRSHOT_CHECK(hosts[1]->magnifier_preview().center.x>=
+      2*frozen->canonical_segments[1].size_px.width/3);
+  check_magnifier_values(*hosts[1],"continuous motion then stationary GPU sample","0.7500","152.25");
+  const auto stopped=hosts[1]->magnifier_counters();
+  move_to(physical_point(*hosts[1],{width-60,90}));
+  QApplication::processEvents();
+  HDRSHOT_CHECK(hosts[1]->magnifier_counters().requested==stopped.requested);
+  check_magnifier_values(*hosts[1],"same stationary GPU pixel stays populated","0.7500","152.25");
   // Old native input has no TrackMouseEvent/WM_MOUSELEAVE bridge: A remains
   // highlighted while B is highlighted after crossing the real HWND seam.
   trace_state("after cross-overlay move", trace, native_trace, *recovery);
@@ -612,6 +835,10 @@ int main(int argc, char **argv) {
   QApplication app(argc, argv);
   const bool message_replay =
       argc > 1 && std::string(argv[1]) == "--message-replay";
+  const bool native_control =
+      argc > 1 && std::string(argv[1]) == "--visual-readings-native-control";
+  const bool visual_readings = native_control ||
+      (argc > 1 && std::string(argv[1]) == "--visual-readings");
   if (!QGuiApplication::primaryScreen() ||
       (!message_replay && !interactive_input_desktop()) ||
       !GetSystemMetrics(SM_CXSCREEN) || !GetSystemMetrics(SM_CYSCREEN)) {
@@ -627,6 +854,16 @@ int main(int argc, char **argv) {
       std::cerr << "SKIP: Windows lock screen covers system input\n";
       return 77;
     }
+  }
+  if (visual_readings) {
+    const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+    if (available.height() < 640 || available.width() < 460) {
+      std::cerr << "SKIP: actual-screen readings require a visible 600-point host\n";
+      return 77;
+    }
+    return hdrshot::test::run({
+        {"actual Windows screen: placeholder then stationary scalar refresh",
+         [=] { actual_screen_magnifier_readings(native_control); }}});
   }
   std::vector<hdrshot::test::TestCase> cases{
       {"two native overlays: candidate click, toolbar, Enter",

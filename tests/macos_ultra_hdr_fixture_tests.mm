@@ -33,7 +33,10 @@ struct SourceFixture {
   std::vector<std::uint16_t> rgba_half;
 };
 
-void inspect_apple_decode(NSData* bytes, const char* label) {
+void inspect_apple_decode(
+    NSData* bytes, const char* label,
+    const std::span<const std::uint8_t> expected_sdr_icc) {
+  HDRSHOT_CHECK(!expected_sdr_icc.empty());
   CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)bytes, nullptr);
   HDRSHOT_CHECK(source != nullptr);
   for (CFStringRef mode : {kCGImageSourceDecodeToSDR, kCGImageSourceDecodeToHDR}) {
@@ -45,7 +48,17 @@ void inspect_apple_decode(NSData* bytes, const char* label) {
     HDRSHOT_CHECK(space != nullptr && CGColorSpaceGetModel(space) == kCGColorSpaceModelRGB);
     CFStringRef name = CGColorSpaceCopyName(space);
     if (mode == kCGImageSourceDecodeToSDR) {
-      HDRSHOT_CHECK(name != nullptr && CFEqual(name, kCGColorSpaceDisplayP3));
+      // ImageIO can preserve the embedded profile without assigning a system
+      // color-space name. Verify the profile carried by the decoded image.
+      CFDataRef profile = CGColorSpaceCopyICCData(space);
+      HDRSHOT_CHECK(profile != nullptr);
+      const std::span<const std::uint8_t> icc{
+          CFDataGetBytePtr(profile), static_cast<std::size_t>(CFDataGetLength(profile))};
+      const bool matches_base = std::ranges::equal(icc, expected_sdr_icc);
+      std::cout << "Apple SDR ICC bytes=" << icc.size()
+                << " matches embedded base=" << matches_base << '\n';
+      CFRelease(profile);
+      HDRSHOT_CHECK(matches_base);
     } else {
       // ImageIO may return an unnamed adaptive ICC instead of a named color
       // space. Verify its actual P3/PQ declaration, not an optional label.
@@ -171,12 +184,13 @@ void validate_round_trip(const char* path) {
   auto fixture = load_pq_png_as_extended_display_p3(path);
   auto linear = render_linear(fixture);
   LibUltraHdrEncoder encoder;
+  // Exercise color conversion and container integration at maximum quality,
+  // reducing JPEG loss as a confounder. Q100 is still not lossless.
   auto encoded = encoder.encode(
-      UltraHdrEncodeRequest{&linear, UltraHdrJpegQuality::balanced});
+      UltraHdrEncodeRequest{&linear, UltraHdrJpegQuality::maximum});
   HDRSHOT_CHECK(encoded.has_value());
   NSData* output_data = [NSData dataWithBytes:encoded.value().bytes.data()
                                       length:encoded.value().bytes.size()];
-  inspect_apple_decode(output_data, "P3/PQ alternate");
   if (const char* output = std::getenv("HDRSHOT_ULTRAHDR_OUTPUT")) {
     NSString* output_path = [NSString stringWithUTF8String:output];
     HDRSHOT_CHECK(![[NSFileManager defaultManager] fileExistsAtPath:output_path]);
@@ -221,6 +235,8 @@ void validate_round_trip(const char* path) {
   HDRSHOT_CHECK(uhdr_decode(decoder.get()).error_code == UHDR_CODEC_OK);
   hdrshot::test::check_p3_base_and_alternate(decoder.get());
   hdrshot::test::check_dual_metadata(decoder.get());
+  const auto base_icc = hdrshot::test::jpeg_icc(uhdr_dec_get_base_image(decoder.get()));
+  inspect_apple_decode(output_data, "P3/PQ alternate", base_icc);
   const auto* gain = uhdr_get_decoded_gainmap_image(decoder.get());
   HDRSHOT_CHECK(gain != nullptr && gain->fmt == UHDR_IMG_FMT_32bppRGBA8888);
   HDRSHOT_CHECK(gain->w == static_cast<unsigned int>(fixture.size_px.width));
@@ -280,7 +296,7 @@ void validate_round_trip(const char* path) {
   HDRSHOT_CHECK(compared >= 100U);
   const auto mean_relative_error = relative_error_sum /
       static_cast<double>(compared);
-  std::cout << "fixture encoded_bytes=" << encoded.value().bytes.size()
+  std::cout << "fixture quality=100 encoded_bytes=" << encoded.value().bytes.size()
             << " compared_samples=" << compared
             << " mean_peak_relative_error=" << mean_relative_error
             << " max_peak_relative_error=" << maximum_relative_error

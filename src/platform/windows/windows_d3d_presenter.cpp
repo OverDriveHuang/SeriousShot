@@ -23,6 +23,7 @@ cbuffer Params:register(b0) {
   uint width; uint height; float white_scale; float outside_factor;
   int4 selection;
   float ui_white; int border_width; int2 padding;
+  int4 magnifier_rect; int4 magnifier_source;
 };
 struct Vertex { float4 pos:SV_Position; float2 uv:TEXCOORD; };
 Vertex vs(uint id:SV_VertexID) {
@@ -42,6 +43,16 @@ float4 ps(Vertex v):SV_Target {
   bool outer=border>0 && all(p>=selection.xy-border) && all(p<end+border);
   bool inner=all(p>=selection.xy+border) && all(p<end-border);
   if(outer && !inner) p3=ui_white.xxx;
+  int2 mp=int2(xy)-magnifier_rect.xy;
+  if(magnifier_source.w!=0 && all(mp>=0) && all(mp<magnifier_rect.zw)) {
+    int z=magnifier_source.z;int2 cell=mp/z;int2 center=magnifier_rect.zw/z/2;
+    int2 q=magnifier_source.xy+cell-center;p3=0.025.xxx;
+    if(all(q>=0) && q.x<int(width) && q.y<int(height)) p3=pixels.Load(int3(q,0)).rgb;
+    int2 within=mp%z;
+    bool box=all(cell==center) && (within.x==0 || within.y==0 || within.x==z-1 || within.y==z-1);
+    bool cross=(mp.x==magnifier_rect.z/2 && abs(mp.y-magnifier_rect.w/2)>z) || (mp.y==magnifier_rect.w/2 && abs(mp.x-magnifier_rect.z/2)>z);
+    if(box || cross)p3=ui_white.xxx;
+  }
   return float4(windows_present_p3(p3),1);
 }
 )HLSL";
@@ -66,6 +77,7 @@ struct WindowsD3DPreviewPresenter::Impl {
   std::shared_ptr<const CleanContentSnapshot> loaded_clean_content;
   FrameId loaded_frame{};
   LinearSourceRef loaded_source;
+  WindowsPreviewResourceCounters resource_counters;
   WindowsDisplayInfo display;
   std::shared_ptr<DiagnosticsPort> diagnostics;
   std::shared_ptr<const WindowsDisplayTransform> display_transform;
@@ -188,6 +200,8 @@ struct WindowsD3DPreviewPresenter::Impl {
           (segment->linear_source->size_px()!=segment->size_px || !segment->rgba_half.empty()) :
           segment->rgba_half.size()!=static_cast<std::size_t>(segment->size_px.width)*segment->size_px.height*4U))
       return Result<PresentReceipt,Error>::failure(windows_d3d_error("WindowsD3DPreview","invalid_linear_p3_source"));
+    if(!valid_magnifier_preview(model.magnifier,segment->size_px))
+      return Result<PresentReceipt,Error>::failure(windows_d3d_error("WindowsD3DPreview","invalid_magnifier"));
     if (model.clean_content && (model.clean_content->source != model.frozen_desktop ||
         model.clean_content->display_id != display.snapshot.id))
       return Result<PresentReceipt,Error>::failure(windows_d3d_error("WindowsD3DPreview","stale_clean_content"));
@@ -211,6 +225,7 @@ struct WindowsD3DPreviewPresenter::Impl {
         winrt::check_hresult(gpu.device->CreateTexture2D(&desc,&data,texture.put()));
         texture_view=gpu.srv(texture);loaded_frame=model.frozen_desktop->frame_id;
         loaded_source=segment->linear_source;
+        ++resource_counters.source_texture_uploads;
       }
       if (loaded_clean_content != model.clean_content || !clean_index_view || !clean_color_view) {
         const auto count = static_cast<std::size_t>(segment->size_px.width) * segment->size_px.height;
@@ -236,13 +251,16 @@ struct WindowsD3DPreviewPresenter::Impl {
         clean_index_view = gpu.srv(clean_index_buffer);
         clean_color_view = gpu.srv(clean_color_buffer);
         loaded_clean_content = model.clean_content;
+        ++resource_counters.clean_content_uploads;
       }
       const auto rect=preview_selection_rect(model);
-      struct Params { UINT width,height;float white_scale,outside;int selection[4];float ui_white;int border;int padding[2]; };
+      struct Params { UINT width,height;float white_scale,outside;int selection[4];float ui_white;int border;int padding[2]; int magnifier_rect[4]; int magnifier_source[4]; };
       const Params params{static_cast<UINT>(segment->size_px.width),static_cast<UINT>(segment->size_px.height),
           display_transform->white_scale(),model.overlay_style.outside_linear_dim_factor,
           {rect.x,rect.y,rect.width,rect.height},display.advanced_color_mode==2?model.overlay_style.ui_white_edr:1.0F,
-          model.overlay_style.selection_border_width_px,{}};
+          model.overlay_style.selection_border_width_px,{},
+          {model.magnifier.viewport.x,model.magnifier.viewport.y,model.magnifier.viewport.width,model.magnifier.viewport.height},
+          {model.magnifier.center.x,model.magnifier.center.y,model.magnifier.zoom,model.magnifier.visible?1:0}};
       const auto constants=gpu.buffer(sizeof(params),D3D11_BIND_CONSTANT_BUFFER,0,&params);
       ID3D11Buffer* cbs[]{constants.get()};
       ID3D11ShaderResourceView* views[]{texture_view.get(),clean_index_view.get(),clean_color_view.get()};
@@ -273,6 +291,10 @@ struct WindowsD3DPreviewPresenter::Impl {
 };
 WindowsD3DPreviewPresenter::WindowsD3DPreviewPresenter(std::unique_ptr<Impl> impl):impl_(std::move(impl)){}
 WindowsD3DPreviewPresenter::~WindowsD3DPreviewPresenter()=default;
+WindowsPreviewResourceCounters WindowsD3DPreviewPresenter::resource_counters() const {
+  const std::scoped_lock lock(impl_->drawing);
+  return impl_->resource_counters;
+}
 Result<std::vector<std::uint16_t>,Error> WindowsD3DPreviewPresenter::render_offscreen(const PresentPreviewRequest& request) {
   const std::scoped_lock lock(impl_->drawing);
   if(impl_->swapchain) return Result<std::vector<std::uint16_t>,Error>::failure(

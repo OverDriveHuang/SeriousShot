@@ -13,6 +13,7 @@
 #include "platform/windows/windows_capture_cli.hpp"
 #include "platform/windows/windows_application_icon.hpp"
 #include "platform/freetype/freetype_text_rasterizer_port.hpp"
+#include "ports/annotation_font_contract.hpp"
 #include "platform/qt/qt_export_task_executor.hpp"
 #include "platform/qt/qt_folder_opener_port.hpp"
 #include "platform/qt/qt_session_diagnostics_port.hpp"
@@ -22,6 +23,7 @@
 #include "ui/qt/settings_window.hpp"
 #include <windows.h>
 #include <QApplication>
+#include <QBackingStore>
 #include <QDir>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -103,7 +105,7 @@ class WindowsApplicationShell {
     }
     const auto font=QCoreApplication::applicationDirPath()+QStringLiteral("/assets/fonts/NotoSansSC-VF.ttf");
     rasterizer_=std::make_shared<FreeTypeTextRasterizerPort>(font.toStdString(),
-        "NotoSansSC-VF.ttf@f8d1575;wght=450;hinting=native#d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964");
+        annotation_font::identity);
     const int font_id=QFontDatabase::addApplicationFont(font);
     const auto families=QFontDatabase::applicationFontFamilies(font_id);
     if(font_id<0 || families.isEmpty()) {
@@ -274,7 +276,7 @@ class WindowsApplicationShell {
         auto sequence=std::make_shared<std::atomic_uint64_t>(result.value().present_receipt.operation_id.value+1U);
         for(auto& overlay:overlays_) if(overlay.host) overlay.host->activate_capture(result.value(),overlay.presenter,sequence);
         std::cout<<"captureReady=1 displays="<<overlays_.size()<<'\n';
-        if(!smoke_folder_.isEmpty()) QTimer::singleShot(150,&app_,[this]{smoke_select_and_save();});
+        if(!smoke_folder_.isEmpty()) QTimer::singleShot(150,&app_,[this]{smoke_check_magnifier();});
       },Qt::QueuedConnection);
     });
   }
@@ -295,6 +297,61 @@ class WindowsApplicationShell {
     } else {
       smoke_exported_=true;QTimer::singleShot(50,&app_,[this]{shutdown();});
     }
+  }
+  void smoke_check_magnifier(int attempt=0) {
+    if(overlays_.empty() || !overlays_.front().host) {shutdown(1);return;}
+    auto* host=overlays_.front().host.data();
+    if(attempt==0) {
+      const auto scale=host->devicePixelRatioF();
+      SendMessageW(static_cast<HWND>(host->native_surface()),WM_MOUSEMOVE,0,
+          MAKELPARAM(qRound(120*scale),qRound(120*scale)));
+    }
+    // Real pointer events may move the active magnifier to another display.
+    for(const auto& overlay:overlays_)
+      if(overlay.host && overlay.host->magnifier_preview().visible) {
+        host=overlay.host.data();break;
+      }
+    const auto values=host->findChildren<QLabel*>("magnifierScalarValue");
+    const bool has_numbers=values.size()==7 && std::all_of(values.begin(),values.end(),[](auto* label) {
+      bool valid=false;label->text().toDouble(&valid);return valid;
+    });
+    if(host->magnifier_preview().visible && has_numbers) {
+      std::cout<<"smokeMagnifierReadings=success";
+      for(auto* value:values) std::cout<<' '<<value->text().toStdString();
+      std::cout<<'\n';
+      // Optional visual diagnostics only; normal captures retain exclusion.
+      if(!qEnvironmentVariableIsSet("HDRSHOT_SMOKE_MAGNIFIER_IMAGES")) {
+        smoke_select_and_save();return;
+      }
+      SetWindowDisplayAffinity(static_cast<HWND>(host->native_surface()),WDA_NONE);
+      SetWindowDisplayAffinity(reinterpret_cast<HWND>(host->winId()),WDA_NONE);
+      QTimer::singleShot(300,&app_,[this,guard=QPointer<QtOverlayHost>(host)] {
+        if(!guard) {shutdown(1);return;}
+        auto* panel=guard->findChild<QWidget*>("captureMagnifierPanel");
+        if(!panel) {shutdown(1);return;}
+        const auto scale=guard->devicePixelRatioF();
+        const auto native_rect=[scale](QPoint at,QSize size) {
+          return QRect(qRound(at.x()*scale),qRound(at.y()*scale),
+              qRound(size.width()*scale),qRound(size.height()*scale));
+        };
+        if(auto* backing=dynamic_cast<QImage*>(guard->backingStore()->paintDevice()))
+          backing->copy(native_rect(panel->mapTo(guard.data(),QPoint{}),panel->size()))
+              .save(smoke_folder_+QStringLiteral("/magnifier-backing.png"));
+        guard->screen()->grabWindow(0).toImage().copy(native_rect(
+            panel->mapToGlobal(QPoint{})-guard->screen()->geometry().topLeft(),panel->size()))
+            .save(smoke_folder_+QStringLiteral("/magnifier-screen.png"));
+        smoke_select_and_save();
+      });
+      return;
+    }
+    if(attempt>=100) {
+      const auto counts=host->magnifier_counters();
+      std::cerr<<"smokeMagnifierReadings=failed requested="<<counts.requested
+        <<" readbacks="<<counts.readbacks<<" delivered="<<counts.delivered
+        <<" visible="<<host->magnifier_preview().visible<<" labels="<<values.size()<<'\n';
+      shutdown(1);return;
+    }
+    QTimer::singleShot(50,&app_,[this,attempt]{smoke_check_magnifier(attempt+1);});
   }
   void smoke_select_and_save() {
     if(overlays_.empty() || !overlays_.front().host) {shutdown(1);return;}
