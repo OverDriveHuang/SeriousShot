@@ -27,6 +27,7 @@ public:
             QtOverlayHost::AnalysisCompleted completed);
   // Returns false if the user elects to retain an analysis window.
   bool close_windows();
+  bool has_windows() const {for(const auto& window:windows_)if(!window.expired())return true;return false;}
   void shutdown();
 
 private:

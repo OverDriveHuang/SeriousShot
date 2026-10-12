@@ -1,17 +1,18 @@
 # 从源码构建 SeriousShot
 
-最后更新：2026-09-29 00:09:00 CST
+最后更新：2026-10-12 21:32:30 CST
 
 [返回产品介绍](../README.md)
 
-当前使用 C++20、CMake 与 Qt 6.11.1。第三方源码按 CMake 中固定提交获取，首次构建需要网络。以下是开发构建，不是已完成签名、部署与发行审查的安装包。
+当前使用 C++20、CMake 与 Qt 6.11.1。第三方源码使用固定提交或版本与 SHA-256 校验；更新模块另需 libsodium 1.0.22 和 libarchive 3.8.9，由项目脚本准备在本地 `.build-tools/`，首次构建需要网络。以下是开发构建，不是已完成签名、部署与发行审查的安装包。
 
 ## macOS
 
-需要 macOS 15.5 起、Xcode Command Line Tools、Python 3 和 Git。若已安装项目记录的 Qt SDK，无需重复下载。
+需要 macOS 15.5 起、Xcode Command Line Tools、Python 3.9 或更高版本和 Git。若已安装项目记录的 Qt SDK，无需重复下载。
 
 ```sh
 ./scripts/bootstrap_macos_dependencies.sh
+python3 scripts/build_update_dependencies.py
 .build-tools/cmake-venv/bin/cmake --preset mac-qt-release
 .build-tools/cmake-venv/bin/cmake --build --preset mac-qt-release -j 6
 .build-tools/cmake-venv/bin/ctest --preset mac-qt-release --output-on-failure
@@ -23,7 +24,7 @@
 
 ## Windows
 
-需要 Windows 11、MSVC x64 / Windows SDK、CMake、Ninja 和 Qt 6.11.1。Qt 安装脚本需要 Python 的 requests 与 py7zr。将 zlib 1.3.1 的源码和安装结果分别准备至 `.build-tools/zlib/src` 与 `.build-tools/zlib/install`，或按本机环境调整 preset 的 `ZLIB_ROOT`。
+需要 Windows 11、MSVC x64 / Windows SDK、CMake、Ninja 和 Qt 6.11.1。需要 Python 3.9 或更高版本；Qt 安装脚本还需要 requests 与 py7zr。将 zlib 1.3.1 的源码和安装结果分别准备至 `.build-tools/zlib/src` 与 `.build-tools/zlib/install`，或按本机环境调整 preset 的 `ZLIB_ROOT`。
 
 ```powershell
 . ./scripts/windows-dev-environment.ps1
@@ -31,11 +32,11 @@ python scripts/install-windows-qt.py
 ./scripts/build-windows.ps1
 ```
 
-Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 的运行兼容仍需在目标系统确认；Mac 共享测试通过不能替代 Windows 原生验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试开启设置中的“Windows 10 截图亮度兼容”。总开关默认关闭，全选时启用 scRGB gain 和“HDR 捕获不使用 SDRWhiteLevel 归一化”两个独立子项，只启用其一时显示半选；scRGB gain 可编辑，预设 0.5，仅启用该子项后生效。应按实际截图结果判断是否开启，不能推断所有 Windows 10 都需要调整。已测试的 Windows 11 环境未见上述现象。
+Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 在同时启用 scRGB gain=0.5 与“HDR 捕获不使用 SDRWhiteLevel 归一化”的已测条件下，HDR 和 Legacy 广色域截图均未发现问题；完整条件见首页实测矩阵。本次新增更新器的 Windows 原生升级事务尚未验收，截图实测与 Mac 共享测试均不能替代这项验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试开启设置中的“Windows 10 截图亮度兼容”。总开关默认关闭，全选时启用 scRGB gain 和“HDR 捕获不使用 SDRWhiteLevel 归一化”两个独立子项，只启用其一时显示半选；scRGB gain 可编辑，预设 0.5，仅启用该子项后生效。应按实际截图结果判断是否开启，不能推断所有 Windows 10 都需要调整。已测试的 Windows 11 环境未见上述现象。
 
 ## 代码与分发
 
-设置页显示产品版本及本包源代码的最后提交时间（UTC），并提供手动打开GitHub发布列表的入口；不自动检查更新。同一代码快照重新编译不会改变此时间。版本来自CMake的`PROJECT_VERSION`，发布时才修改；诊断资料仍可记录独立的构建时间。
+设置页显示产品版本及本包源代码的最后提交时间（UTC），并提供更新入口。更新检查需要构建时配置可信的更新目录签名公钥；默认开发配置未提供正式公钥时，自动更新不可用，仍可打开GitHub发布列表。同一代码快照重新编译不会改变此时间。版本来自CMake的`PROJECT_VERSION`，发布时才修改；诊断资料仍可记录独立的构建时间。
 
 构建时校验实际输入与代码身份；改动相关代码会显示“含未提交修改”。缺少 Git 历史或有效来源清单时显示未知，不以编译时间补齐。带有效清单的源码归档不依赖 Git，也会校验输入文件散列。旧版清单缺少代码身份时显示未知。
 
@@ -46,3 +47,7 @@ Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR �
 仓库包含 CMake 引用的合成输入探针，不包含用户截图。公开快照的逐文件校验记录在 `.seriousshot-export.json`。
 
 正式分发前还需要框架部署、签名和许可审查。项目主许可证仍未指定；第三方声明见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
+
+更新器构建选项：正式渠道使用 `HDRSHOT_UPDATE_CHANNEL=stable` 与正式 `HDRSHOT_UPDATE_PUBLIC_KEY`、`HDRSHOT_UPDATE_KEY_ID`；测试渠道须显式启用 `HDRSHOT_UPDATE_TESTING` 并配置独立测试公钥。私钥不得编入客户端。`HDRSHOT_WINDOWS_UPDATE_NATIVE_VALIDATED` 默认关闭，只有完成 Windows 原生更新事务验收后才启用自动覆盖；macOS 当前使用 DMG 安装路径。Windows 构建脚本已调用更新依赖准备脚本。
+
+更新清单签名、版本规则及平台启用条件见 [软件更新协议](UPDATES.md)。

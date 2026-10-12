@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-11T15:11:19+08:00",
+  "timestamp": "2026-10-12T22:40:24+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "4bef1cc8a8ab8fb327a9c0ce45673340687481ab4180feea0936325d5d371a6e",
+      "sha256": "4e1c2209adab0532a0f36440cbae9ef739d3919fb767abbd76d96442c807b3ab",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -19,11 +19,7 @@
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "e970d8b8b049da0b5e2ee9eef38c780104116d2a10afade4ed28abaf660266dc",
-      "mode": 420
-    },
-    "artifacts/2026-09-19_analyzer_interaction_fixes/checks/interaction_probe.mm": {
-      "sha256": "cae20f87692671bbc68d38c5f2eefa4f4f1f87186836f61803a7f2daae302158",
+      "sha256": "eb45e2ae71b69f124b566541f28ee8b3396669269745a24f06b04e889da42026",
       "mode": 420
     },
     "assets/color_profiles/CC0-1.0.txt": {
@@ -54,6 +50,14 @@
       "sha256": "6bbe16b44f53755f3ae62cb6ba00292f3d8a3d3692631cd94f135e2067b53dc7",
       "mode": 420
     },
+    "assets/licenses/libarchive-COPYING.txt": {
+      "sha256": "30e556b3959e3985d66efefec5eaac51d4995053caa1d3cffe6eb916f146f229",
+      "mode": 420
+    },
+    "assets/licenses/libsodium-LICENSE.txt": {
+      "sha256": "508a76d186356c0dd807a670ef510964f8724557024796a2c426c6c0e19ab683",
+      "mode": 420
+    },
     "cmake/GenerateBuildTimestamp.cmake": {
       "sha256": "872082a013f43d2a971c421f59f4550b880a118255a7b45e10c07c37608172c7",
       "mode": 420
@@ -63,7 +67,7 @@
       "mode": 420
     },
     "cmake/SourceIdentityPaths.txt": {
-      "sha256": "20d24376e8d5d10cf2847f7fa51decabfc3620ba940e9358e18127f59e1775a8",
+      "sha256": "579e93cfd2fcff70d98f485ff1fec9257f42c11b9b40c26db362df84cac92bb9",
       "mode": 420
     },
     "cmake/display_p3_icc_profile.cpp.in": {
@@ -86,8 +90,16 @@
       "sha256": "6c346be3e2d23293d26221d5119cd0584437215b701279797ba3ceffa2441ee7",
       "mode": 420
     },
+    "cmake/update_dependencies.cmake": {
+      "sha256": "e3d1ee63e4bdc04025cafa13101cfcf94d3c7a299fd694635d15cf1dfc1b0b26",
+      "mode": 420
+    },
+    "cmake/update_targets.cmake": {
+      "sha256": "b31b4ce902f119ba5b4eaa5063e50ff0e23e52f8eb29f74a60d1e535bef44d88",
+      "mode": 420
+    },
     "cmake/windows.cmake": {
-      "sha256": "f34205d8968bf8abae27156cc5772cf384ce646519963e6cb20b5a5eb3418a81",
+      "sha256": "d27281750baf84ab877f3b63be0dafd240e595cbf3c15dc17ea7a2848f8fd9c2",
       "mode": 420
     },
     "cmake/windows_analysis.cmake": {
@@ -99,7 +111,11 @@
       "mode": 420
     },
     "docs/BUILDING.md": {
-      "sha256": "e661f62f103639a2cbe2e17e5a55f76fc856412f2dd08dee924bd847e1a30f96",
+      "sha256": "9a4a4872628606a881de6162b868bbbcabcb16c5d1c31eadfac290d52621b04a",
+      "mode": 420
+    },
+    "docs/UPDATES.md": {
+      "sha256": "bd23d733aa56c32f80b344627f44b804c6e09ece76a6ee251349ad800fb5bdd0",
       "mode": 420
     },
     "docs/images/analyzer-2026-09-20.png": {
@@ -131,15 +147,27 @@
       "mode": 493
     },
     "scripts/build-windows.ps1": {
-      "sha256": "7568554d5b15736fef33cc193f0ba001e8f80d683e26f989d8afb0cef8d06d7f",
+      "sha256": "ea4acb86d219492d389d9c32d6571a985ce0b6ab260e1c157e21f2aa8cd5bd8d",
+      "mode": 420
+    },
+    "scripts/build_update_dependencies.py": {
+      "sha256": "dd46e2dfa15a17846abac49e9ec5780706cdb3cffd4728bd196f929bf3f73fd7",
       "mode": 420
     },
     "scripts/generate_analyzer_gamut.py": {
       "sha256": "aadbf600488fc2920793d433fa295f6baa70dac5b04ce108f2bf2021d68d1e03",
       "mode": 420
     },
+    "scripts/generate_update_package.py": {
+      "sha256": "07ab510492c98cfa13c1a5e484407594fb3dc839b6bd4edeea87c7e006445356",
+      "mode": 420
+    },
     "scripts/install-windows-qt.py": {
       "sha256": "b8495225b0501728e589edca2ac4b65961ab212394fdb4eb63cd73dc24e368d7",
+      "mode": 420
+    },
+    "scripts/macos_update_poc.py": {
+      "sha256": "0906593eda49f499b003dec004d112e17d3d6ce07e014da5212527f49e855d1e",
       "mode": 420
     },
     "scripts/sign_macos_development_app.sh": {
@@ -276,6 +304,14 @@
     },
     "src/application/settings_workflow.hpp": {
       "sha256": "c24605ec0d058b710ccdf5b5c1954b018ca90d84c48da40e7ba230a8141277df",
+      "mode": 420
+    },
+    "src/application/update_coordinator.cpp": {
+      "sha256": "73349278f6fd4da50982fd70921c19b47e7acdaff14d26c847ab4cbc213cd2b0",
+      "mode": 420
+    },
+    "src/application/update_coordinator.hpp": {
+      "sha256": "5c5a9bdf416bcfe3c6673f0655cb7665ca38d682fd22b6dc3aa1d08f6d2a0d06",
       "mode": 420
     },
     "src/core/build_metadata.hpp": {
@@ -570,6 +606,14 @@
       "sha256": "1b016e5d2cc0a897149c81ecc391740307c338531303eda41dfeb3fcc4c687e4",
       "mode": 420
     },
+    "src/domain/update/update_policy.cpp": {
+      "sha256": "a3d2cd3052187a172014be5a7d5c5b1f77e24a1e698a90b418c0023639c6f618",
+      "mode": 420
+    },
+    "src/domain/update/update_policy.hpp": {
+      "sha256": "b192dcf29cb18d4c7bd7c94754cee19c6a3bfbe47b3a0b317ef86a8e7d6c7686",
+      "mode": 420
+    },
     "src/platform/cpu/cpu_analysis_port.cpp": {
       "sha256": "5e03b65fd36b7aa0c7edec8b995948b14e4f1ee36e19c53a4d0f55e4be1258cc",
       "mode": 420
@@ -659,7 +703,7 @@
       "mode": 420
     },
     "src/platform/macos/macos_qt_analyzer_controller.hpp": {
-      "sha256": "741718d96fc90661191d7c58c0028ab842fc5faf018adf1bda5df4785ed3f574",
+      "sha256": "c539ec41596be781a49c7dccdf3ef7d7c26e44efa2df524abec369cc474b99bd",
       "mode": 420
     },
     "src/platform/macos/macos_qt_analyzer_controller.mm": {
@@ -718,8 +762,12 @@
       "sha256": "69b3b8dc9d92ab78aba1cab0c3052399c466b3abf31b927af3598b4fb7982296",
       "mode": 420
     },
+    "src/platform/macos/update/macos_update_backend.cpp": {
+      "sha256": "6c839c4b871a4517ea34fb3be12b480ad408812ba775f3f49944540fab836817",
+      "mode": 420
+    },
     "src/platform/qt/qt_export_task_executor.hpp": {
-      "sha256": "5c3bb3d959769117a294d000abddcd1a06b94e4838cc668159db26db211d6eb6",
+      "sha256": "240f1ea3099857d3eb54f14c9e41b94fe761064bd10181a0b46e351c69bcc254",
       "mode": 420
     },
     "src/platform/qt/qt_folder_opener_port.cpp": {
@@ -752,6 +800,50 @@
     },
     "src/platform/qt/qt_settings_store_port.hpp": {
       "sha256": "f8b8c4cebe53a0651cbeda969af31cbd810e165fb1a752a6b945d67bc355dc1d",
+      "mode": 420
+    },
+    "src/platform/qt/update/native_update_backend.hpp": {
+      "sha256": "d69a9b88822a2a53bdf7b9e95114e98c9b2853c467f4ef377a11e9ba75300832",
+      "mode": 420
+    },
+    "src/platform/qt/update/qt_update_runtime.cpp": {
+      "sha256": "7a76270fdf3634528952d2a0f273321960755d00bdb6951ea8f636891a11b8b3",
+      "mode": 420
+    },
+    "src/platform/qt/update/qt_update_runtime.hpp": {
+      "sha256": "211e11bf52686cbca2867431589189a0d002697d3ca966c97c99fc8949d70137",
+      "mode": 420
+    },
+    "src/platform/qt/update/update_catalog.cpp": {
+      "sha256": "e51b9b8a5f8f76205295bd3701d6c8f01a786e41a6774d4440769a68af93a0e4",
+      "mode": 420
+    },
+    "src/platform/qt/update/update_catalog.hpp": {
+      "sha256": "be9fca8c800da56bec4e2f434fd0d035fa72375da551c9312f684ca3d032fd3d",
+      "mode": 420
+    },
+    "src/platform/qt/update/update_package.cpp": {
+      "sha256": "f2d93798df285cb8e79b32f3aa81826bc7d480858029a5835ca2249a202cdcf6",
+      "mode": 420
+    },
+    "src/platform/qt/update/update_package.hpp": {
+      "sha256": "3bb5f97e0fc8c5277ec394b61ee0803375c538c01657b63ed68707b2e2d5ea23",
+      "mode": 420
+    },
+    "src/platform/qt/update/update_storage.cpp": {
+      "sha256": "d97c12044ae5b37e498f597615fe4f905c06edbba461507c4598175ec877e0ac",
+      "mode": 420
+    },
+    "src/platform/qt/update/update_storage.hpp": {
+      "sha256": "a8686c65443d393cbc13776d226bf887e2ea7845009435bbbf29e8aa2747e77d",
+      "mode": 420
+    },
+    "src/platform/windows/update/windows_update_backend.cpp": {
+      "sha256": "d3f284c4f1a6d81c7c55ca4ebd0b1d896387daf6201861210ffd34986b248762",
+      "mode": 420
+    },
+    "src/platform/windows/update/windows_update_native.hpp": {
+      "sha256": "d1e010f38d394660ba4155cb2bfd40f3d2f3a78f16e89c3e50e8b7752d34dad7",
       "mode": 420
     },
     "src/platform/windows/windows_analysis_backend.cpp": {
@@ -863,7 +955,7 @@
       "mode": 420
     },
     "src/platform/windows/windows_qt_analyzer_controller.hpp": {
-      "sha256": "3bc95772fa267d8fea8f5ab66d17c7af15783b4fae8360868289be4aa43c0432",
+      "sha256": "934aa2c19e2045409ace9cc7fd5bb47d26f6b72cbc8527f76ac465b470a9f3c3",
       "mode": 420
     },
     "src/platform/windows/windows_qt_ports.cpp": {
@@ -932,6 +1024,10 @@
     },
     "src/ports/ultra_hdr_ports.hpp": {
       "sha256": "72a0f80e6941c8d3580095cc066621b33de2fae102d195ee96f19b9575bdadeb",
+      "mode": 420
+    },
+    "src/ports/update/update_ports.hpp": {
+      "sha256": "e372cc79400a7d49d335ca4178e2f2e01c522f6330b35e1330f4db6c18129c70",
       "mode": 420
     },
     "src/ports/window_catalog_port.hpp": {
@@ -1027,11 +1123,19 @@
       "mode": 420
     },
     "src/ui/qt/settings_window.cpp": {
-      "sha256": "2842fe519d5071b9b2d96e4aed643483576cebb1a271144ff766f6a272ae2271",
+      "sha256": "dec6c1e487f8c679be2fed383380201a24cb490c738f76ab441286c1ae65f764",
       "mode": 420
     },
     "src/ui/qt/settings_window.hpp": {
-      "sha256": "c6b91c00c089e837bb16b1c060c7cd6b3555866e95d3f0d9e508b8df2ffadba7",
+      "sha256": "6d386e16f980208204bd972dace132f7e19593cff6586250efa567211ede68e5",
+      "mode": 420
+    },
+    "src/ui/qt/update_window.cpp": {
+      "sha256": "5f907095883e10f598736db303597fc05602fc4ec3d337cc18f0aae4829f2eec",
+      "mode": 420
+    },
+    "src/ui/qt/update_window.hpp": {
+      "sha256": "77e95973f2ed410f63562929cdb8df15906858de6044b97a028f0ad77ca4b05e",
       "mode": 420
     },
     "tests/analysis_application_tests.cpp": {
@@ -1132,6 +1236,10 @@
     },
     "tests/macos_analyzer_integration_tests.mm": {
       "sha256": "d69b50eec78cc0cc7b431961766c9900b49699f80d2f6702a01d77251253f0c9",
+      "mode": 420
+    },
+    "tests/macos_analyzer_interaction_probe.mm": {
+      "sha256": "cae20f87692671bbc68d38c5f2eefa4f4f1f87186836f61803a7f2daae302158",
       "mode": 420
     },
     "tests/macos_capture_adapter_tests.cpp": {
@@ -1247,7 +1355,7 @@
       "mode": 420
     },
     "tests/settings_window_tests.cpp": {
-      "sha256": "46b1ed28a57bca8698ad51569bc225510b57407d2a2741ee49c1c6d69f2bff3d",
+      "sha256": "60d2dec6b081c2a0e6df8f3c059b25d7ccf4fb35591b2c9b3b1910078c323bd2",
       "mode": 420
     },
     "tests/settings_workflow_tests.cpp": {
@@ -1296,6 +1404,18 @@
     },
     "tests/ultra_hdr_tests.cpp": {
       "sha256": "f90090f4039008c2fbe159803940b5fffb7f3f82b3c45db862c848268cbb0dc6",
+      "mode": 420
+    },
+    "tests/update/macos_update_integration.cpp": {
+      "sha256": "69894aba6d35dd9c9b8e498449f9d459b8c99f6c5d7a3261b9dd1ffa3f70dc3a",
+      "mode": 420
+    },
+    "tests/update/update_runtime_tests.cpp": {
+      "sha256": "10cf4a916c32925bd0d8e4b9d02885c414c9bc86dfbe2076c6b4071b682074b6",
+      "mode": 420
+    },
+    "tests/update/update_tests.cpp": {
+      "sha256": "300419c6c6ef5ede1cebd19f2f188c5b2dd3940a76c8a91e112d9eee02c6b174",
       "mode": 420
     },
     "tests/window_selection_tests.cpp": {
@@ -1427,7 +1547,7 @@
       "mode": 420
     },
     "tools/macos_qt_overlay_poc.mm": {
-      "sha256": "bd60dc46247e052d853731d57db6b73e202897fbc8c9f7ea5c4891014c1a8aa2",
+      "sha256": "5f49b7e6adf1022b7fbdd5257b7eb10992b1baabd18ff1205674f41d8a6ce8b5",
       "mode": 420
     },
     "tools/macos_window_catalog_probe.mm": {
@@ -1462,8 +1582,20 @@
       "sha256": "8be83df9238eb4a7ebf6a4fc87b760e1409897c69cbc8f2b23f32a2c064456e9",
       "mode": 420
     },
+    "tools/update/update_catalog_tool.cpp": {
+      "sha256": "5a7426330b4b835bda66d6756d032606b227c5cbea1e3e3355eb8e0ca808ab5a",
+      "mode": 420
+    },
+    "tools/update/update_network_probe.cpp": {
+      "sha256": "0b0cd17a1250ca4fc3cb21254dea63d602c1cc182e09e79160714356002152a8",
+      "mode": 420
+    },
+    "tools/update/windows_update_helper.cpp": {
+      "sha256": "1ec1412f760376b990a8fe336fb9d999ca9887fc985ac29fceb4539dacc7985b",
+      "mode": 420
+    },
     "tools/windows_app.cpp": {
-      "sha256": "1e8efd9d6980571a0b3e92895c4965a935eecd9abfb29412c1a81429040da003",
+      "sha256": "958a71cef28f024367d0d28b76eab9a25363c389771456eec8287f2f505788e4",
       "mode": 420
     },
     "tools/windows_capture_probe.cpp": {

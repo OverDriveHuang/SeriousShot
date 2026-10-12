@@ -1,3 +1,4 @@
+#include <QTimer>
 #include "ui/qt/analysis_readings.hpp"
 #include "ui/qt/settings_window.hpp"
 #include <QCheckBox>
@@ -370,14 +371,7 @@ SettingsWindow::SettingsWindow(
   root->addWidget(status_label_);
 
   auto* identity_row = new QHBoxLayout();
-  const auto source_time = QDateTime::fromString(
-      QString::fromLatin1(source_commit_timestamp().data(),
-                         static_cast<qsizetype>(source_commit_timestamp().size())), Qt::ISODate);
-  auto* identity_label = new QLabel(QStringLiteral("版本 %1 · 代码提交：%2%3")
-      .arg(QString::fromLatin1(product_version().data(), static_cast<qsizetype>(product_version().size())),
-           source_time.isValid() ? source_time.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'"))
-                                 : QStringLiteral("未知"),
-           source_modified() ? QStringLiteral(" · 含未提交修改") : QString()), this);
+  auto* identity_label = new QLabel(QStringLiteral("版本 %1").arg(QString::fromLatin1(product_version().data(),static_cast<qsizetype>(product_version().size()))),this);
   identity_label->setObjectName(QStringLiteral("buildIdentityLabel"));
   identity_label->setWordWrap(true);
   identity_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -386,16 +380,13 @@ SettingsWindow::SettingsWindow(
       : (source_commit().size() == 64 ? QStringLiteral("源码快照 SHA-256：%1")
                                       : QStringLiteral("源代码提交：%1")).arg(QString::fromLatin1(
             source_commit().data(), static_cast<qsizetype>(source_commit().size()))));
+  const auto source_time=QDateTime::fromString(QString::fromLatin1(source_commit_timestamp().data(),static_cast<qsizetype>(source_commit_timestamp().size())),Qt::ISODate);
+  identity_label->setToolTip(identity_label->toolTip()+QStringLiteral("\n源代码时间：")+(source_time.isValid()?source_time.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'")):QStringLiteral("未知"))+(source_modified()?QStringLiteral("\n含未提交修改"):QString()));
   identity_row->addWidget(identity_label, 1);
-  auto* releases = new QPushButton(QStringLiteral("查看发布版本 ↗"), this);
-  releases->setObjectName(QStringLiteral("openReleasesButton"));
-  releases->setFlat(true);
-  connect(releases, &QPushButton::clicked, this, [this] {
-    const QUrl url(QStringLiteral("https://github.com/OverDriveHuang/SeriousShot/releases"));
-    const bool opened = release_page_opener_ ? release_page_opener_(url) : QDesktopServices::openUrl(url);
-    if (!opened) show_status(QStringLiteral("无法打开浏览器，请稍后重试。"), true);
-  });
-  identity_row->addWidget(releases);
+  update_entry_=new QPushButton(QStringLiteral("查看更新"),this);
+  update_entry_->setObjectName(QStringLiteral("checkUpdatesButton"));update_entry_->setFlat(true);update_entry_->setEnabled(false);
+  identity_row->addWidget(update_entry_);
+  connect(update_entry_,&QPushButton::clicked,this,[this]{if(update_opener_)update_opener_();});
   root->addLayout(identity_row);
 
   auto* actions = new QHBoxLayout();
@@ -459,10 +450,6 @@ SettingsWindow::SettingsWindow(
       [this] { persist_enter_completion_action(); });
   connect(double_click_completion_combo_, &QComboBox::currentIndexChanged, this,
       [this] { persist_double_click_completion_action(); });
-}
-
-void SettingsWindow::set_release_page_opener(std::function<bool(const QUrl&)> opener) {
-  release_page_opener_ = std::move(opener);
 }
 
 void SettingsWindow::set_applied(Applied callback) {
@@ -936,3 +923,10 @@ void SettingsWindow::show_status(const QString& text, const bool error) {
 }
 
 }  // namespace hdrshot
+
+namespace hdrshot {
+void SettingsWindow::set_update_opener(std::function<void()> open){update_opener_=std::move(open);update_entry_->setEnabled(bool(update_opener_));}
+void SettingsWindow::set_update_view(const update::View& view,bool){
+  update_entry_->setText(view.candidate?QStringLiteral("发现新版本 %1 · 查看更新").arg(QString::fromStdString(view.candidate->version.text())):QStringLiteral("查看更新"));
+}
+}

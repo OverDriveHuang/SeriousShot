@@ -16,6 +16,7 @@ class QtExportTaskExecutor final : public ExportTaskExecutorPort {
   void main_thread(std::function<void()> task) override {
     QMetaObject::invokeMethod(&context_, std::move(task), Qt::QueuedConnection);
   }
+  bool pending() const {return pool_.activeThreadCount()!=0;}
   void drain() {
     pool_.waitForDone();
     QCoreApplication::sendPostedEvents(&context_, QEvent::MetaCall);

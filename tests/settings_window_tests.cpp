@@ -1,3 +1,5 @@
+#include <QDir>
+#include <QTimer>
 #include <QGroupBox>
 #include "ui/qt/settings_window.hpp"
 #include "core/build_metadata.hpp"
@@ -9,6 +11,8 @@
 #include <QDateTime>
 #include <QUrl>
 #include <QEvent>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFormLayout>
@@ -182,6 +186,16 @@ void editor_records_only_after_explicit_click_focus_and_drops_focus_on_deactivat
   HDRSHOT_CHECK(customize != nullptr);
   customize->click();
   QApplication::processEvents();
+  if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_NATIVE")) {
+    // Native activation arrives asynchronously. Observe normal focus events;
+    // never set focus or inject recording state to satisfy the assertion.
+    QElapsedTimer activation_deadline;
+    activation_deadline.start();
+    while (QApplication::focusWidget() != edit && activation_deadline.elapsed() < 1500) {
+      QApplication::processEvents();
+      QThread::msleep(5);
+    }
+  }
   HDRSHOT_CHECK(QApplication::focusWidget() == edit);
   HDRSHOT_CHECK(edit->focusPolicy() == Qt::StrongFocus);
   QEvent deactivate(QEvent::WindowDeactivate);
@@ -335,12 +349,17 @@ void general_rows_are_wide_aligned_and_folder_actions_are_explicit() {
   HDRSHOT_CHECK(!build_timestamp->text().contains(QStringLiteral("构建时间")));
   const auto timestamp = QDateTime::fromString(QString::fromLatin1(
       hdrshot::source_commit_timestamp().data(), static_cast<qsizetype>(hdrshot::source_commit_timestamp().size())), Qt::ISODate);
-  HDRSHOT_CHECK(build_timestamp->text().contains(timestamp.isValid()
+  HDRSHOT_CHECK(build_timestamp->toolTip().contains(timestamp.isValid()
       ? timestamp.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'")) : QStringLiteral("未知")));
-  HDRSHOT_CHECK(build_timestamp->text().contains(QStringLiteral("含未提交修改")) == hdrshot::source_modified());
-  HDRSHOT_CHECK(
-      build_timestamp->palette().color(QPalette::WindowText) ==
-      fixture.window.palette().color(QPalette::WindowText));
+  HDRSHOT_CHECK(build_timestamp->toolTip().contains(QStringLiteral("含未提交修改")) == hdrshot::source_modified());
+  // Cocoa has separate native class palettes: QLabel WindowText is opaque,
+  // while a plain QWidget's WindowText can use system alpha. Compare label peers
+  // in every group, and prohibit an explicit identity override.
+  HDRSHOT_CHECK(!build_timestamp->testAttribute(Qt::WA_SetPalette));
+  for (const auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {
+    HDRSHOT_CHECK(build_timestamp->palette().color(group, QPalette::WindowText) ==
+                  author->palette().color(group, QPalette::WindowText));
+  }
   HDRSHOT_CHECK(
       build_timestamp->mapTo(&fixture.window, QPoint{}).x() <
       open_logs->mapTo(&fixture.window, QPoint{}).x());
@@ -829,36 +848,22 @@ void reading_selector_blank_area_opens_menu_and_chips_stay_independent() {
   }
 }
 
-void releases_open_only_on_click() {
-  Fixture fixture;
-  int calls = 0;
-  bool succeeds = true;
-  fixture.window.set_release_page_opener([&](const QUrl& url) {
-    ++calls;
-    HDRSHOT_CHECK(url == QUrl("https://github.com/OverDriveHuang/SeriousShot/releases"));
-    return succeeds;
-  });
-  fixture.window.reload_and_show();
-  QApplication::processEvents();
-  HDRSHOT_CHECK(calls == 0);
-  auto* releases = fixture.window.findChild<QPushButton*>("openReleasesButton");
-  auto* identity = fixture.window.findChild<QLabel*>("buildIdentityLabel");
-  HDRSHOT_CHECK(releases && identity);
-  HDRSHOT_CHECK(identity->geometry().right() < releases->geometry().left());
-  fixture.window.resize(fixture.window.minimumSize());
-  QApplication::processEvents();
-  HDRSHOT_CHECK(identity->geometry().right() < releases->geometry().left());
-  auto* close = fixture.window.findChild<QPushButton*>("closeSettingsButton");
-  HDRSHOT_CHECK(close && identity->geometry().bottom() < close->geometry().top());
-  releases->click();
-  HDRSHOT_CHECK(calls == 1);
-  succeeds = false;
-  releases->click();
-  HDRSHOT_CHECK(calls == 2);
-  auto* status = fixture.window.findChild<QLabel*>("settingsStatusLabel");
-  HDRSHOT_CHECK(status && status->isVisible());
-  HDRSHOT_CHECK(status->text().contains(QStringLiteral("无法打开浏览器")));
+void update_footer_states() {
+  Fixture fixture;fixture.window.reload_and_show();fixture.window.resize(800,730);
+  int opened=0;fixture.window.set_update_opener([&]{++opened;});
+  auto* entry=fixture.window.findChild<QPushButton*>("checkUpdatesButton");auto* identity=fixture.window.findChild<QLabel*>("buildIdentityLabel");
+  HDRSHOT_CHECK(entry&&identity);HDRSHOT_CHECK(!fixture.window.findChild<QWidget*>("updatePanel"));
+  HDRSHOT_CHECK(!fixture.window.findChild<QLabel*>("updateDetailLabel"));
+  update::View view;update::Candidate c;c.version={0,1,5};view.candidate=c;view.detail="Very long errors belong only in the independent window";
+  for(auto phase:{update::Phase::downloading,update::Phase::ready,update::Phase::download_failed,update::Phase::deferred}){
+    view.phase=phase;view.received=42;view.total=100;fixture.window.set_update_view(view,true);QApplication::processEvents();
+    HDRSHOT_CHECK(entry->text()==QStringLiteral("发现新版本 0.1.5 · 查看更新"));
+    HDRSHOT_CHECK(identity->mapTo(&fixture.window,QPoint(identity->width(),0)).x()<entry->mapTo(&fixture.window,QPoint(0,0)).x());
+    entry->click();
+  }
+  HDRSHOT_CHECK(opened==4);
 }
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -979,11 +984,26 @@ int main(int argc, char** argv) {
       return 1;
     if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_NATIVE"))return 0;
   }
+  if(argc>=3 && std::string_view(argv[1])=="--update-ui-probe") {
+    Fixture fixture;fixture.window.setWindowTitle(QStringLiteral("SeriousShot 更新界面隔离验证"));
+    const QString output=QString::fromUtf8(argv[2]);QDir().mkpath(output);
+    fixture.window.set_update_opener([]{});fixture.window.reload_and_show();fixture.window.resize(800,730);
+    if(argc>=4&&std::string_view(argv[3])=="dark") application.styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+    else application.styleHints()->setColorScheme(Qt::ColorScheme::Light);
+    auto step=std::make_shared<int>(0);auto* timer=new QTimer(&fixture.window);
+    QObject::connect(timer,&QTimer::timeout,&fixture.window,[&,step]{
+      update::View view;update::Candidate c;c.version={0,1,5};view.candidate=c;view.total=100;view.received=42;
+      const std::array<update::Phase,5> phases{update::Phase::downloading,update::Phase::deferred,update::Phase::check_failed,update::Phase::manual_pending,update::Phase::ready};
+      view.phase=phases[static_cast<size_t>(*step%5)];view.busy=view.phase==update::Phase::ready;view.detail=view.phase==update::Phase::check_failed?"更新源请求失败：网络暂时不可用或服务器限流。请稍后检查更新；已知的新版本与已下载的安装包仍保留，可以在网络恢复后继续安装。":"安装包已校验";
+      fixture.window.set_update_view(view,true);QApplication::processEvents();
+      fixture.window.grab().save(output+QString("/native-widget-%1.png").arg(*step));++*step;
+    });timer->start(2500);QTimer::singleShot(15500,&application,&QCoreApplication::quit);return application.exec();
+  }
   return hdrshot::test::run({
       {"general sections share dynamic scroll without overlap", general_sections_scroll_together_without_overlap},
       {"reading selector blank hit area and independent chips", reading_selector_blank_area_opens_menu_and_chips_stay_independent},
       {"two-tab defaults, separate readings, bounded scroll and error rollback", analysis_tab_defaults_are_shared_independent_and_rollback_immediately},
-      {"releases opens fixed URL only on explicit click", releases_open_only_on_click},
+      {"update footer dynamic states preserve layout and actions", update_footer_states},
       {"detailed log checkbox autosaves and restores on error", detailed_logging_applies_and_rolls_back_on_failure},
       {"fresh settings opens with either legacy flag and close stays closed", fresh_settings_window_ignores_legacy_presentation_flag_and_close_stays_closed},
       {"settings opens through injected platform activation", every_settings_open_uses_injected_window_activation},

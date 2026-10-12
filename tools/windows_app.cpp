@@ -1,3 +1,5 @@
+#include "platform/qt/update/qt_update_runtime.hpp"
+#include "platform/windows/update/windows_update_native.hpp"
 #include "application/capture_interaction_session.hpp"
 #include "application/headless_capture.hpp"
 #include "application/capture_session.hpp"
@@ -155,16 +157,24 @@ class WindowsApplicationShell {
       QTimer::singleShot(smoke_sequence_?45000:15000,&app_,[this] {if(!smoke_exported_) {std::cerr<<"smoke timeout\n";shutdown(1);}});
     } else show_settings();
     std::cout<<"appShellReady=1 windowsBuild="<<windows_build_number()<<" hotkey="<<settings_.global_capture_hotkey<<'\n';
+    if(smoke_folder_.isEmpty()){
+      auto update_native=update::native_installer();auto identity=update::runtime_identity(update_native->install_identity());
+      updater_=std::make_unique<update::Runtime>(std::move(identity),std::move(update_native),
+        [this]{return !overlays_.empty()||executor_.pending()||(analyzer_&&analyzer_->has_windows());},[this]{return shutdown();});updater_->start();
+      if(settings_window_)updater_->attach(*settings_window_);
+      update::windows_write_start_receipt();
+    }
     return true;
   }
-  void shutdown(int code=0) {
-    if(analyzer_ && !analyzer_->close_windows()) return;
+  bool shutdown(int code=0) {
+    if(analyzer_ && !analyzer_->close_windows()) return false;
     (void)hotkey_.unregister_hotkey();
     if(tray_) tray_->hide();
     finish_capture();
     if(analyzer_) analyzer_->shutdown();
     executor_.drain();
     app_.exit(code);
+    return true;
   }
  private:
   void update_capture_action_text() {
@@ -195,6 +205,7 @@ class WindowsApplicationShell {
         update_capture_action_text();
       });
     }
+    if(updater_)updater_->attach(*settings_window_);
     settings_window_->reload_and_show();
   }
   void report(const Error& error, bool log = true) {
@@ -204,6 +215,7 @@ class WindowsApplicationShell {
     if(!smoke_folder_.isEmpty()) QTimer::singleShot(0,&app_,[this]{shutdown(1);});
   }
   void start_capture() {
+    if(updater_&&updater_->barrier_active())return;
     if(lifecycle_.active()) return;
     if(settings_window_) {
       settings_window_->hide();
@@ -387,6 +399,7 @@ class WindowsApplicationShell {
   QSystemTrayIcon* tray_{};
   QMenu* tray_menu_{};
   QAction* capture_action_{};
+  std::unique_ptr<update::Runtime> updater_;
   SettingsWindow* settings_window_{};
   bool settings_open_queued_{};
   WindowsQtWindowActivation activation_;
@@ -425,7 +438,10 @@ int main(int argc,char** argv) {
       (std::string_view(argv[1])=="--smoke" || std::string_view(argv[1])=="--smoke-copy" ||
        std::string_view(argv[1])=="--smoke-sequence");
   std::vector<std::string_view> arguments;
-  if(!smoke_argument) for(int index=1;index<argc;++index) arguments.emplace_back(argv[index]);
+  if(!smoke_argument) for(int index=1;index<argc;++index) {
+    if(std::string_view(argv[index])=="--update-receipt"&&index+2<argc){index+=2;continue;}
+    arguments.emplace_back(argv[index]);
+  }
   const auto command=parse_capture_command(arguments);
   if(!command) {print_error(command.error());std::cerr<<capture_command_help();return 2;}
   if(command.value().mode==CaptureCommandMode::help) {

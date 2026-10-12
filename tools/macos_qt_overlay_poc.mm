@@ -1,3 +1,4 @@
+#include "platform/qt/update/qt_update_runtime.hpp"
 #include "application/export_completion_coordinator.hpp"
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
 #include "platform/macos/macos_capture_cli.hpp"
@@ -216,12 +217,17 @@ class MacApplicationShell final {
     // Every cold process start opens settings, including existing profiles.
     // show_settings() already defers presentation until the event loop runs.
     // The legacy initial-settings flag must not gate or be written by startup.
+    auto update_native=hdrshot::update::native_installer();
+    auto update_identity=hdrshot::update::runtime_identity(update_native->install_identity());
+    updater_=std::make_unique<hdrshot::update::Runtime>(std::move(update_identity),std::move(update_native),
+        [this]{return bool(capture_session_) || export_executor_.pending() || (analyzer_&&analyzer_->has_windows());},[this]{return shutdown();});
+    updater_->start();
     show_settings();
     return true;
   }
 
-  void shutdown() {
-    if (analyzer_ && !analyzer_->close_windows()) return;
+  bool shutdown() {
+    if (analyzer_ && !analyzer_->close_windows()) return false;
     if (hotkey_registered_) {
       const auto unregistered = hotkey_->unregister_hotkey();
       if (!unregistered) {
@@ -237,6 +243,7 @@ class MacApplicationShell final {
     if (analyzer_) analyzer_->shutdown();
     export_executor_.drain();
     app_.quit();
+    return true;
   }
 
  private:
@@ -319,6 +326,7 @@ class MacApplicationShell final {
           settings_window_, &QObject::destroyed, &app_,
           [this] { settings_window_ = nullptr; });
     }
+    if(updater_)updater_->attach(*settings_window_);
     settings_window_->set_window_activation_port(&settings_activation_);
     settings_window_->reload_and_show();
   }
@@ -394,6 +402,7 @@ class MacApplicationShell final {
   }
 
   void start_capture(const char* source = "app") {
+    if(updater_&&updater_->barrier_active())return;
     const auto requested_session = capture_lifecycle_.active() ? capture_lifecycle_.id()
         : hdrshot::SessionId{next_session_id_};
     hdrshot::record_diagnostic_stage(diagnostics_.get(), requested_session, hdrshot::OperationId{1},
@@ -663,6 +672,7 @@ class MacApplicationShell final {
   QSystemTrayIcon* tray_{};
   QMenu* tray_menu_{};
   QAction* capture_action_{};
+  std::unique_ptr<hdrshot::update::Runtime> updater_;
   hdrshot::SettingsWindow* settings_window_{};
   hdrshot::MacQtWindowActivation settings_activation_;
   bool settings_open_queued_{};

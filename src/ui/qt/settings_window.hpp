@@ -2,6 +2,7 @@
 #include "ui/qt/reading_selector.hpp"
 
 #include "application/settings_workflow.hpp"
+#include "domain/update/update_policy.hpp"
 #include "ports/system_shell_port.hpp"
 #include "ui/qt/qt_input_platform_adapter.hpp"
 #include "ui/qt/qt_window_activation_port.hpp"
@@ -39,8 +40,10 @@ class SettingsWindow final : public QWidget {
       QWidget* parent = nullptr);
 
   void reload_and_show();
+  void set_update_opener(std::function<void()> open);
+  QtWindowActivationPort* window_activation_port() const {return activation_;}
+  void set_update_view(const update::View&, bool manual);
   void set_applied(Applied callback);
-  void set_release_page_opener(std::function<bool(const QUrl&)> opener);
   void set_window_activation_port(QtWindowActivationPort* port) { activation_ = port; }
 
  protected:
@@ -81,7 +84,6 @@ class SettingsWindow final : public QWidget {
   std::string diagnostics_folder_;
   SettingsSnapshot snapshot_{};
   Applied applied_;
-  std::function<bool(const QUrl&)> release_page_opener_;
   QKeySequenceEdit* hotkey_edit_{};
   QPushButton* customize_hotkey_button_{};
   QComboBox* enter_completion_combo_{};
@@ -98,6 +100,8 @@ class SettingsWindow final : public QWidget {
   QFormLayout* general_form_{};
   QCheckBox* detailed_logging_check_{};
   QLabel* status_label_{};
+  QPushButton* update_entry_{};
+  std::function<void()> update_opener_;
   QKeySequence hotkey_before_recording_;
   bool recording_hotkey_{};
   bool loading_controls_{};

@@ -5,7 +5,14 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.4 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.5 LANGUAGES CXX)
+set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
+if(HDRSHOT_UPDATE_TEST_VERSION)
+  if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+    message(FATAL_ERROR "Isolated test version requires strict version and HDRSHOT_UPDATE_TESTING=ON")
+  endif()
+  set(PROJECT_VERSION "${HDRSHOT_UPDATE_TEST_VERSION}")
+endif()
 
 if(MSVC)
   include(cmake/windows_msvc.cmake)
@@ -367,7 +374,9 @@ target_link_libraries(hdrshot_ports INTERFACE hdrshot_core)
 target_include_directories(hdrshot_ports INTERFACE src)
 
 if(HDRSHOT_ENABLE_QT_HOST)
-  find_package(Qt6 REQUIRED COMPONENTS Widgets)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+  include(cmake/update_dependencies.cmake)
+  include(cmake/update_targets.cmake)
   find_package(Qt6FreetypePrivate REQUIRED)
   find_package(Qt6BundledFreetype REQUIRED)
 
@@ -418,7 +427,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
     src/ui/qt/settings_window.cpp
   )
   target_link_libraries(hdrshot_qt_settings
-    PUBLIC hdrshot_settings_workflow hdrshot_ports hdrshot_build_metadata Qt6::Widgets
+    PUBLIC hdrshot_settings_workflow hdrshot_ports hdrshot_build_metadata hdrshot_update_policy Qt6::Widgets
   )
   target_include_directories(hdrshot_qt_settings PUBLIC src)
   hdrshot_enable_warnings(hdrshot_qt_settings)
@@ -750,7 +759,7 @@ if(APPLE)
     if(BUILD_TESTING)
       add_executable(hdrshot_analyzer_ui_native_surface_tests tests/analyzer_ui_native_surface_tests.mm)
       add_executable(hdrshot_analyzer_interaction_probe
-        artifacts/2026-09-19_analyzer_interaction_fixes/checks/interaction_probe.mm)
+        tests/macos_analyzer_interaction_probe.mm)
       target_compile_options(hdrshot_analyzer_interaction_probe PRIVATE -fobjc-arc)
       target_link_libraries(hdrshot_analyzer_interaction_probe PRIVATE
         hdrshot_qt_analyzer_ui hdrshot_macos_analysis hdrshot_analysis_cpu hdrshot_analysis_application)
@@ -799,6 +808,7 @@ if(APPLE)
       hdrshot_qt_diagnostics
       hdrshot_qt_settings
       Qt6::Widgets
+      hdrshot_qt_update
       "-framework AppKit"
       "-framework QuartzCore"
     )
@@ -816,6 +826,13 @@ if(APPLE)
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/macos/HDRShotInfo.plist.in"
       OUTPUT_NAME "SeriousShot"
     )
+    target_link_libraries(hdrshot_macos_qt_overlay_poc PRIVATE hdrshot_qt_update)
+    add_custom_command(TARGET hdrshot_macos_qt_overlay_poc POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_BUNDLE_DIR:hdrshot_macos_qt_overlay_poc>/Contents/Resources/licenses"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/licenses/libsodium-LICENSE.txt"
+        "$<TARGET_BUNDLE_DIR:hdrshot_macos_qt_overlay_poc>/Contents/Resources/licenses/libsodium-LICENSE.txt"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/licenses/libarchive-COPYING.txt"
+        "$<TARGET_BUNDLE_DIR:hdrshot_macos_qt_overlay_poc>/Contents/Resources/licenses/libarchive-COPYING.txt")
     hdrshot_enable_warnings(hdrshot_macos_qt_overlay_poc)
     target_sources(hdrshot_macos_qt_overlay_poc PRIVATE assets/icons/SeriousShot.icns)
     set_source_files_properties(assets/icons/SeriousShot.icns PROPERTIES

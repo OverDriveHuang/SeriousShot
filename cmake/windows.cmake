@@ -61,14 +61,14 @@ if(HDRSHOT_ENABLE_QT_HOST)
           $<TARGET_FILE:hdrshot_windows_icon_writer> "${_hdrshot_windows_icon}"
       DEPENDS hdrshot_windows_icon_writer VERBATIM)
   add_custom_target(hdrshot_windows_icon DEPENDS "${_hdrshot_windows_icon}")
-  add_dependencies(hdrshot_windows_app hdrshot_windows_icon)
+  add_dependencies(hdrshot_windows_app hdrshot_windows_icon hdrshot_windows_update_helper)
   set(_hdrshot_windows_rc "${CMAKE_CURRENT_BINARY_DIR}/generated/windows_app.rc")
   file(WRITE "${_hdrshot_windows_rc}" "1 ICON \"${_hdrshot_windows_icon}\"\n")
   set_source_files_properties("${_hdrshot_windows_rc}" PROPERTIES OBJECT_DEPENDS "${_hdrshot_windows_icon}")
   target_sources(hdrshot_windows_app PRIVATE "${_hdrshot_windows_rc}")
   set_target_properties(hdrshot_windows_app PROPERTIES OUTPUT_NAME SeriousShot)
   target_link_libraries(hdrshot_windows_app PRIVATE hdrshot_windows_qt_ports hdrshot_windows_d3d_export
-      hdrshot_windows_qt_analyzer hdrshot_headless_capture
+      hdrshot_windows_qt_analyzer hdrshot_headless_capture hdrshot_qt_update
       hdrshot_windows_d3d_presenter hdrshot_capture_session hdrshot_interaction_controller
       hdrshot_multi_display_preview hdrshot_export_workflow hdrshot_ultra_hdr_codec
       hdrshot_qt_overlay_ui hdrshot_qt_settings hdrshot_qt_diagnostics hdrshot_freetype_text_rasterizer Qt6::Widgets)

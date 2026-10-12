@@ -16,6 +16,8 @@ try {
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
     $logs = Join-Path $project ".agent/logs/windows-$stamp"
     New-Item -ItemType Directory -Path $logs | Out-Null
+    python scripts/build_update_dependencies.py *> "$logs/update-dependencies.log"
+    if ($LASTEXITCODE -ne 0) { throw "Update dependencies failed: $logs/update-dependencies.log" }
     cmake --preset windows-qt-release *> "$logs/configure.log"
     if ($LASTEXITCODE -ne 0) { throw "Configure failed: $logs/configure.log" }
     $buildArgs = @('--build', '--preset', 'windows-qt-release', '-j', '6')
@@ -31,9 +33,12 @@ try {
         if (Test-Path -LiteralPath $destination) { throw 'Package destination already exists.' }
         New-Item -ItemType Directory -Path $destination | Out-Null
         Copy-Item -LiteralPath 'build-windows-qt/SeriousShot.exe' -Destination $destination
+        Copy-Item -LiteralPath 'build-windows-qt/SeriousShotUpdater.exe' -Destination $destination
         Copy-Item -LiteralPath 'build-windows-qt/assets' -Destination $destination -Recurse
         & "$qt/bin/windeployqt.exe" --release --compiler-runtime --no-translations --no-opengl-sw "$destination/SeriousShot.exe" *> "$logs/deploy.log"
         if ($LASTEXITCODE -ne 0) { throw "Deploy failed: $logs/deploy.log" }
+        & "$qt/bin/windeployqt.exe" --release --compiler-runtime --no-translations --no-opengl-sw "$destination/SeriousShotUpdater.exe" *> "$logs/deploy-updater.log"
+        if ($LASTEXITCODE -ne 0) { throw "Updater deploy failed: $logs/deploy-updater.log" }
         $runtime = Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC143.CRT'
         if (Test-Path -LiteralPath $runtime) {
             Get-ChildItem -LiteralPath $runtime -Filter '*.dll' | Copy-Item -Destination $destination
@@ -41,6 +46,8 @@ try {
         # Keep the codec notices and local assets with the development build.
         $licenses = New-Item -ItemType Directory -Path "$destination/licenses"
         Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.md' -Destination $licenses.FullName
+        Copy-Item -LiteralPath 'assets/licenses/libsodium-LICENSE.txt' -Destination $licenses.FullName
+        Copy-Item -LiteralPath 'assets/licenses/libarchive-COPYING.txt' -Destination $licenses.FullName
         Copy-Item -LiteralPath 'assets/fonts/OFL.txt' -Destination $licenses.FullName
         Copy-Item -LiteralPath 'assets/color_profiles/CC0-1.0.txt' -Destination $licenses.FullName
         Copy-Item -LiteralPath 'build-windows-qt/_deps/ultrahdr-src/LICENSE' -Destination "$licenses/libultrahdr-LICENSE.txt"
@@ -52,6 +59,9 @@ try {
             Set-Content -LiteralPath "$destination/DEVELOPMENT_BUILD.txt" -Encoding utf8
         Get-FileHash -LiteralPath "$destination/SeriousShot.exe" -Algorithm SHA256 | Format-List | Out-String |
             Set-Content -LiteralPath "$destination/SHA256.txt"
+        $version = (Select-String -LiteralPath 'CMakeLists.txt' -Pattern 'project\(HDRShot VERSION ([0-9.]+)').Matches.Groups[1].Value
+        python scripts/generate_update_package.py $destination --version $version --platform windows --architecture x64 --entrypoint SeriousShot.exe
+        if ($LASTEXITCODE -ne 0) { throw 'Package manifest failed.' }
         Write-Output "Package=$destination"
     }
     Write-Output "Logs=$logs"

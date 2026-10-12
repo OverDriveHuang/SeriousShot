@@ -1,6 +1,6 @@
 # Third-party notices
 
-最后更新：2026-09-20 23:11:25 CST
+最后更新：2026-10-12 16:18:00 CST
 
 SeriousShot currently uses the following third-party components.
 Release bundles must include this notice and the referenced license texts.
@@ -90,3 +90,17 @@ static transitive dependency of libultrahdr.
 - License: SIL Open Font License 1.1
 - Local notice and license: `assets/fonts/README.md` and
   `assets/fonts/OFL.txt`
+
+## Automatic updater dependencies
+
+The updater statically links libsodium 1.0.22 (ISC license) for Ed25519 verification,
+and libarchive 3.8.9 (BSD/ISC license texts in COPYING) for bounded ZIP decoding.
+Qt Network remains dynamically linked under the same Qt 6.11.1 terms as Widgets.
+Include `assets/licenses/libsodium-LICENSE.txt` and
+`assets/licenses/libarchive-COPYING.txt` in every distributed bundle.
+Pinned upstream source archive SHA-256 values:
+
+- libsodium-1.0.22.tar.gz: `adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349`
+- libarchive-3.8.9.tar.xz: `888c934f9d95648ecb9163dc8e23ab80a476ecb81a8f1154704a227b5b676dde`
+
+See `scripts/build_update_dependencies.py` for source acquisition/build.

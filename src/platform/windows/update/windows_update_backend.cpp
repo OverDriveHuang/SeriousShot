@@ -1,0 +1,374 @@
+#include "core/build_metadata.hpp"
+#include "platform/qt/update/native_update_backend.hpp"
+#include "platform/qt/update/update_catalog.hpp"
+#include "platform/windows/update/windows_update_native.hpp"
+#include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QProcess>
+#include <QThread>
+#include <QUuid>
+#include <algorithm>
+#include <io.h>
+#include <psapi.h>
+#include <shellapi.h>
+#include <windows.h>
+namespace hdrshot::update {
+QString windows_executable() {
+  wchar_t path[32768];
+  const auto n = GetModuleFileNameW(nullptr, path, 32768);
+  return n ? QDir::fromNativeSeparators(QString::fromWCharArray(path, static_cast<int>(n)))
+           : QString{};
+}
+QString process_identity(qint64 pid) {
+  if (pid <= 0 || pid > MAXDWORD)
+    return {};
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+  if (!process)
+    return {};
+  FILETIME created{}, exited{}, kernel{}, user{};
+  const bool ok = GetProcessTimes(process, &created, &exited, &kernel, &user) != 0;
+  CloseHandle(process);
+  return ok ? QString::number((quint64(created.dwHighDateTime) << 32) | created.dwLowDateTime)
+            : QString{};
+}
+bool process_alive(qint64 pid, const QString &creation) {
+  if (pid <= 0 || pid > MAXDWORD)
+    return false;
+  const auto current = process_identity(pid);
+  if (!current.isEmpty())
+    return creation.isEmpty() || current == creation;
+  HANDLE p = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+  if (!p)
+    return GetLastError() == ERROR_ACCESS_DENIED;
+  const auto active = WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
+  CloseHandle(p);
+  return active;
+}
+bool durable_flush(QFile &f) {
+  const auto h = reinterpret_cast<HANDLE>(_get_osfhandle(f.handle()));
+  return f.flush() && FlushFileBuffers(h) != 0;
+}
+bool durable_directory(const QString &) {
+  // Win32 has no portable directory fsync. Rename uses MOVEFILE_WRITE_THROUGH;
+  // each replaced/state file is flushed. Actual power-loss behavior remains a
+  // native gate.
+  return true;
+}
+bool windows_move(const QString &from, const QString &to) {
+  return MoveFileExW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(from).utf16()),
+                     reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(to).utf16()),
+                     MOVEFILE_WRITE_THROUGH) != 0;
+}
+bool windows_install_quiet(const QString &target, const QString &backup) {
+  DWORD ids[16384], bytes = 0;
+  if (!EnumProcesses(ids, sizeof(ids), &bytes))
+    return false;
+  for (DWORD i = 0; i < bytes / sizeof(DWORD); ++i) {
+    if (!ids[i] || ids[i] == GetCurrentProcessId())
+      continue;
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ids[i]);
+    if (!p)
+      continue;
+    wchar_t path[32768];
+    DWORD length = 32768;
+    const bool found = QueryFullProcessImageNameW(p, 0, path, &length) != 0;
+    CloseHandle(p);
+    if (!found)
+      continue;
+    const auto image =
+        QDir::fromNativeSeparators(QString::fromWCharArray(path, static_cast<int>(length)));
+    if (image.compare(target, Qt::CaseInsensitive) == 0 ||
+        (!backup.isEmpty() && image.compare(backup, Qt::CaseInsensitive) == 0))
+      return false;
+  }
+  return true;
+}
+static bool safe_destination(const QString &root, const QString &path) {
+  if (!safe_relative(path))
+    return false;
+  QString full = root;
+  for (const auto &component : path.split('/')) {
+    full += "/" + component;
+    const DWORD attributes =
+        GetFileAttributesW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(full).utf16()));
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+      return false;
+  }
+  return true;
+}
+class WindowsInstaller final : public NativeInstaller {
+public:
+  QString install_identity() const override {
+    return QFileInfo(windows_executable()).canonicalFilePath();
+  }
+  bool manual() const override {
+    return !HDRSHOT_WINDOWS_UPDATE_NATIVE_VALIDATED;
+  }
+  Result<bool, Error> recover(Slot &slot) override {
+    const auto runtime = slot.record["runtime"].toString(),
+               journal = slot.record["journal"].toString();
+    if (runtime.isEmpty() || !runtime.startsWith(slot.root + "/helpers/") ||
+        journal != runtime + "/transaction.json" || QFileInfo(runtime).isSymLink() ||
+        process_alive(slot.record["parent_pid"].toString().toLongLong(),
+                      slot.record["parent_creation"].toString()) ||
+        process_alive(slot.record["helper_pid"].toString().toLongLong(),
+                      slot.record["helper_creation"].toString()))
+      return Result<bool, Error>::failure(failure("恢复事务仍被占用"));
+    QProcess helper;
+    helper.setProgram(runtime + "/SeriousShotUpdater.exe");
+    helper.setArguments({"--recover", journal});
+    helper.setWorkingDirectory(runtime);
+    qint64 pid = 0;
+    if (!helper.startDetached(&pid))
+      return Result<bool, Error>::failure(failure("recovery_helper_start"));
+    const auto creation = process_identity(pid);
+    const auto journal_state = read_json(journal);
+    if (journal_state)
+      (void)register_cleanup(slot.root, journal_state.value(), pid);
+    slot.record["helper_pid"] = QString::number(pid);
+    slot.record["helper_creation"] = creation;
+    auto saved = slot.save();
+    slot.release();
+    if (!saved)
+      return saved;
+    for (int wait = 0; wait < 1800 && process_alive(pid, creation); ++wait)
+      QThread::msleep(100);
+    auto recovered = read_json(journal);
+    if (!recovered ||
+        !(recovered.value()["phase"] == "complete" || recovered.value()["phase"] == "rolled_back"))
+      return Result<bool, Error>::failure(failure("恢复需要人工处理"));
+    return slot.acquire();
+  }
+  Result<bool, Error> cancel_manual(Slot &slot) override {
+    slot.record["phase"] = "ready";
+    return slot.save();
+  }
+  Result<bool, Error> install(Slot &slot, const Candidate &c, const QByteArray &envelope,
+                              std::function<bool()> quit) override {
+    if (manual()) {
+      const auto opened =
+          ShellExecuteW(nullptr, L"open",
+                        reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(slot.payload()).utf16()),
+                        nullptr, nullptr, SW_SHOWNORMAL);
+      if (reinterpret_cast<INT_PTR>(opened) <= 32)
+        return Result<bool, Error>::failure(
+            failure("请从发布页面手动安装", ErrorCode::permission_denied));
+      slot.record["phase"] = "manual_pending";
+      return slot.save();
+    }
+    const auto exe = windows_executable();
+    const auto target = QFileInfo(exe).absolutePath();
+    if (QFileInfo(target).isSymLink())
+      return Result<bool, Error>::failure(failure("target_reparse"));
+    auto old_json = read_json(target + "/package_manifest.json");
+    if (!old_json)
+      return Result<bool, Error>::failure(old_json.error());
+    auto old_version = Version::parse(old_json.value()["version"].toString().toStdString());
+    if (!old_version)
+      return Result<bool, Error>::failure(old_version.error());
+    auto old_candidate = c;
+    old_candidate.version = old_version.value();
+    auto old = package_manifest(target, old_candidate);
+    if (!old || target + "/" + old.value().entrypoint != exe)
+      return Result<bool, Error>::failure(failure("当前安装缺少可信受管清单，请手动安装"));
+    auto old_verified = verify_tree(target, old.value());
+    if (!old_verified)
+      return old_verified;
+    const auto transaction = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto nonce = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto staging = target + "/.seriousshot-stage-" + transaction;
+    const auto backup = target + "/.seriousshot-backup-" + transaction;
+    const auto runtime = slot.root + "/helpers/" + transaction;
+    const auto journal = runtime + "/transaction.json";
+    const auto event_name =
+        QString("Local\\Overdrive.SeriousShot.Update.Arm.") + transaction + "." + nonce;
+    QJsonObject j{{"protocol", 1},
+                  {"transaction", transaction},
+                  {"nonce", nonce},
+                  {"target", target},
+                  {"exe", exe},
+                  {"staging", staging},
+                  {"backup", backup},
+                  {"event_name", event_name},
+                  {"phase", "preparing"},
+                  {"parent_pid", QString::number(QCoreApplication::applicationPid())},
+                  {"parent_creation", process_identity(QCoreApplication::applicationPid())}};
+    auto registered = register_cleanup(slot.root, j);
+    if (!registered)
+      return registered;
+    qint64 helper_pid = 0;
+    QString helper_creation;
+    bool transferred = false;
+    HANDLE arm_event = nullptr;
+    struct ScopeExit {
+      std::function<void()> finish;
+      ~ScopeExit() {
+        finish();
+      }
+    } guard{[&] {
+      if (!transferred) {
+        if (arm_event)
+          ResetEvent(arm_event);
+        if (helper_pid > 0) {
+          (void)save_json(runtime + "/cancel.json", {{"nonce", nonce}});
+          for (int wait = 0; wait < 50 && process_alive(helper_pid, helper_creation); ++wait)
+            QThread::msleep(100);
+          if (process_alive(helper_pid, helper_creation)) {
+            HANDLE helper =
+                OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, static_cast<DWORD>(helper_pid));
+            if (helper) {
+              if (process_identity(helper_pid) == helper_creation) {
+                TerminateProcess(helper, 90);
+                WaitForSingleObject(helper, 5000);
+              }
+              CloseHandle(helper);
+            }
+          }
+        }
+        j["phase"] = "cancelled";
+        if (QFileInfo::exists(runtime))
+          (void)save_json(journal, j);
+        auto pending = read_json(slot.root + "/cleanup/" + transaction + ".json");
+        if (pending) {
+          auto record = pending.value();
+          record["terminal"] = true;
+          record["preparing"] = false;
+          record["helper_pid"] = QString::number(helper_pid);
+          record["helper_creation"] = helper_creation;
+          (void)save_json(slot.root + "/cleanup/" + transaction + ".json", record);
+        }
+        if (slot.record["transaction"] == transaction) {
+          slot.record["phase"] = "ready";
+          slot.record.remove("transaction");
+          slot.record.remove("nonce");
+          (void)slot.save();
+        }
+      }
+      if (arm_event)
+        CloseHandle(arm_event);
+    }};
+    auto prepared = extract_zip(slot.payload(), staging, c);
+    if (!prepared)
+      return Result<bool, Error>::failure(prepared.error());
+    for (const auto &file : prepared.value().files) {
+      if (!safe_destination(target, file.path))
+        return Result<bool, Error>::failure(failure("target_reparse"));
+      const bool known =
+          std::any_of(old.value().files.begin(), old.value().files.end(), [&](const auto &f) {
+            return f.path.compare(file.path, Qt::CaseInsensitive) == 0;
+          });
+      if (!known && QFileInfo::exists(target + "/" + file.path))
+        return Result<bool, Error>::failure(failure("更新文件与用户文件重名"));
+    }
+    if (!QDir().mkpath(backup))
+      return Result<bool, Error>::failure(
+          failure("当前目录不可写，请手动安装", ErrorCode::path_not_writable));
+    if (!QDir().mkpath(runtime))
+      return Result<bool, Error>::failure(failure("helper_directory"));
+    // A deployed helper runtime has the same pinned Qt dependency files as the
+    // app.
+    for (const auto &file : old.value().files) {
+      if (file.path == old.value().entrypoint)
+        continue;
+      const auto to = runtime + "/" + file.path;
+      if (!QDir().mkpath(QFileInfo(to).absolutePath()) ||
+          !QFile::copy(target + "/" + file.path, to))
+        return Result<bool, Error>::failure(failure("helper_copy"));
+    }
+    if (!QFileInfo::exists(runtime + "/SeriousShotUpdater.exe"))
+      return Result<bool, Error>::failure(failure("helper_missing"));
+    j["old_manifest"] = old.value().raw;
+    j["new_manifest"] = prepared.value().raw;
+    j["envelope"] = QString::fromLatin1(envelope.toBase64());
+    j["candidate"] = QString::fromStdString(c.key());
+    j["phase"] = "prepared";
+    j["slot"] = slot.root;
+    j["generation"] = slot.record["generation"];
+    j["owner"] = slot.owner;
+    j["channel"] = slot.channel;
+    auto written = save_json(journal, j);
+    if (!written)
+      return written;
+    written = register_cleanup(slot.root, j);
+    if (!written)
+      return written;
+    slot.record["phase"] = "reserved";
+    slot.record["transaction"] = transaction;
+    slot.record["nonce"] = nonce;
+    slot.record["journal"] = journal;
+    slot.record["runtime"] = runtime;
+    written = slot.save();
+    if (!written)
+      return written;
+    arm_event = CreateEventW(nullptr, TRUE, FALSE, reinterpret_cast<LPCWSTR>(event_name.utf16()));
+    if (!arm_event || GetLastError() == ERROR_ALREADY_EXISTS)
+      return Result<bool, Error>::failure(failure("arm_event_create"));
+    QProcess helper;
+    helper.setProgram(runtime + "/SeriousShotUpdater.exe");
+    helper.setArguments({"--apply", journal});
+    helper.setWorkingDirectory(runtime);
+    if (!helper.startDetached(&helper_pid)) {
+      slot.record["phase"] = "ready";
+      (void)slot.save();
+      return Result<bool, Error>::failure(failure("helper_start"));
+    }
+    helper_creation = process_identity(helper_pid);
+    written = register_cleanup(slot.root, j, helper_pid);
+    if (!written)
+      return written;
+    slot.record["helper_pid"] = QString::number(helper_pid);
+    slot.record["helper_creation"] = process_identity(helper_pid);
+    written = slot.save();
+    if (!written)
+      return written;
+    bool ready = false;
+    for (int n = 0; n < 100; ++n) {
+      const auto receipt = read_json(runtime + "/ready.json");
+      if (receipt && receipt.value()["nonce"] == nonce &&
+          receipt.value()["pid"].toString().toLongLong() == helper_pid) {
+        ready = true;
+        break;
+      }
+      QThread::msleep(100);
+    }
+    if (!ready)
+      return Result<bool, Error>::failure(
+          failure("helper_ready_timeout", ErrorCode::operation_cancelled));
+    // A ready helper cannot apply merely because the parent later exits.
+    written = save_json(runtime + "/armed.json", {{"nonce", nonce},
+                                                  {"transaction", transaction},
+                                                  {"generation", slot.record["generation"]}});
+    if (!written)
+      return written;
+    if (!quit())
+      return Result<bool, Error>::failure(failure("退出已取消", ErrorCode::operation_cancelled));
+    if (!SetEvent(arm_event))
+      return Result<bool, Error>::failure(failure("arm_event_signal"));
+    transferred = true;
+    // The helper survives via startDetached semantics: QProcess destructor must
+    // not kill it. Release before parent shutdown. The reservation still blocks
+    // every other installer.
+    slot.release();
+    return Result<bool, Error>::success(true);
+  }
+};
+std::unique_ptr<NativeInstaller> native_installer() {
+  return std::make_unique<WindowsInstaller>();
+}
+void windows_write_start_receipt() {
+  const auto args = QCoreApplication::arguments();
+  const auto pos = args.indexOf("--update-receipt");
+  if (pos >= 0 && pos + 2 < args.size())
+    (void)save_json(
+        args[pos + 1],
+        {{"nonce", args[pos + 2]},
+         {"exe", windows_executable()},
+         {"version", QString::fromUtf8(product_version().data(),
+                                       static_cast<qsizetype>(product_version().size()))},
+         {"pid", QString::number(QCoreApplication::applicationPid())},
+         {"creation", process_identity(QCoreApplication::applicationPid())}});
+}
+} // namespace hdrshot::update
