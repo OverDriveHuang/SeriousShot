@@ -5,18 +5,14 @@ namespace hdrshot::update {
 class Coordinator {
 public:
   Coordinator(Identity, Effects &);
-  ~Coordinator() {
-    *alive_ = false;
-  }
+  ~Coordinator() { *alive_ = false; }
   void trigger(std::int64_t now, bool cold = false, bool manual = false);
   void tick(std::int64_t now);
   void install();
   void later();
   void cancel();
   void restore(Candidate, Receipt, bool manual_pending);
-  const View &view() const {
-    return view_;
-  }
+  const View &view() const { return view_; }
   std::function<void(const View &)> changed;
 
 private:
@@ -24,6 +20,8 @@ private:
   void download();
   void prompt();
   void publish();
+  bool reminder_due() const;
+  void consume_reminder(bool displayed);
   Identity identity_;
   Effects &effects_;
   Schedule schedule_;
@@ -31,6 +29,10 @@ private:
   std::optional<Receipt> receipt_;
   std::uint64_t generation_{};
   bool active_{}, installing_{}, pending_question_{};
+  std::int64_t now_{};
+  std::string reminder_key_;
+  std::optional<std::int64_t> reminder_origin_;
+  std::uint64_t consumed_period_{};
   std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
 };
 } // namespace hdrshot::update

@@ -44,9 +44,7 @@ struct Reply final : QNetworkReply {
       emit finished();
     });
   }
-  void redirect(const QUrl &url) {
-    setAttribute(QNetworkRequest::RedirectionTargetAttribute, url);
-  }
+  void redirect(const QUrl &url) { setAttribute(QNetworkRequest::RedirectionTargetAttribute, url); }
   void abort() override {
     if (isFinished())
       return;
@@ -73,7 +71,7 @@ struct Wire {
   std::atomic<int> checks{}, releases{}, downloads{};
   std::atomic<qint64> max_read{};
   int catalog_status{200}, release_status{200};
-  int redirects{}, reply_delay_ms{}, catalog_delay_ms{};
+  int redirects{}, reply_delay_ms{}, catalog_delay_ms{}, release_delay_ms{};
 };
 struct Manager final : QNetworkAccessManager {
   Wire &wire;
@@ -87,7 +85,8 @@ struct Manager final : QNetworkAccessManager {
     }
     if (req.url().host() == "api.github.com") {
       ++wire.releases;
-      return new Reply(req, wire.release, wire.release_status, nullptr, this);
+      return new Reply(req, wire.release, wire.release_status, nullptr, this,
+                       wire.release_delay_ms);
     }
     ++wire.downloads;
     if (wire.downloads <= wire.redirects) {
@@ -102,26 +101,19 @@ struct Manager final : QNetworkAccessManager {
   }
 };
 struct Installer : NativeInstaller {
-  QString install_identity() const override {
-    return "test";
-  }
-  bool manual() const override {
-    return true;
-  }
+  QString install_identity() const override { return "test"; }
+  bool manual() const override { return true; }
   Result<bool, Error> install(Slot &, const Candidate &, const QByteArray &,
                               std::function<bool()>) override {
     return Result<bool, Error>::success(true);
   }
-  Result<bool, Error> cancel_manual(Slot &) override {
-    return Result<bool, Error>::success(true);
-  }
+  Result<bool, Error> cancel_manual(Slot &) override { return Result<bool, Error>::success(true); }
 };
 namespace hdrshot::update {
 class RuntimeTestAccess {
 public:
-  static void busy_callback(Runtime &r, std::function<bool()> busy) {
-    r.busy_ = std::move(busy);
-  }
+  static void quit_callback(Runtime &r, std::function<bool()> quit) { r.quit_ = std::move(quit); }
+  static void busy_callback(Runtime &r, std::function<bool()> busy) { r.busy_ = std::move(busy); }
   static void idle(Runtime &r) {
     r.busy_ = [] { return false; };
   }
@@ -134,9 +126,16 @@ public:
   static void configure(Runtime &r, const Trust &trust, const QString &root, Wire &wire) {
     r.state_path_ = root + "/state.json";
     r.cache_path_ = root + "/cache.json";
+    // A new instance must load the actual isolated persisted state, like the
+    // production constructor, rather than retaining its default-path state.
+    const auto state = read_json(r.state_path_);
+    r.state_ = state ? state.value() : QJsonObject{};
     QMetaObject::invokeMethod(
         r.worker_,
         [&] {
+          const auto cache = read_json(r.cache_path_);
+          r.cache_ = cache ? cache.value() : QJsonObject{};
+          r.envelope_ = QByteArray::fromBase64(r.cache_["envelope"].toString().toLatin1());
           r.trust_ = trust;
           r.slot_.root = root;
           r.slot_.channel = "testing";
@@ -241,9 +240,7 @@ struct Fixture {
     }
     HDRSHOT_CHECK(f());
   }
-  void start() {
-    runtime->start();
-  }
+  void start() { runtime->start(); }
 };
 struct FailedInstaller final : Installer {
   int &calls;
@@ -255,12 +252,22 @@ struct FailedInstaller final : Installer {
         failure("隔离故障：安装目录不可写", ErrorCode::path_not_writable));
   }
 };
+struct ExitingManualInstaller final : Installer {
+  std::atomic_bool &entered;
+  explicit ExitingManualInstaller(std::atomic_bool &value) : entered(value) {}
+  Result<bool, Error> install(Slot &, const Candidate &, const QByteArray &,
+                              std::function<bool()> quit) override {
+    entered = true;
+    QThread::msleep(80);
+    return quit() ? Result<bool, Error>::success(true)
+                  : Result<bool, Error>::failure(
+                        failure("退出已取消", ErrorCode::operation_cancelled));
+  }
+};
 struct DelayedInstaller final : Installer {
   std::atomic_bool &entered;
   explicit DelayedInstaller(std::atomic_bool &e) : entered(e) {}
-  bool manual() const override {
-    return false;
-  }
+  bool manual() const override { return false; }
   Result<bool, Error> install(Slot &, const Candidate &, const QByteArray &,
                               std::function<bool()> quit) override {
     entered = true;
@@ -319,7 +326,8 @@ int main(int argc, char **argv) {
       v.received = 42;
       v.total = 100;
       if (v.phase == Phase::check_failed)
-        v.detail = "更新源请求失败：网络暂时不可用或服务器限流。请稍后检查更新；已知的新版本与已下"
+        v.detail = "更新源请求失败：网络暂时不可用或服务器限流。请稍后检查更新"
+                   "；已知的新版本与已下"
                    "载的安装包仍保留，可以在网络恢复后继续安装。";
       if (v.phase == Phase::deferred) {
         v.error =
@@ -454,7 +462,87 @@ int main(int argc, char **argv) {
          f.await([&] { return finished; });
          HDRSHOT_CHECK(!accepted && read_json(f.dir.path() + "/cache.json").value() == original);
        }},
-      {"single owned window close persists Later and stale confirmation is cleared",
+      {"clean completion automatically creates the install question without an "
+       "opened window",
+       [] {
+         Fixture f;
+         RuntimeTestAccess::idle(*f.runtime);
+         f.start();
+         f.await([&] { return f.runtime->update_window().isVisible(); });
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::ready &&
+                       f.runtime->coordinator().view().prompted);
+         auto &w = f.runtime->update_window();
+         HDRSHOT_CHECK(w.findChild<QLabel *>("updateWindowStatus")->text() ==
+                       QStringLiteral("新版本已下载，是否安装？"));
+         w.close();
+         for (int i = 0; i < 3; ++i)
+           f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
+         HDRSHOT_CHECK(!w.isVisible());
+       }},
+      {"persisted manual transaction restores install actions and Later "
+       "protects its slot",
+       [] {
+         Fixture f;
+         RuntimeTestAccess::idle(*f.runtime);
+         f.start();
+         f.await([&] { return f.runtime->update_window().isVisible(); });
+         f.runtime->update_window().close();
+         f.runtime.reset();
+         auto record = read_json(f.dir.path() + "/slot.json").value();
+         record["phase"] = "manual_pending";
+         record["generation"] = "3";
+         record["mount"] = "/Volumes/old-ejected-update";
+         HDRSHOT_CHECK(save_json(f.dir.path() + "/slot.json", record));
+         f.runtime = std::make_unique<Runtime>(
+             f.identity, std::make_unique<Installer>(), [] { return false; }, [] { return false; });
+         RuntimeTestAccess::configure(*f.runtime, f.trust, f.dir.path(), f.wire);
+         f.start();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::manual_pending; });
+         auto &w = f.runtime->update_window();
+         HDRSHOT_CHECK(w.isVisible() && f.runtime->coordinator().view().prompted);
+         f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
+         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.downloads == 1);
+         f.runtime->show_details();
+         auto *button = w.findChild<QPushButton *>("updateWindowPrimary");
+         HDRSHOT_CHECK(button->text() == QStringLiteral("安装") && button->isEnabled());
+         HDRSHOT_CHECK(w.findChild<QPushButton *>("updateWindowSecondary")->text() ==
+                       QStringLiteral("稍后"));
+         w.close();
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::manual_pending);
+         f.runtime->coordinator().trigger(QDateTime::currentSecsSinceEpoch(), false, true);
+         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.downloads == 1);
+         f.runtime->show_details();
+         f.wire.release_delay_ms = 50;
+         button->click();
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::preparing);
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::manual_pending; });
+         HDRSHOT_CHECK(f.wire.downloads == 1 &&
+                       read_json(f.dir.path() + "/slot.json").value()["generation"] ==
+                           record["generation"]);
+       }},
+      {"Later is reloaded across runtime restart and active install remains "
+       "available",
+       [] {
+         Fixture f;
+         RuntimeTestAccess::idle(*f.runtime);
+         f.start();
+         f.await([&] { return f.runtime->update_window().isVisible(); });
+         f.runtime->update_window().close();
+         f.runtime.reset();
+         f.runtime = std::make_unique<Runtime>(
+             f.identity, std::make_unique<Installer>(), [] { return false; }, [] { return false; });
+         RuntimeTestAccess::configure(*f.runtime, f.trust, f.dir.path(), f.wire);
+         f.start();
+         f.await([&] { return f.runtime->update_window().isVisible(); });
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::ready &&
+                       f.runtime->coordinator().view().prompted && f.wire.downloads == 1);
+         f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
+         f.runtime->update_window().findChild<QPushButton *>("updateWindowPrimary")->click();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::manual_pending; });
+         HDRSHOT_CHECK(f.wire.downloads == 1);
+       }},
+      {"single owned window close persists Later and stale confirmation is "
+       "cleared",
        [] {
          Fixture f;
          RuntimeTestAccess::idle(*f.runtime);
@@ -478,7 +566,8 @@ int main(int argc, char **argv) {
          });
          HDRSHOT_CHECK(f.wire.downloads == 1);
        }},
-      {"install failure appears in child window and retry needs a new explicit click",
+      {"install failure appears in child window and retry needs a new explicit "
+       "click",
        [] {
          Fixture f;
          RuntimeTestAccess::idle(*f.runtime);
@@ -501,7 +590,8 @@ int main(int argc, char **argv) {
          button->click();
          f.await([&] { return calls == 2 && f.runtime->coordinator().view().error.has_value(); });
        }},
-      {"download presentation close keeps work and busy completion defers activation",
+      {"download presentation close keeps work and busy completion defers "
+       "activation",
        [] {
          Fixture f;
          f.wire.reply_delay_ms = 100;
@@ -536,6 +626,62 @@ int main(int argc, char **argv) {
          f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
          HDRSHOT_CHECK(button->isEnabled());
        }},
+#ifdef Q_OS_MACOS
+      {"manual handoff blocks new work, checks late busy, releases barrier on "
+       "refusal",
+       [] {
+         Fixture f;
+         std::atomic_bool entered{false}, busy{false};
+         int quits = 0;
+         RuntimeTestAccess::busy_callback(*f.runtime, [&] { return busy.load(); });
+         RuntimeTestAccess::quit_callback(*f.runtime, [&] {
+           ++quits;
+           return false;
+         });
+         RuntimeTestAccess::replace_native(*f.runtime,
+                                           std::make_unique<ExitingManualInstaller>(entered));
+         f.start();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+         f.wire.release_delay_ms = 100;
+         f.runtime->coordinator().install();
+         HDRSHOT_CHECK(f.runtime->barrier_active());
+         f.await([&] { return entered.load(); });
+         busy = true;
+         f.await([&] { return f.runtime->coordinator().view().error.has_value(); });
+         HDRSHOT_CHECK(quits == 0 && !f.runtime->barrier_active() &&
+                       f.runtime->coordinator().view().phase == Phase::deferred);
+         busy = false;
+         entered = false;
+         f.runtime->coordinator().install();
+         HDRSHOT_CHECK(f.runtime->barrier_active());
+         f.await([&] { return f.runtime->coordinator().view().error.has_value(); });
+         HDRSHOT_CHECK(quits == 1 && !f.runtime->barrier_active());
+       }},
+      {"normal handoff owner destruction drains worker without dangling "
+       "completion",
+       [] {
+         Fixture f;
+         std::atomic_bool entered{false};
+         int completions = 0;
+         RuntimeTestAccess::idle(*f.runtime);
+         RuntimeTestAccess::replace_native(*f.runtime,
+                                           std::make_unique<ExitingManualInstaller>(entered));
+         f.start();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+         const auto state = read_json(f.dir.path() + "/slot.json");
+         Receipt receipt{f.c.key(), state.value()["generation"].toString().toULongLong()};
+         RuntimeTestAccess::quit_callback(*f.runtime, [&] {
+           f.runtime.reset();
+           return true;
+         });
+         QElapsedTimer deadline;
+         deadline.start();
+         f.runtime->install(f.c, receipt, [&](auto) { ++completions; });
+         f.await([&] { return !f.runtime; });
+         HDRSHOT_CHECK(deadline.elapsed() < 3000 && completions == 0 &&
+                       QFileInfo::exists(f.dir.path() + "/payload.dmg"));
+       }},
+#endif
       {"download total deadline survives redirects",
        [] {
          Fixture f;

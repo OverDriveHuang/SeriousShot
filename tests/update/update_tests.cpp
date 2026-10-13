@@ -54,17 +54,13 @@ struct Fake final : Effects {
   void check(const Identity &, std::function<void(Result<Checked, Error>)> d) override {
     checks.push_back(d);
   }
-  void delay(unsigned, std::function<void()> d) override {
-    delays.push_back(d);
-  }
+  void delay(unsigned, std::function<void()> d) override { delays.push_back(d); }
   void acquire_and_download(const Candidate &, std::function<void(std::uint64_t, std::uint64_t)>,
                             std::function<void(Result<Receipt, Error>)> d) override {
     ++downloads;
     downloaded = d;
   }
-  void cancel_download(Done d) override {
-    d(Result<bool, Error>::success(true));
-  }
+  void cancel_download(Done d) override { d(Result<bool, Error>::success(true)); }
   void persist_prompt(const std::string &k, Done done) override {
     if (fail_prompt) {
       done(Result<bool, Error>::failure(failure("disk_full")));
@@ -77,12 +73,8 @@ struct Fake final : Effects {
     }
     done(Result<bool, Error>::success(true));
   }
-  bool was_prompted(const std::string &k) const override {
-    return prompted == k;
-  }
-  bool busy() const override {
-    return busy_flag;
-  }
+  bool was_prompted(const std::string &k) const override { return prompted == k; }
+  bool busy() const override { return busy_flag; }
   void ask_install(const Candidate &, std::function<void(bool)> d) override {
     ++questions;
     question = d;
@@ -91,15 +83,9 @@ struct Fake final : Effects {
     ++installs;
     installed = d;
   }
-  bool manual_install() const override {
-    return true;
-  }
-  void checked() {
-    checks.back()(Result<Checked, Error>::success({candidate()}));
-  }
-  void ready() {
-    downloaded(Result<Receipt, Error>::success({candidate().key(), 1}));
-  }
+  bool manual_install() const override { return true; }
+  void checked() { checks.back()(Result<Checked, Error>::success({candidate()})); }
+  void ready() { downloaded(Result<Receipt, Error>::success({candidate().key(), 1})); }
 };
 QByteArray sign_payload(const QJsonObject &payload, const QByteArray &key) {
   const auto bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact),
@@ -217,7 +203,7 @@ int main(int argc, char **argv) {
          f.ready();
          HDRSHOT_CHECK(f.checks.size() == 2 && f.downloads == 1 && f.questions == 1);
        }},
-      {"busy, later across restart, missing install package auto-redownload",
+      {"busy, new-process reminder, missing install package auto-redownload",
        [] {
          Fake f;
          f.busy_flag = true;
@@ -235,13 +221,13 @@ int main(int argc, char **argv) {
          restarted.trigger(200, true);
          f.checked();
          f.ready();
-         HDRSHOT_CHECK(f.questions == 1);
+         HDRSHOT_CHECK(f.questions == 2);
          restarted.install();
          HDRSHOT_CHECK(f.installs == 1);
          f.installed(Result<bool, Error>::failure(failure("missing", ErrorCode::object_not_found)));
          HDRSHOT_CHECK(f.downloads == 3);
          f.ready();
-         HDRSHOT_CHECK(f.installs == 1 && f.questions == 1 &&
+         HDRSHOT_CHECK(f.installs == 1 && f.questions == 2 &&
                        restarted.view().phase == Phase::deferred);
        }},
       {"cancellation rejects stale metadata and lifetime callbacks",
@@ -302,7 +288,7 @@ int main(int argc, char **argv) {
                        !QFileInfo::exists(stage));
          HDRSHOT_CHECK(QDir(root + "/cleanup").entryList({"*.json"}, QDir::Files).isEmpty());
        }},
-      {"prompt storage failure never invokes question or installer",
+      {"legacy prompt storage failure cannot suppress a process reminder",
        [] {
          Fake f;
          f.fail_prompt = true;
@@ -310,7 +296,7 @@ int main(int argc, char **argv) {
          c.trigger(1, true);
          f.checked();
          f.ready();
-         HDRSHOT_CHECK(f.questions == 0 && f.installs == 0 && c.view().phase == Phase::deferred);
+         HDRSHOT_CHECK(f.questions == 1 && f.installs == 0 && c.view().phase == Phase::ready);
        }},
       {"no TTL and bounded seven-day schedule",
        [] {
@@ -508,18 +494,15 @@ int main(int argc, char **argv) {
          for (const auto suffix : {".part", ".zip", ".dmg"})
            HDRSHOT_CHECK(!QFileInfo::exists(tmp.path() + "/payload" + suffix));
        }},
-      {"prompt persistence busy transition publishes fresh state before question",
+      {"busy postpones reminder consumption and publishes idle before asking",
        [] {
          Fake f;
-         f.hold_prompt = true;
+         f.busy_flag = true;
          Coordinator c(identity(), f);
          c.trigger(100, true);
          f.checked();
          f.ready();
-         HDRSHOT_CHECK(f.pending_prompt && f.questions == 0);
-         f.busy_flag = true;
-         f.pending_prompt(Result<bool, Error>::success(true));
-         HDRSHOT_CHECK(c.view().busy && f.questions == 0);
+         HDRSHOT_CHECK(f.questions == 0 && !c.view().prompted);
          f.busy_flag = false;
          c.tick(101);
          HDRSHOT_CHECK(!c.view().busy && f.questions == 1);
@@ -529,6 +512,141 @@ int main(int argc, char **argv) {
          f.busy_flag = false;
          c.tick(103);
          HDRSHOT_CHECK(!c.view().busy && f.questions == 1);
+       }},
+      {"legacy manual pending asks at cold-start clock without check or download",
+       [] {
+         Fake f;
+         f.prompted = candidate().key();
+         Coordinator c(identity(), f);
+         c.restore(candidate(), {candidate().key(), 3}, true);
+         HDRSHOT_CHECK(f.questions == 0);
+         c.trigger(1791821000, true);
+         HDRSHOT_CHECK(f.questions == 1 && f.checks.empty() && f.downloads == 0);
+         c.tick(1791821001);
+         HDRSHOT_CHECK(f.questions == 1 && c.view().phase == Phase::manual_pending);
+         f.question(false);
+         for (int i = 0; i < 10; ++i)
+           c.tick(1791821002 + i);
+         c.trigger(1791822000, false, true);
+         HDRSHOT_CHECK(f.questions == 1 && f.checks.empty());
+       }},
+      {"restored package reminder defers one startup round and failed ticks never add HTTP",
+       [] {
+         Fake f;
+         Coordinator c(identity(), f);
+         c.restore(candidate(), {candidate().key(), 3}, false);
+         c.trigger(100, true);
+         HDRSHOT_CHECK(f.questions == 1 && f.checks.empty());
+         f.question(false);
+         c.tick(101);
+         HDRSHOT_CHECK(f.checks.size() == 1);
+         for (int i = 0; i < 20; ++i)
+           c.tick(102 + i);
+         HDRSHOT_CHECK(f.checks.size() == 1);
+         for (int n = 0; n < 3; ++n) {
+           f.checks.back()(Result<Checked, Error>::failure(
+               failure("offline", ErrorCode::precondition_failed, Retryability::same_input)));
+           if (n < 2)
+             f.delays.back()();
+         }
+         for (int i = 0; i < 20; ++i)
+           c.tick(200 + i);
+         HDRSHOT_CHECK(f.checks.size() == 3 && f.questions == 1);
+       }},
+      {"seven-day reminder clock survives manual checks and resets from actual question",
+       [] {
+         Fake f;
+         Coordinator c(identity(), f);
+         c.trigger(100, true);
+         f.checked();
+         f.ready();
+         f.question(false);
+         c.trigger(100 + 3 * 86400, false, true);
+         f.checked();
+         f.ready();
+         HDRSHOT_CHECK(f.questions == 1);
+         c.tick(100 + 604799);
+         HDRSHOT_CHECK(f.questions == 1);
+         c.tick(100 + 604800);
+         HDRSHOT_CHECK(f.questions == 2 && f.checks.size() == 2);
+         // An already-open question never opens again, even after another week.
+         c.tick(100 + 2 * 604800);
+         HDRSHOT_CHECK(f.questions == 2);
+         f.question(false);
+         c.tick(100 + 2 * 604800 + 1);
+         HDRSHOT_CHECK(f.questions == 2);
+       }},
+      {"failed manual metadata check cannot postpone a verified package reminder",
+       [] {
+         Fake f;
+         Coordinator c(identity(), f);
+         c.trigger(100, true);
+         f.checked();
+         f.ready();
+         f.question(false);
+         c.trigger(100 + 3 * 86400, false, true);
+         f.checks.back()(Result<Checked, Error>::failure(failure("metadata unavailable")));
+         HDRSHOT_CHECK(c.view().phase == Phase::check_failed);
+         c.tick(100 + 604800);
+         HDRSHOT_CHECK(f.questions == 2 && c.view().phase == Phase::ready && f.downloads == 1);
+       }},
+      {"incompatible candidate cannot borrow a prior verified package reminder or install",
+       [] {
+         Fake f;
+         Coordinator c(identity(), f);
+         c.trigger(100, true);
+         f.checked();
+         f.ready();
+         f.question(false);
+         auto incompatible = candidate();
+         incompatible.version = {0, 1, 6};
+         incompatible.release_tag = "v0.1.6";
+         incompatible.minimum_os = {99, 0, 0};
+         c.trigger(101, false, true);
+         f.checks.back()(Result<Checked, Error>::success({std::nullopt, incompatible}));
+         c.install();
+         HDRSHOT_CHECK(f.installs == 0);
+         c.trigger(102, false, true);
+         f.checks.back()(Result<Checked, Error>::failure(failure("metadata unavailable")));
+         c.tick(100 + 604800);
+         c.trigger(100 + 604801, true);
+         HDRSHOT_CHECK(f.questions == 1 && f.downloads == 1 && f.installs == 0);
+       }},
+      {"overdue busy reminder asks once when idle without catch-up or network dependency",
+       [] {
+         Fake f;
+         Coordinator c(identity(), f);
+         c.restore(candidate(), {candidate().key(), 3}, true);
+         c.trigger(100, true);
+         f.question(false);
+         f.busy_flag = true;
+         c.tick(100 + 604800);
+         c.tick(100 + 3 * 604800);
+         HDRSHOT_CHECK(f.questions == 1);
+         f.busy_flag = false;
+         c.tick(100 + 3 * 604800 + 5);
+         HDRSHOT_CHECK(f.questions == 2 && f.checks.empty() && f.downloads == 0);
+         f.question(false);
+         c.tick(100 + 4 * 604800 + 4);
+         HDRSHOT_CHECK(f.questions == 2);
+         c.tick(100 + 4 * 604800 + 5);
+         HDRSHOT_CHECK(f.questions == 3);
+       }},
+      {"a new candidate has an immediate reminder despite Later for the old one",
+       [] {
+         Fake f;
+         Coordinator c(identity(), f);
+         c.trigger(100, true);
+         f.checked();
+         f.ready();
+         f.question(false);
+         auto newer = candidate();
+         newer.version = {0, 1, 6};
+         newer.release_tag = "v0.1.6";
+         c.trigger(101, false, true);
+         f.checks.back()(Result<Checked, Error>::success({newer}));
+         f.downloaded(Result<Receipt, Error>::success({newer.key(), 4}));
+         HDRSHOT_CHECK(f.questions == 2 && c.view().candidate->version == newer.version);
        }},
       {"safe Windows paths",
        [] {

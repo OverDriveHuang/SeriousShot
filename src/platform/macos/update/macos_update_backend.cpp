@@ -34,9 +34,7 @@ bool process_alive(qint64 pid, const QString &creation) {
     return creation.isEmpty() || current == creation;
   return ::kill(static_cast<int>(pid), 0) == 0 || errno == EPERM;
 }
-bool durable_flush(QFile &f) {
-  return f.flush() && ::fcntl(f.handle(), F_FULLFSYNC) == 0;
-}
+bool durable_flush(QFile &f) { return f.flush() && ::fcntl(f.handle(), F_FULLFSYNC) == 0; }
 bool durable_directory(const QString &path) {
   const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_DIRECTORY);
   if (fd < 0)
@@ -266,28 +264,33 @@ public:
     return true;
   } // Ad-hoc/Gatekeeper POC gate is intentionally closed.
   Result<bool, Error> install(Slot &slot, const Candidate &candidate, const QByteArray &,
-                              std::function<bool()>) override {
+                              std::function<bool()> quit) override {
     if (slot.record["phase"] == "manual_pending") {
-      auto mount = slot.record["mount"].toString();
-      if (mount.isEmpty()) {
-        auto recovered = current_mount(slot.payload());
-        if (!recovered)
-          return Result<bool, Error>::failure(recovered.error());
-        mount = recovered.value();
-      }
+      // The persisted path is a recovery hint, not proof that this image is
+      // still attached: Finder can eject it while the old app remains running.
+      auto recovered = current_mount(slot.payload());
+      if (!recovered)
+        return Result<bool, Error>::failure(recovered.error());
+      const auto mount = recovered.value();
       if (mount.isEmpty()) {
         slot.record["phase"] = "ready";
+        slot.record.remove("mount");
         auto saved = slot.save();
         if (!saved)
           return saved;
-        return install(slot, candidate, QByteArray{}, {});
+        return install(slot, candidate, QByteArray{}, std::move(quit));
       }
+      slot.record["mount"] = mount;
+      auto saved = slot.save();
+      if (!saved)
+        return saved;
       const auto verified = verify_macos_update_bundle(mount, candidate);
       if (!verified)
         return verified;
       const auto opened = run("/usr/bin/open", {mount});
-      return opened ? Result<bool, Error>::success(true)
-                    : Result<bool, Error>::failure(opened.error());
+      if (!opened)
+        return Result<bool, Error>::failure(opened.error());
+      return request_exit(quit);
     }
     slot.record["phase"] = "manual_pending";
     slot.record["mount"] = "";
@@ -320,7 +323,14 @@ public:
     const auto opened = run("/usr/bin/open", {mount});
     if (!opened)
       return Result<bool, Error>::failure(opened.error());
-    return Result<bool, Error>::success(true); // ManualInstallPending, never installation success.
+    return request_exit(quit); // Durable ManualInstallPending, never installation success.
+  }
+  static Result<bool, Error> request_exit(const std::function<bool()> &quit) {
+    if (!quit || !quit())
+      return Result<bool, Error>::failure(
+          failure("安装包已打开，但退出已取消。请结束当前工作后再次安装。",
+                  ErrorCode::operation_cancelled));
+    return Result<bool, Error>::success(true);
   }
   Result<bool, Error> cancel_manual(Slot &slot) override {
     auto found = current_mount(slot.payload());
@@ -341,7 +351,5 @@ public:
     return slot.save();
   }
 };
-std::unique_ptr<NativeInstaller> native_installer() {
-  return std::make_unique<MacInstaller>();
-}
+std::unique_ptr<NativeInstaller> native_installer() { return std::make_unique<MacInstaller>(); }
 } // namespace hdrshot::update

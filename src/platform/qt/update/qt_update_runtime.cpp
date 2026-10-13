@@ -158,9 +158,7 @@ void Runtime::delay(unsigned seconds, std::function<void()> f) {
 bool Runtime::busy() const {
   return (busy_ && busy_()) || QApplication::activeModalWidget() != nullptr;
 }
-bool Runtime::manual_install() const {
-  return native_->manual();
-}
+bool Runtime::manual_install() const { return native_->manual(); }
 void Runtime::persist_prompt(const std::string &key, Done done) {
   state_["prompted"] = QString::fromStdString(key);
   const auto state = state_;
@@ -590,7 +588,13 @@ void Runtime::cancel_download(Done done) {
   });
 }
 void Runtime::install(const Candidate &c, const Receipt &receipt, Done done) {
+#ifdef Q_OS_MACOS
+  // Opening a manual DMG now hands off to a normal exit. Prevent new work during
+  // asynchronous Release verification, then recheck busy on the GUI thread.
+  barrier_ = true;
+#else
   barrier_ = !manual_install();
+#endif
   work([this, c, receipt, done = std::move(done)] {
     metadata_deadline_ = QDeadlineTimer(30000);
     get(QUrl("https://api.github.com/repos/OverDriveHuang/SeriousShot/"
@@ -615,7 +619,15 @@ void Runtime::install(const Candidate &c, const Receipt &receipt, Done done) {
                   };
                   auto decision = std::make_shared<Decision>();
                   ui([this, decision] {
-                    decision->accepted = quit_ && quit_();
+                    // A quit callback can destroy its owner synchronously. Copy
+                    // the callable first and never touch Runtime after invoking it.
+                    const auto quit = quit_;
+#ifdef Q_OS_MACOS
+                    const bool allowed = !busy();
+#else
+                    constexpr bool allowed = true;
+#endif
+                    decision->accepted = allowed && quit && quit();
                     decision->done.store(true, std::memory_order_release);
                   });
                   while (!decision->done.load(std::memory_order_acquire) && !stopped_.load())
@@ -635,7 +647,8 @@ void Runtime::install(const Candidate &c, const Receipt &receipt, Done done) {
 }
 void Runtime::render(const View &view) {
   if (view.generation != confirmation_generation_ ||
-      (view.phase != Phase::ready && view.phase != Phase::deferred))
+      (view.phase != Phase::ready && view.phase != Phase::deferred &&
+       view.phase != Phase::manual_pending))
     confirmation_ = {};
   if (update_window_)
     update_window_->set_view(view);

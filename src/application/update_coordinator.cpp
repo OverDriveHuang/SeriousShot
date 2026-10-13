@@ -1,4 +1,5 @@
 #include "application/update_coordinator.hpp"
+#include <algorithm>
 namespace hdrshot::update {
 Coordinator::Coordinator(Identity i, Effects &e) : identity_(std::move(i)), effects_(e) {}
 void Coordinator::publish() {
@@ -8,7 +9,17 @@ void Coordinator::publish() {
     changed(view_);
 }
 void Coordinator::trigger(std::int64_t now, bool cold, bool manual) {
-  if (active_ || installing_ || view_.phase == Phase::manual_pending)
+  now_ = now;
+  // Recovered manual transactions already own a verified package. A cold
+  // start must offer it without changing its generation through a new check.
+  if ((cold || !manual) && view_.candidate && receipt_ && receipt_->key == view_.candidate->key() &&
+      (view_.phase == Phase::ready || view_.phase == Phase::deferred ||
+       view_.phase == Phase::manual_pending || view_.phase == Phase::check_failed) &&
+      reminder_due()) {
+    prompt();
+    return;
+  }
+  if (active_ || installing_ || pending_question_ || view_.phase == Phase::manual_pending)
     return;
   if (!manual && !schedule_.due(now, cold))
     return;
@@ -62,7 +73,7 @@ void Coordinator::attempt() {
     }
     pending_question_ = false;
     view_.candidate = c;
-    view_.prompted = effects_.was_prompted(c->key());
+    view_.prompted = !reminder_due();
     download();
   });
 }
@@ -106,41 +117,58 @@ void Coordinator::download() {
         prompt();
       });
 }
-void Coordinator::prompt() {
-  if (view_.phase != Phase::ready || effects_.busy())
-    return;
-  const auto token = generation_;
-  if (view_.prompted) {
-    if (!pending_question_)
-      return;
-    pending_question_ = false;
-    effects_.ask_install(*view_.candidate, [this, token, alive = alive_](bool accepted) {
-      if (!*alive || token != generation_)
-        return;
-      if (accepted)
-        install();
-      else
-        later();
-    });
-    return;
+bool Coordinator::reminder_due() const {
+  if (!view_.candidate)
+    return false;
+  if (reminder_key_ != view_.candidate->key() || !reminder_origin_)
+    return true;
+  if (now_ < *reminder_origin_)
+    return false;
+  const auto elapsed =
+      static_cast<std::uint64_t>(now_) - static_cast<std::uint64_t>(*reminder_origin_);
+  return elapsed / 604800 > consumed_period_;
+}
+void Coordinator::consume_reminder(bool displayed) {
+  const auto key = view_.candidate->key();
+  if (displayed || reminder_key_ != key || !reminder_origin_) {
+    reminder_key_ = key;
+    reminder_origin_ = now_;
+    consumed_period_ = 0;
+  } else if (now_ >= *reminder_origin_) {
+    // Closing a question left open over a deadline consumes that period too;
+    // it must not immediately reopen on the next one-second tick.
+    const auto elapsed =
+        static_cast<std::uint64_t>(now_) - static_cast<std::uint64_t>(*reminder_origin_);
+    consumed_period_ = std::max(consumed_period_, elapsed / 604800);
   }
-  // Durable receipt precedes the UI effect. A write error cannot repeat a shown question.
   view_.prompted = true;
-  effects_.persist_prompt(view_.candidate->key(), [this, token, alive = alive_](auto saved) {
+}
+void Coordinator::prompt() {
+  if (active_ || installing_ || pending_question_ || !view_.candidate || !receipt_ ||
+      receipt_->key != view_.candidate->key() ||
+      (view_.phase != Phase::ready && view_.phase != Phase::deferred &&
+       view_.phase != Phase::manual_pending && view_.phase != Phase::check_failed) ||
+      effects_.busy() || !reminder_due())
+    return;
+  // Reminder scope is this process and this seven-day period. Legacy durable
+  // prompted keys are history only; they cannot suppress a new process.
+  if (view_.phase == Phase::check_failed)
+    view_.phase = Phase::ready; // The already verified package survives metadata failure.
+  consume_reminder(true);
+  pending_question_ = true;
+  const auto token = ++generation_;
+  publish();
+  effects_.ask_install(*view_.candidate, [this, token, alive = alive_](bool accepted) {
     if (!*alive || token != generation_)
       return;
-    if (!saved) {
-      view_.phase = Phase::deferred;
-      view_.detail = "无法保存更新询问状态，可在设置中主动安装";
-      publish();
-      return;
-    }
-    pending_question_ = true;
-    publish();
-    prompt();
+    if (accepted)
+      install();
+    else
+      later();
   });
 }
 void Coordinator::tick(std::int64_t now) {
+  now_ = now;
   if (view_.busy != effects_.busy())
     publish();
   prompt();
@@ -151,22 +179,32 @@ void Coordinator::restore(Candidate c, Receipt r, bool pending) {
     return;
   view_.candidate = std::move(c);
   receipt_ = std::move(r);
-  view_.prompted = effects_.was_prompted(view_.candidate->key());
+  view_.prompted = !reminder_due();
   view_.phase = pending ? Phase::manual_pending : view_.prompted ? Phase::deferred : Phase::ready;
   view_.detail = "安装包已校验";
   publish();
 }
 void Coordinator::later() {
   if (view_.candidate) {
-    view_.prompted = true;
+    pending_question_ = false;
+    ++generation_;
+    consume_reminder(false);
     effects_.persist_prompt(view_.candidate->key(), [](auto) {});
-    view_.phase = Phase::deferred;
+    // A mounted manual transaction still owns the single archive slot. Hiding
+    // its question must not unlock checks or imply that the source can be
+    // removed.
+    if (view_.phase != Phase::manual_pending)
+      view_.phase = Phase::deferred;
     publish();
   }
 }
 void Coordinator::install() {
-  if (active_ || installing_ || !view_.candidate || !receipt_ || effects_.busy())
+  if (active_ || installing_ || !view_.candidate || !receipt_ ||
+      receipt_->key != view_.candidate->key() || effects_.busy())
     return;
+  pending_question_ = false;
+  consume_reminder(false);
+  ++generation_;
   installing_ = true;
   view_.error.reset();
   view_.phase = Phase::preparing;
@@ -198,6 +236,7 @@ void Coordinator::install() {
 void Coordinator::cancel() {
   if (installing_)
     return;
+  pending_question_ = false;
   ++generation_;
   const auto token = generation_;
   effects_.cancel_download([this, token, alive = alive_](auto r) {

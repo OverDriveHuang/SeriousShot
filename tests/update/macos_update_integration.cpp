@@ -17,6 +17,12 @@ int main(int argc, char **argv) {
   c.platform = "macos";
   c.architecture = "arm64";
   c.version = {0, 1, 6};
+  if (argc == 4 && std::string_view(argv[3]) != "reject") {
+    auto parsed = Version::parse(argv[3]);
+    if (!parsed)
+      return 2;
+    c.version = parsed.value();
+  }
   c.asset_size = static_cast<std::uint64_t>(QFileInfo(image).size());
   auto hash = hash_file(image);
   if (!hash)
@@ -31,20 +37,48 @@ int main(int argc, char **argv) {
   if (!slot.save())
     return 6;
   auto native = native_installer();
-  auto opened = native->install(slot, c, {}, [] { return false; });
+  int exit_requests = 0;
+  // Recover an unmounted manual receipt: recursive install must retain quit.
+  slot.record["phase"] = "manual_pending";
+  slot.record["mount"] = "";
+  if (!slot.save())
+    return 6;
+  auto opened = native->install(slot, c, {}, [&] {
+    ++exit_requests;
+    return false;
+  });
   if (argc == 4 && std::string_view(argv[3]) == "reject") {
-    const bool safe =
-        !opened && slot.record["phase"] == "ready" && QFileInfo::exists(slot.payload());
+    const bool safe = !opened && exit_requests == 0 && slot.record["phase"] == "ready" &&
+                      QFileInfo::exists(slot.payload());
     std::printf("invalid_bundle_not_opened=%d retained_for_cleanup=%d\n", !opened, safe);
     return safe ? 0 : 15;
   }
-  if (!opened) {
-    std::fprintf(stderr, "native DMG failed: %s\n",
-                 opened.error().safe_context.at("reason").c_str());
+  if (opened || opened.error().code != hdrshot::ErrorCode::operation_cancelled ||
+      exit_requests != 1)
     return 7;
-  }
+  auto accepted = native->install(slot, c, {}, [&] {
+    ++exit_requests;
+    return true;
+  });
+  if (!accepted || exit_requests != 2)
+    return 16;
   if (slot.record["phase"] != "manual_pending" || !QFileInfo::exists(slot.payload()))
     return 8;
+  // Finder ejects the volume independently. The nonempty persisted path is
+  // deliberately kept stale; retry must attach the same verified archive.
+  const auto stale_mount = slot.record["mount"].toString();
+  QProcess eject;
+  eject.start("/usr/bin/hdiutil", {"detach", stale_mount});
+  if (!eject.waitForFinished(30000) || eject.exitCode() != 0)
+    return 18;
+  const auto before_retry = hash_file(slot.payload());
+  auto reopened = native->install(slot, c, {}, [&] {
+    ++exit_requests;
+    return true;
+  });
+  if (!reopened || exit_requests != 3 || !before_retry ||
+      hash_file(slot.payload()).value() != before_retry.value())
+    return 19;
   const auto mount = slot.record["mount"].toString();
   auto wrong = c;
   wrong.version = {0, 1, 7};
@@ -54,6 +88,12 @@ int main(int argc, char **argv) {
   wrong.architecture = "x64";
   if (verify_macos_update_bundle(mount, wrong))
     return 14;
+  auto denied = native->install(slot, wrong, {}, [&] {
+    ++exit_requests;
+    return true;
+  });
+  if (denied || exit_requests != 3)
+    return 17;
   QProcess holder;
   holder.setWorkingDirectory(mount);
   holder.start("/bin/sleep", {"30"});
@@ -72,10 +112,15 @@ int main(int argc, char **argv) {
   if (!cleaned || !slot.remove_payload())
     return 11;
   const QJsonObject evidence{
+      {"quit_called_only_after_validated_open", exit_requests == 3},
+      {"quit_refusal_preserves_pending_source", true},
+      {"recursive_recovery_retains_quit", true},
+      {"invalid_bundle_never_requests_exit", true},
       {"real_signed_app_manifest_validated", true},
       {"wrong_version_rejected", true},
       {"wrong_architecture_rejected", true},
       {"same_download_opened", true},
+      {"external_eject_stale_receipt_reopens_same_archive", true},
       {"manual_pending_not_success", true},
       {"busy_volume_blocks_cleanup", busy_blocked},
       {"missing_mount_receipt_recovered", true},

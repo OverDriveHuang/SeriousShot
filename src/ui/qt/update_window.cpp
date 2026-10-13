@@ -52,7 +52,8 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   connect(releases, &QPushButton::clicked, this, [this] {
     const QUrl url(view_.candidate &&
                            view_.candidate->release_tag == "v" + view_.candidate->version.text()
-                       ? QString("https://github.com/OverDriveHuang/SeriousShot/releases/tag/") +
+                       ? QString("https://github.com/OverDriveHuang/SeriousShot/releases/"
+                                 "tag/") +
                              QString::fromStdString(view_.candidate->release_tag)
                        : QString("https://github.com/OverDriveHuang/SeriousShot/releases"));
     if (!(release_opener_ ? release_opener_(url) : QDesktopServices::openUrl(url))) {
@@ -71,10 +72,11 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   root->addLayout(actions);
   connect(secondary_, &QPushButton::clicked, this, &QWidget::close);
   connect(primary_, &QPushButton::clicked, this, [this] {
-    if (view_.phase == Phase::ready || view_.phase == Phase::deferred) {
+    if (view_.phase == Phase::ready || view_.phase == Phase::deferred ||
+        view_.phase == Phase::manual_pending) {
       if (install)
         install();
-    } else if (view_.phase == Phase::downloading || view_.phase == Phase::manual_pending) {
+    } else if (view_.phase == Phase::downloading) {
       if (cancel)
         cancel();
     } else if (retry)
@@ -94,9 +96,12 @@ void UpdateWindow::present(QtWindowActivationPort *activation) {
   }
 }
 void UpdateWindow::closeEvent(QCloseEvent *event) {
-  if ((view_.phase == Phase::ready || view_.phase == Phase::deferred) && later)
+  if ((view_.phase == Phase::ready || view_.phase == Phase::deferred ||
+       view_.phase == Phase::manual_pending) &&
+      later)
     later();
-  event->accept(); // QWidget hides; the service and this single instance remain alive.
+  event->accept(); // QWidget hides; the service and this single instance remain
+                   // alive.
 }
 void UpdateWindow::set_view(const View &view) {
   view_ = view;
@@ -141,6 +146,7 @@ void UpdateWindow::set_view(const View &view) {
     break;
   case Phase::ready:
   case Phase::deferred:
+  case Phase::manual_pending:
     status = QStringLiteral("新版本已下载，是否安装？");
     secondary_->setText(QStringLiteral("稍后"));
     action = QStringLiteral("安装");
@@ -157,11 +163,6 @@ void UpdateWindow::set_view(const View &view) {
   case Phase::preparing:
     status = QStringLiteral("正在检查安装条件…");
     enabled = false;
-    break;
-  case Phase::manual_pending:
-    status = QStringLiteral("安装包已打开，等待完成替换。");
-    detail = QStringLiteral("请按安装包中的提示完成操作。");
-    action = QStringLiteral("取消安装");
     break;
   case Phase::installing:
     status = QStringLiteral("正在安装并重启…");

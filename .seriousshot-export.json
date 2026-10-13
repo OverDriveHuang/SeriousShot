@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-12T22:40:24+08:00",
+  "timestamp": "2026-10-13T00:40:06+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -307,11 +307,11 @@
       "mode": 420
     },
     "src/application/update_coordinator.cpp": {
-      "sha256": "73349278f6fd4da50982fd70921c19b47e7acdaff14d26c847ab4cbc213cd2b0",
+      "sha256": "ebe1cfaaa478f5c025baa15dfc03f163149eaa019267e3d756d102362dd41822",
       "mode": 420
     },
     "src/application/update_coordinator.hpp": {
-      "sha256": "5c5a9bdf416bcfe3c6673f0655cb7665ca38d682fd22b6dc3aa1d08f6d2a0d06",
+      "sha256": "faebc7a7de52db2bfff4a8513f51ada70a77e999135f7edb5715009fdf55cb08",
       "mode": 420
     },
     "src/core/build_metadata.hpp": {
@@ -763,7 +763,7 @@
       "mode": 420
     },
     "src/platform/macos/update/macos_update_backend.cpp": {
-      "sha256": "6c839c4b871a4517ea34fb3be12b480ad408812ba775f3f49944540fab836817",
+      "sha256": "1c37cd4510381939e062afb607f90b75ec65b4f7ed164c5a542c7cd683de9a8e",
       "mode": 420
     },
     "src/platform/qt/qt_export_task_executor.hpp": {
@@ -807,7 +807,7 @@
       "mode": 420
     },
     "src/platform/qt/update/qt_update_runtime.cpp": {
-      "sha256": "7a76270fdf3634528952d2a0f273321960755d00bdb6951ea8f636891a11b8b3",
+      "sha256": "ba9b12463ddb132b0639bede501aea4c62e2774bdf0d745191b84e1d4b384934",
       "mode": 420
     },
     "src/platform/qt/update/qt_update_runtime.hpp": {
@@ -1131,7 +1131,7 @@
       "mode": 420
     },
     "src/ui/qt/update_window.cpp": {
-      "sha256": "5f907095883e10f598736db303597fc05602fc4ec3d337cc18f0aae4829f2eec",
+      "sha256": "b4d5d16a520c864003de0b0cd4e32925d95ff9418529442af0ba2d7fba501a76",
       "mode": 420
     },
     "src/ui/qt/update_window.hpp": {
@@ -1407,15 +1407,15 @@
       "mode": 420
     },
     "tests/update/macos_update_integration.cpp": {
-      "sha256": "69894aba6d35dd9c9b8e498449f9d459b8c99f6c5d7a3261b9dd1ffa3f70dc3a",
+      "sha256": "796a28282ef105a127e4948740b1bca0b59b02227959e6e50feec7e1f89af5f0",
       "mode": 420
     },
     "tests/update/update_runtime_tests.cpp": {
-      "sha256": "10cf4a916c32925bd0d8e4b9d02885c414c9bc86dfbe2076c6b4071b682074b6",
+      "sha256": "0f934ef118eae854f3fc354639914c926241136f8de9e41d58bffc7ecea6cf07",
       "mode": 420
     },
     "tests/update/update_tests.cpp": {
-      "sha256": "300419c6c6ef5ede1cebd19f2f188c5b2dd3940a76c8a91e112d9eee02c6b174",
+      "sha256": "2b82d6ef4448bc238f96b9eed8c90685aa8a3242f22a140e18fe0c48d0e37d3e",
       "mode": 420
     },
     "tests/window_selection_tests.cpp": {
