@@ -65,10 +65,23 @@ bool durable_directory(const QString &) {
   // native gate.
   return true;
 }
-bool windows_move(const QString &from, const QString &to) {
-  return MoveFileExW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(from).utf16()),
-                     reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(to).utf16()),
-                     MOVEFILE_WRITE_THROUGH) != 0;
+QString windows_extended_path(const QString &path) {
+  auto native=QDir::toNativeSeparators(path);
+  if(native.startsWith(QStringLiteral("\\\\?\\")))return native;
+  native=QDir::toNativeSeparators(QDir::cleanPath(QFileInfo(path).absoluteFilePath()));
+  if(native.startsWith(QStringLiteral("\\\\")))
+    return QStringLiteral("\\\\?\\UNC\\")+native.mid(2);
+  return QStringLiteral("\\\\?\\")+native;
+}
+Result<bool, Error> windows_move(const QString &from, const QString &to) {
+  const auto source=windows_extended_path(from),destination=windows_extended_path(to);
+  if(MoveFileExW(reinterpret_cast<LPCWSTR>(source.utf16()),
+                 reinterpret_cast<LPCWSTR>(destination.utf16()),MOVEFILE_WRITE_THROUGH))
+    return Result<bool,Error>::success(true);
+  const auto native_error=GetLastError();
+  auto error=failure("replace_move",ErrorCode::path_not_writable,Retryability::after_user_action);
+  error.safe_context["native_error"]=std::to_string(native_error);
+  return Result<bool,Error>::failure(std::move(error));
 }
 bool windows_install_quiet(const QString &target, const QString &backup) {
   DWORD ids[16384], bytes = 0;
@@ -101,7 +114,7 @@ static bool safe_destination(const QString &root, const QString &path) {
   for (const auto &component : path.split('/')) {
     full += "/" + component;
     const DWORD attributes =
-        GetFileAttributesW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(full).utf16()));
+        GetFileAttributesW(reinterpret_cast<LPCWSTR>(windows_extended_path(full).utf16()));
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
       return false;
   }

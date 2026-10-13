@@ -64,6 +64,46 @@ Result<QByteArray, Error> hash_file(const QString &path) {
 }
 Slot::Slot(QString r, QString o, QString c)
     : root(std::move(r)), owner(std::move(o)), channel(std::move(c)) {}
+QString install_result_path(const QString &root,const QString &owner,const QString &channel) {
+  const auto partition=QCryptographicHash::hash((owner+"|"+channel).toUtf8(),QCryptographicHash::Sha256).toHex();
+  return root+"/installations/"+QString::fromLatin1(partition)+"/install-result.json";
+}
+std::optional<Error> install_result_error(const QJsonObject &result,const QString &owner,
+                                          const QString &channel,const Candidate &c) {
+  if(result["owner"]!=owner || result["channel"]!=channel ||
+     result["candidate"].toString().toStdString()!=c.key() || result["phase"]!="rolled_back")return {};
+  const auto version=result["restored_version"].toString();
+  if(!Version::parse(version.toStdString()))return {};
+  QString reason=QStringLiteral("安装过程被中断");
+  const auto raw=result["reason"].toString(),native=result["native_error"].toString();
+  if(raw=="replace_move")reason=QStringLiteral("无法替换应用文件，请关闭同目录程序并检查写入权限");
+  else if(raw=="startup_receipt_timeout")reason=QStringLiteral("新版本启动确认失败");
+  if(!native.isEmpty())reason+=QStringLiteral("（Windows 错误 %1）").arg(native);
+  auto error=failure("install_rolled_back",ErrorCode::path_not_writable,Retryability::after_user_action);
+  error.safe_context["reason"]=(QStringLiteral("更新失败，已恢复 %1。%2").arg(version,reason)).toStdString();
+  if(!native.isEmpty())error.safe_context["native_error"]=native.toStdString();
+  return error;
+}
+Result<bool, Error> Slot::finish_install_result(const QJsonObject &j) {
+  if(j["owner"]!=owner || j["channel"]!=channel || j["candidate"].toString().isEmpty())
+    return Result<bool,Error>::failure(failure("install_result_identity"));
+  const auto path=install_result_path(root,owner,channel);
+  if(j["phase"]=="rolled_back") {
+    const auto context=j["failure_context"].toObject();
+    return save_json(path,{{"owner",owner},{"channel",channel},{"candidate",j["candidate"]},
+      {"phase","rolled_back"},{"restored_version",j["old_manifest"].toObject()["version"]},
+      {"reason",j["failure_reason"]},{"native_error",context["native_error"]},
+      {"file",j["failure_file"]}});
+  }
+  if(j["phase"]=="complete" && QFileInfo::exists(path)) {
+    const auto prior=read_json(path);
+    if(!prior)return Result<bool,Error>::failure(prior.error());
+    if(prior.value()["owner"]==owner && prior.value()["channel"]==channel &&
+       prior.value()["candidate"]==j["candidate"] && !QFile::remove(path))
+      return Result<bool,Error>::failure(failure("install_result_clear"));
+  }
+  return Result<bool,Error>::success(true);
+}
 Result<bool, Error> Slot::acquire() {
   if (lock)
     return Result<bool, Error>::success(true);

@@ -12,6 +12,8 @@ p.add_argument('--helper',type=pathlib.Path,help='newly rebuilt helper for a dia
 p.add_argument('--only-normal',action='store_true',help='explicit diagnostic subset, not the native acceptance matrix')
 p.add_argument('--only-forward',type=int,help='explicit single forward crash diagnostic subset')
 p.add_argument('--only-startup',action='store_true',help='explicit startup recovery diagnostic subset')
+p.add_argument('--only-long',action='store_true',help='single full-deployment long-path transaction')
+p.add_argument('--full-deployment',action='store_true',help='retain all deployed assets/licenses in managed fixtures')
 p.add_argument('--locked-library',type=pathlib.Path,required=True)
 p.add_argument('--catalog-tool',type=pathlib.Path,required=True)
 p.add_argument('--secret-key',type=pathlib.Path,required=True)
@@ -89,6 +91,7 @@ env['PATH']=os.path.join(os.environ['SystemRoot'],'System32')
 env.pop('QT_PLUGIN_PATH',None); env.pop('QT_QPA_PLATFORM_PLUGIN_PATH',None)
 old=a.workspace/'seed-old'; new=a.workspace/'seed-new'
 old.mkdir()
+if a.full_deployment: shutil.copytree(a.deployment,old,dirs_exist_ok=True)
 # Minimal complete QCore fixture runtime, with real Qt/CRT deployment from
 # windeployqt. Final application upgrade is a separate A/B acceptance gate.
 for f in a.deployment.iterdir():
@@ -124,7 +127,11 @@ def verify(root,m):
 def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,loaded=False,recover_fail=None,terminal_fail=None,crash_terminal=False,startup=False,startup_refuse=False):
     global active_case
     active_case=name
-    root=a.workspace/name; install=root/'中文 安装'; shutil.copytree(old,install)
+    root=a.workspace/name; install=root/'中文 安装'
+    if a.only_long:
+        assert a.full_deployment
+        install=root/('中文 安装'+'x'*(189-len(str(install))))
+    shutil.copytree(old,install)
     (install/'user-file.txt').write_text('untouched',encoding='utf8')
     slot=root/'slot'; cwd=root/'different cwd';cwd.mkdir()
     childenv=env.copy()
@@ -274,6 +281,10 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
     print(name,'PASS',flush=True)
 try:
     boundaries=1+len(oldm['files'])-1+1+len(newm['files'])-1+1+1+1
+    if a.only_long:
+        run_case('long-full-deployment')
+        print('single full-deployment long-path transaction PASS',flush=True)
+        raise SystemExit(0)
     if a.only_startup:
         run_case('startup-rollback',fail=boundaries,startup=True)
         run_case('startup-refused-then-retry',fail=boundaries,startup=True,startup_refuse=True)

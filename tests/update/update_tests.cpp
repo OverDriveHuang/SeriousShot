@@ -51,6 +51,8 @@ struct Fake final : Effects {
   bool hold_prompt{};
   std::string prompted;
   bool busy_flag{}, fail_prompt{};
+  std::optional<Error> prior_install;
+  std::optional<Error> previous_install_error(const Candidate &) const override {return prior_install;}
   int downloads{}, questions{}, installs{};
   void check(const Identity &, std::function<void(Result<Checked, Error>)> d) override {
     checks.push_back(d);
@@ -150,6 +152,40 @@ int main(int argc, char **argv) {
   HDRSHOT_CHECK(sodium_init() >= 0);
   using hdrshot::test::run;
   return run({
+      {"rolled-back result survives cleanup and cannot cross owner or candidate",
+       [] {
+         QTemporaryDir tmp;auto c=candidate();Slot slot(tmp.path(),"install-a","stable");
+         QJsonObject j{{"owner",slot.owner},{"channel",slot.channel},
+           {"candidate",QString::fromStdString(c.key())},{"phase","rolled_back"},
+           {"old_manifest",QJsonObject{{"version","0.1.4"}}},{"failure_reason","replace_move"},
+           {"failure_context",QJsonObject{{"native_error","3"}}}};
+         HDRSHOT_CHECK(slot.finish_install_result(j));
+         HDRSHOT_CHECK(cleanup_managed(tmp.path()));
+         auto result=read_json(install_result_path(tmp.path(),slot.owner,slot.channel));HDRSHOT_CHECK(result);
+         auto error=install_result_error(result.value(),slot.owner,slot.channel,c);
+         HDRSHOT_CHECK(error && error->safe_context.at("reason").find("0.1.4")!=std::string::npos);
+         HDRSHOT_CHECK(error->safe_context.at("native_error")=="3");
+         HDRSHOT_CHECK(!install_result_error(result.value(),"install-b",slot.channel,c));
+         auto other=c;other.sha256=std::string(64,'0');
+         HDRSHOT_CHECK(!install_result_error(result.value(),slot.owner,slot.channel,other));
+         j["phase"]="complete";j["candidate"]=QString::fromStdString(other.key());
+         HDRSHOT_CHECK(slot.finish_install_result(j) && QFileInfo::exists(install_result_path(tmp.path(),slot.owner,slot.channel)));
+         j["candidate"]=QString::fromStdString(c.key());
+         HDRSHOT_CHECK(slot.finish_install_result(j) && !QFileInfo::exists(install_result_path(tmp.path(),slot.owner,slot.channel)));
+       }},
+      {"rollback explanation persists through restart and seven-day reminders",
+       [] {
+         Fake f;f.prior_install=failure("更新失败，已恢复 0.1.4。无法替换应用文件");
+         Coordinator c(identity(),f);c.restore(candidate(),{candidate().key(),1},false);
+         HDRSHOT_CHECK(c.view().error && c.view().detail.find("已恢复 0.1.4")!=std::string::npos);
+         c.trigger(100,true);HDRSHOT_CHECK(f.questions==1 && c.view().error);
+         f.question(false);c.tick(100+604799);HDRSHOT_CHECK(f.questions==1);
+         // Complete the ordinary scheduled metadata check before the due tick.
+         if(!f.checks.empty()){f.checked();f.ready();}
+         c.tick(100+604800);HDRSHOT_CHECK(f.questions==2 && c.view().error);
+         f.question(false);c.trigger(100+604801,false,true);f.checked();f.ready();
+         HDRSHOT_CHECK(c.view().error && c.view().detail.find("已恢复 0.1.4")!=std::string::npos);
+       }},
       {"testing paths isolate daily settings and remain stable across versions",
        [] {
          Trust trust; trust.testing=true; trust.channel="testing";

@@ -109,10 +109,14 @@ void Coordinator::download() {
           publish();
           return;
         }
-        view_.error.reset();
+        view_.error=effects_.previous_install_error(*view_.candidate);
         receipt_ = r.value();
         view_.phase = view_.prompted ? Phase::deferred : Phase::ready;
         view_.detail = "安装包已校验";
+        if(view_.error) {
+          const auto reason=view_.error->safe_context.find("reason");
+          view_.detail=reason==view_.error->safe_context.end()?to_string(view_.error->code):reason->second;
+        }
         publish();
         prompt();
       });
@@ -182,6 +186,11 @@ void Coordinator::restore(Candidate c, Receipt r, bool pending) {
   view_.prompted = !reminder_due();
   view_.phase = pending ? Phase::manual_pending : view_.prompted ? Phase::deferred : Phase::ready;
   view_.detail = "安装包已校验";
+  view_.error=effects_.previous_install_error(*view_.candidate);
+  if(view_.error) {
+    const auto reason=view_.error->safe_context.find("reason");
+    view_.detail=reason==view_.error->safe_context.end()?to_string(view_.error->code):reason->second;
+  }
   publish();
 }
 void Coordinator::later() {

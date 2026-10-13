@@ -13,6 +13,21 @@ using namespace hdrshot::update;
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   const auto args = app.arguments();
+  if(args.size()==3 && args[1]=="--move-probe") {
+    const auto root=QDir::fromNativeSeparators(args[2]);
+    const auto from=root+"/SeriousShot.exe",to=root+"/.seriousshot-backup-"+QString(36,'0')+"/SeriousShot.exe";
+    if(!QDir().mkpath(QFileInfo(to).absolutePath()))return 18;
+    QFile fixture(from);if(!fixture.open(QIODevice::WriteOnly))return 19;
+    fixture.write("long path fixture");fixture.close();
+    if(windows_extended_path("//server/share/file")!=QStringLiteral("\\\\?\\UNC\\server\\share\\file"))return 20;
+    const auto extended=windows_extended_path(from);
+    if(windows_extended_path(extended)!=extended || !windows_move(from,to) || !windows_move(to,from))return 21;
+    const auto missing=windows_move(root+"/missing",to);
+    if(missing || !missing.error().safe_context.contains("native_error"))return 22;
+    std::printf("long native move PASS destination_length=%lld native_error=%s\n",
+      static_cast<long long>(to.size()),missing.error().safe_context.at("native_error").c_str());
+    return 0;
+  }
   if(args.size()==3 && args[1]=="--startup") {
     const bool refused=qEnvironmentVariableIsSet("SERIOUSSHOT_UPDATE_STARTUP_REFUSE");
     const auto recovered=windows_begin_startup_recovery(args[2]);

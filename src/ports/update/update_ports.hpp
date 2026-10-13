@@ -26,5 +26,6 @@ public:
   virtual void ask_install(const Candidate &, std::function<void(bool)>) = 0;
   virtual void install(const Candidate &, const Receipt &, Done) = 0;
   virtual bool manual_install() const = 0;
+  virtual std::optional<Error> previous_install_error(const Candidate &) const { return {}; }
 };
 } // namespace hdrshot::update

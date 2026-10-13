@@ -15,6 +15,9 @@ QString process_identity(qint64 pid);
 bool process_alive(qint64 pid, const QString &creation);
 bool durable_flush(QFile &);
 bool durable_directory(const QString &);
+QString install_result_path(const QString &root, const QString &owner, const QString &channel);
+std::optional<Error> install_result_error(const QJsonObject &, const QString &owner,
+                                         const QString &channel, const Candidate &);
 struct Slot {
   QString root, owner, channel;
   QJsonObject record;
@@ -30,6 +33,7 @@ struct Slot {
   Result<Receipt, Error> verified(const Candidate &);
   QString payload() const;
   void release();
+  Result<bool, Error> finish_install_result(const QJsonObject &journal);
 };
 } // namespace hdrshot::update
 namespace hdrshot::update {

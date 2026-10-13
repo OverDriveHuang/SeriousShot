@@ -43,6 +43,7 @@ public:
   void ask_install(const Candidate &, std::function<void(bool)>) override;
   void install(const Candidate &, const Receipt &, Done) override;
   bool manual_install() const override;
+  std::optional<Error> previous_install_error(const Candidate &) const override;
 
 private:
   friend class RuntimeTestAccess;
@@ -68,7 +69,7 @@ private:
   std::unique_ptr<UpdateWindow> update_window_;
   std::function<void(bool)> confirmation_;
   std::uint64_t confirmation_generation_{};
-  QJsonObject state_, cache_;
+  QJsonObject state_, cache_, install_result_;
   QString state_path_, cache_path_;
   QByteArray envelope_;
   QTimer timer_;

@@ -50,6 +50,8 @@ Runtime::Runtime(Identity i, std::unique_ptr<NativeInstaller> native, std::funct
   const auto state = read_json(state_path_);
   if (state)
     state_ = state.value();
+  const auto result=read_json(install_result_path(slot_.root,slot_.owner,slot_.channel));
+  if(result)install_result_=result.value();
   worker_ = new QObject;
   worker_->moveToThread(&thread_);
   QObject::connect(&thread_, &QThread::finished, worker_, &QObject::deleteLater);
@@ -160,6 +162,9 @@ bool Runtime::busy() const {
   return (busy_ && busy_()) || QApplication::activeModalWidget() != nullptr;
 }
 bool Runtime::manual_install() const { return native_->manual(); }
+std::optional<Error> Runtime::previous_install_error(const Candidate &c) const {
+  return install_result_error(install_result_,slot_.owner,slot_.channel,c);
+}
 void Runtime::persist_prompt(const std::string &key, Done done) {
   state_["prompted"] = QString::fromStdString(key);
   const auto state = state_;

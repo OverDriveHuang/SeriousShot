@@ -35,9 +35,9 @@ Result<bool, Error> persist(const QString &path, QJsonObject &j, const QString &
 }
 Result<bool, Error> move_checked(const QString &from, const QString &to) {
   if (QFileInfo(from).isSymLink() || QFileInfo(to).isSymLink() || QFileInfo::exists(to) ||
-      !QDir().mkpath(QFileInfo(to).absolutePath()) || !windows_move(from, to))
+      !QDir().mkpath(QFileInfo(to).absolutePath()))
     return Result<bool, Error>::failure(failure("replace_move"));
-  return Result<bool, Error>::success(true);
+  return windows_move(from,to);
 }
 Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &old,
                             const Package &fresh) {
@@ -437,6 +437,10 @@ int main(int argc, char **argv) {
 #endif
   const bool complete = terminal_durable && j["phase"] == "complete",
              rolled = terminal_durable && j["phase"] == "rolled_back";
+  if(complete || rolled) {
+    const auto retained=slot.finish_install_result(j);
+    if(!retained)return 20; // Keep reservation/runtime for retryable finalization.
+  }
   if (!result && !terminal_durable) {
     const auto value=[&](const char *key) {
       const auto found=result.error().safe_context.find(key);
