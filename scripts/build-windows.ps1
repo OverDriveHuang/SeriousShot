@@ -1,10 +1,14 @@
-param([switch]$Clean, [switch]$Package)
+param([switch]$Clean, [switch]$Package, [string]$PythonExecutable, [string[]]$ConfigureArguments = @(), [string]$PackageRoot)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
 Push-Location $project
 try {
     . "$PSScriptRoot/windows-dev-environment.ps1"
+    if (-not $PythonExecutable) {
+        $localPython = Join-Path $project '.build-tools/python/runtime/tools/python.exe'
+        $PythonExecutable = if (Test-Path -LiteralPath $localPython) { $localPython } else { (Get-Command python -ErrorAction Stop).Source }
+    }
     $qt = Join-Path $project '.build-tools/Qt/6.11.1/msvc2022_64'
     if (-not (Test-Path "$qt/lib/cmake/Qt6/Qt6Config.cmake")) {
         throw 'Qt 6.11.1 is missing. Run scripts/install-windows-qt.py with requests and py7zr.'
@@ -16,9 +20,9 @@ try {
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
     $logs = Join-Path $project ".agent/logs/windows-$stamp"
     New-Item -ItemType Directory -Path $logs | Out-Null
-    python scripts/build_update_dependencies.py *> "$logs/update-dependencies.log"
+    & $PythonExecutable scripts/build_update_dependencies.py *> "$logs/update-dependencies.log"
     if ($LASTEXITCODE -ne 0) { throw "Update dependencies failed: $logs/update-dependencies.log" }
-    cmake --preset windows-qt-release *> "$logs/configure.log"
+    cmake --preset windows-qt-release @ConfigureArguments *> "$logs/configure.log"
     if ($LASTEXITCODE -ne 0) { throw "Configure failed: $logs/configure.log" }
     $buildArgs = @('--build', '--preset', 'windows-qt-release', '-j', '6')
     if ($Clean) { $buildArgs += '--clean-first' }
@@ -29,7 +33,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Tests failed: $logs/ctest.log" }
     if ($Package) {
         # Every development package is a new immutable directory.
-        $destination = Join-Path $project ".build-tools/packages/SeriousShot-windows-x64_$stamp"
+        if (-not $PackageRoot) { $PackageRoot = Join-Path $project '.build-tools/packages' }
+        $destination = Join-Path $PackageRoot "SeriousShot-windows-x64_$stamp"
         if (Test-Path -LiteralPath $destination) { throw 'Package destination already exists.' }
         New-Item -ItemType Directory -Path $destination | Out-Null
         Copy-Item -LiteralPath 'build-windows-qt/SeriousShot.exe' -Destination $destination
@@ -59,8 +64,9 @@ try {
             Set-Content -LiteralPath "$destination/DEVELOPMENT_BUILD.txt" -Encoding utf8
         Get-FileHash -LiteralPath "$destination/SeriousShot.exe" -Algorithm SHA256 | Format-List | Out-String |
             Set-Content -LiteralPath "$destination/SHA256.txt"
-        $version = (Select-String -LiteralPath 'CMakeLists.txt' -Pattern 'project\(HDRShot VERSION ([0-9.]+)').Matches.Groups[1].Value
-        python scripts/generate_update_package.py $destination --version $version --platform windows --architecture x64 --entrypoint SeriousShot.exe
+        $version = (Select-String -LiteralPath 'build-windows-qt/generated/hdrshot_build_timestamp.cpp' -Pattern 'product_version\(\).*return "([0-9.]+)"').Matches.Groups[1].Value
+        if (-not $version) { throw 'Built product version could not be verified.' }
+        & $PythonExecutable scripts/generate_update_package.py $destination --version $version --platform windows --architecture x64 --entrypoint SeriousShot.exe
         if ($LASTEXITCODE -ne 0) { throw 'Package manifest failed.' }
         Write-Output "Package=$destination"
     }

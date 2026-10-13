@@ -6,6 +6,9 @@
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <limits>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 namespace hdrshot::update {
 Error failure(const char *reason, ErrorCode code, Retryability retry) {
   return {code, "update", retry, {{"reason", reason}}};
@@ -32,8 +35,17 @@ Result<bool, Error> save_json(const QString &path, const QJsonObject &object) {
     return Result<bool, Error>::failure(failure("state_write"));
   // QSaveFile's commit closes and atomically renames; flush the committed inode
   // and parent directory.
-  if (!f.commit())
-    return Result<bool, Error>::failure(failure("state_commit"));
+  if (!f.commit()) {
+#ifdef Q_OS_WIN
+    const auto native_error=GetLastError();
+#endif
+    auto error=failure("state_commit");
+    error.safe_context["qt_file_error"]=std::to_string(static_cast<int>(f.error()));
+#ifdef Q_OS_WIN
+    error.safe_context["native_error"]=std::to_string(native_error);
+#endif
+    return Result<bool, Error>::failure(std::move(error));
+  }
   QFile committed(path);
   if (!committed.open(QIODevice::ReadWrite) || !durable_flush(committed) ||
       !durable_directory(QFileInfo(path).absolutePath()))
@@ -127,21 +139,13 @@ Result<bool, Error> Slot::recover() {
                       record["helper_creation"].toString()))
       return Result<bool, Error>::failure(
           failure("安装事务仍在运行", ErrorCode::precondition_failed));
-    // A journal must be recovered by the independent native recovery tool
-    // before the slot is reusable.
+    // Even a durable terminal journal can precede native slot finalization.
+    // The independent verifier/finalizer owns this handoff; missing evidence
+    // is never equivalent to a successful install.
     const auto journal = record["journal"].toString();
-    if (!journal.isEmpty() && QFileInfo::exists(journal)) {
-      const auto recovered = read_json(journal);
-      if (!recovered ||
-          !(recovered.value()["phase"] == "rolled_back" ||
-            recovered.value()["phase"] == "complete" || recovered.value()["phase"] == "cancelled"))
-        return Result<bool, Error>::failure(
-            failure("需要运行独立恢复工具", ErrorCode::state_inconsistent));
-    }
-    record["phase"] = "ready";
-    record.remove("transaction");
-    record.remove("nonce");
-    return save();
+    if (journal.isEmpty() || !QFileInfo::exists(journal))
+      return Result<bool, Error>::failure(failure("安装事务缺少恢复记录", ErrorCode::state_inconsistent));
+    return Result<bool, Error>::failure(failure("需要运行独立恢复工具", ErrorCode::state_inconsistent));
   }
   if (phase == "downloading") {
     // Holding the operation lock proves the previous writer is dead; do not
@@ -240,6 +244,7 @@ Result<bool, Error> register_cleanup(const QString &root, const QJsonObject &j, 
       {"backup", j["backup"]},
       {"staging", j["staging"]},
       {"runtime", root + "/helpers/" + transaction},
+      {"generation", j["generation"]},
       {"helper_pid", QString::number(pid)},
       {"helper_creation", process_identity(pid)},
       {"preparing", pid == 0 && (j["phase"] == "preparing" || j["phase"] == "prepared")},
@@ -250,6 +255,13 @@ Result<bool, Error> register_cleanup(const QString &root, const QJsonObject &j, 
 Result<bool, Error> cleanup_managed(const QString &root) {
   const auto records =
       QDir(root + "/cleanup").entryList({"*.json"}, QDir::Files | QDir::NoSymLinks);
+  if (records.isEmpty()) return Result<bool, Error>::success(true);
+  QLockFile operation_lock(root + "/operation.lock");
+  operation_lock.setStaleLockTime(0);
+  if (!operation_lock.tryLock(0))
+    return Result<bool, Error>::failure(failure("cleanup_busy",ErrorCode::precondition_failed,Retryability::same_input));
+  const auto current_slot=read_json(root+"/slot.json");
+  if (!current_slot) return Result<bool, Error>::failure(current_slot.error());
   for (const auto &name : records) {
     const auto path = root + "/cleanup/" + name;
     auto loaded = read_json(path);
@@ -264,6 +276,12 @@ Result<bool, Error> cleanup_managed(const QString &root) {
         transaction.contains('\\') ||
         (!runtime.isEmpty() && runtime != root + "/helpers/" + transaction))
       return Result<bool, Error>::failure(failure("cleanup_identity"));
+    const auto &slot=current_slot.value();
+    if ((slot["phase"]=="reserved" || slot["phase"]=="installing") &&
+        slot["transaction"]==transaction &&
+        (record["generation"].isUndefined() || record["generation"].isNull() ||
+         slot["generation"]==record["generation"]))
+      continue;
     if (process_alive(record["helper_pid"].toString().toLongLong(),
                       record["helper_creation"].toString()))
       continue;

@@ -1,6 +1,6 @@
 # 从源码构建 SeriousShot
 
-最后更新：2026-10-12 21:32:30 CST
+最后更新：2026-10-14 00:00:38 CST
 
 [返回产品介绍](../README.md)
 
@@ -32,7 +32,7 @@ python scripts/install-windows-qt.py
 ./scripts/build-windows.ps1
 ```
 
-Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 在同时启用 scRGB gain=0.5 与“HDR 捕获不使用 SDRWhiteLevel 归一化”的已测条件下，HDR 和 Legacy 广色域截图均未发现问题；完整条件见首页实测矩阵。本次新增更新器的 Windows 原生升级事务尚未验收，截图实测与 Mac 共享测试均不能替代这项验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试开启设置中的“Windows 10 截图亮度兼容”。总开关默认关闭，全选时启用 scRGB gain 和“HDR 捕获不使用 SDRWhiteLevel 归一化”两个独立子项，只启用其一时显示半选；scRGB gain 可编辑，预设 0.5，仅启用该子项后生效。应按实际截图结果判断是否开启，不能推断所有 Windows 10 都需要调整。已测试的 Windows 11 环境未见上述现象。
+Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 在同时启用 scRGB gain=0.5 与“HDR 捕获不使用 SDRWhiteLevel 归一化”的已测条件下，HDR 和 Legacy 广色域截图均未发现问题；完整条件见首页实测矩阵。Windows 更新器已验证 89 个原生事务场景，包括真实进程退出、原目录替换、文件占用、回滚和中断恢复；本机 66 个 CTest 用例通过。隔离 testing 构建可显式开启原生自动覆盖，最终用户安装试用仍需按测试包操作验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试开启设置中的“Windows 10 截图亮度兼容”。总开关默认关闭，全选时启用 scRGB gain 和“HDR 捕获不使用 SDRWhiteLevel 归一化”两个独立子项，只启用其一时显示半选；scRGB gain 可编辑，预设 0.5，仅启用该子项后生效。应按实际截图结果判断是否开启，不能推断所有 Windows 10 都需要调整。已测试的 Windows 11 环境未见上述现象。
 
 ## 代码与分发
 

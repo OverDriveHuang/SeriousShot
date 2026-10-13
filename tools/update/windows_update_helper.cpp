@@ -13,6 +13,13 @@ using namespace hdrshot;
 using namespace hdrshot::update;
 namespace {
 unsigned boundary{};
+Result<bool, Error> terminal_save(const QString &path, const QJsonObject &j) {
+#if HDRSHOT_UPDATE_TESTING
+  if (qEnvironmentVariable("SERIOUSSHOT_UPDATE_FAIL_TERMINAL") == j["phase"].toString())
+    return Result<bool, Error>::failure(failure("injected_terminal_commit"));
+#endif
+  return save_json(path,j);
+}
 Result<bool, Error> persist(const QString &path, QJsonObject &j, const QString &action,
                             const QString &file = {}) {
   j["intent"] = action;
@@ -122,17 +129,18 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
   }
   j["phase"] = "rolled_back";
   j.remove("intent");
-  return save_json(path, j);
+  return terminal_save(path, j);
 }
 } // namespace
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   const auto args = app.arguments();
-  if (args.size() != 3 || (args[1] != "--apply" && args[1] != "--recover")) {
+  if (args.size() != 3 || (args[1] != "--apply" && args[1] != "--recover" && args[1] != "--recover-after-exit")) {
     std::fprintf(stderr, "usage: SeriousShotUpdater --apply|--recover transaction.json\n");
     return 2;
   }
-  const bool recovery = args[1] == "--recover";
+  const bool recovery = args[1] != "--apply";
+  const bool startup_recovery = args[1] == "--recover-after-exit";
   const auto journal = QFileInfo(args[2]).canonicalFilePath();
   if (journal.isEmpty() ||
       QFileInfo(journal).absolutePath() != QCoreApplication::applicationDirPath())
@@ -233,6 +241,39 @@ int main(int argc, char **argv) {
     }
   } else if (process_alive(pid, creation))
     return 14;
+  if(startup_recovery) {
+    const auto loaded_handoff=read_json(runtime+"/recovery.json");
+    if(!loaded_handoff)return 25;
+    const auto handoff=loaded_handoff.value();
+    const auto recovery_nonce=handoff["recovery_nonce"].toString();
+    const auto caller=handoff["caller_pid"].toString().toLongLong();
+    const auto caller_creation=handoff["caller_creation"].toString();
+    const auto event_name=QString("Local\\Overdrive.SeriousShot.Update.Recover.Arm.")+transaction+"."+recovery_nonce;
+    if(recovery_nonce.isEmpty() || caller_creation.isEmpty() ||
+       handoff["transaction"]!=transaction || handoff["generation"]!=j["generation"] ||
+       handoff["nonce"]!=nonce || handoff["event_name"]!=event_name ||
+       handoff["caller_exe"].toString().compare(exe,Qt::CaseInsensitive)!=0 ||
+       !process_alive(caller,caller_creation))return 26;
+    HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,static_cast<DWORD>(caller));
+    wchar_t image[32768];DWORD length=32768;
+    const bool matches=process && QueryFullProcessImageNameW(process,0,image,&length) &&
+        QDir::fromNativeSeparators(QString::fromWCharArray(image,static_cast<int>(length))).compare(exe,Qt::CaseInsensitive)==0;
+    if(process)CloseHandle(process);
+    if(!matches)return 27;
+    HANDLE event=OpenEventW(SYNCHRONIZE,FALSE,reinterpret_cast<LPCWSTR>(event_name.utf16()));
+    if(!event)return 28;
+    struct CloseRecoveryEvent{HANDLE event;~CloseRecoveryEvent(){CloseHandle(event);}} close{event};
+    if(!save_json(runtime+"/recovery-ready.json",{{"recovery_nonce",recovery_nonce},
+       {"pid",QString::number(app.applicationPid())},{"creation",process_identity(app.applicationPid())}}))return 29;
+    while(process_alive(caller,caller_creation))QThread::msleep(100);
+    const auto armed=read_json(runtime+"/recovery-armed.json");
+    if(WaitForSingleObject(event,0)!=WAIT_OBJECT_0 || !armed || armed.value()!=handoff)return 0;
+  }
+  // Terminal recovery is idempotent. Commit/rollback releases the slot's
+  // transaction and nonce; do not require that obsolete reservation on a
+  // repeated invocation, or restart a second application instance. The
+  // signed catalog and frozen manifests were validated above.
+  const bool was_terminal = j["phase"] == "complete" || j["phase"] == "rolled_back";
   Slot slot(j["slot"].toString(), j["owner"].toString(), j["channel"].toString());
   slot.lock = std::make_unique<QLockFile>(slot.root + "/operation.lock");
   slot.lock->setStaleLockTime(0);
@@ -242,9 +283,17 @@ int main(int argc, char **argv) {
   if (!slotstate)
     return 16;
   slot.record = slotstate.value();
-  if (slot.record["generation"] != j["generation"] || slot.record["transaction"] != transaction ||
-      slot.record["nonce"] != nonce || slot.record["owner"] != j["owner"])
+  const bool owns_reservation = slot.record["generation"] == j["generation"] &&
+      slot.record["transaction"] == transaction && slot.record["nonce"] == nonce &&
+      slot.record["owner"] == j["owner"] &&
+      (slot.record["phase"] == "reserved" || slot.record["phase"] == "installing");
+  if (!owns_reservation) {
+    if (recovery && was_terminal) {
+      const auto &expected=j["phase"]=="complete"?fresh.value():old.value();
+      return verify_tree(target,expected)?0:24;
+    }
     return 17;
+  }
   if (!slot.ensure_single_payload())
     return 23;
   auto receipt = slot.verified(*candidate); // reserved phase deliberately not
@@ -262,10 +311,14 @@ int main(int argc, char **argv) {
   if (!slot.save())
     return 19;
   Result<bool, Error> result = Result<bool, Error>::success(true);
-  if (j["phase"] == "complete") { /* Already committed: never roll back a
-                                     successful update. */
+  bool terminal_durable=false;
+  if (was_terminal) {
+    // A terminal journal can precede slot finalization. Verify its committed
+    // tree and finish the still-owned reservation without rolling it back.
+    result=verify_tree(target,j["phase"]=="complete"?fresh.value():old.value());
+    terminal_durable=bool(result);
   } else if (recovery || j["phase"] != "prepared")
-    result = restore(journal, j, old.value(), fresh.value());
+    { result = restore(journal, j, old.value(), fresh.value()); terminal_durable=bool(result); }
   else {
     // Every GUI/CLI process from this installation must exit; no process is
     // killed.
@@ -358,29 +411,66 @@ int main(int argc, char **argv) {
     }
     if (result) {
       j["phase"] = "complete";
-      result = save_json(journal, j);
+      result = terminal_save(journal, j);
+      terminal_durable=bool(result);
     } else {
+      const auto failed_intent=j.value("intent").toString();
+      const auto failed_file=j.value("file").toString();
+      j["failure_intent"]=failed_intent;
+      j["failure_file"]=failed_file;
+      const auto reason = result.error().safe_context.find("reason");
+      if (reason != result.error().safe_context.end())
+        j["failure_reason"] = QString::fromStdString(reason->second);
+      QJsonObject context;
+      for (const auto &[key,value] : result.error().safe_context)
+        context[QString::fromStdString(key)]=QString::fromStdString(value);
+      j["failure_context"]=context;
       const auto restored = restore(journal, j, old.value(), fresh.value());
+      terminal_durable=bool(restored);
       if (!restored)
         result = restored;
     }
   }
-  const bool complete = j["phase"] == "complete", rolled = j["phase"] == "rolled_back";
+#if HDRSHOT_UPDATE_TESTING
+  if (terminal_durable && qEnvironmentVariableIsSet("SERIOUSSHOT_UPDATE_CRASH_AFTER_TERMINAL"))
+    ExitProcess(92);
+#endif
+  const bool complete = terminal_durable && j["phase"] == "complete",
+             rolled = terminal_durable && j["phase"] == "rolled_back";
+  if (!result && !terminal_durable) {
+    const auto value=[&](const char *key) {
+      const auto found=result.error().safe_context.find(key);
+      return found==result.error().safe_context.end()?std::string{}:found->second;
+    };
+    std::fprintf(stderr,"native recovery remains pending: reason=%s qt=%s native=%s\n",
+                 value("reason").c_str(),value("qt_file_error").c_str(),value("native_error").c_str());
+  }
   if (complete) {
     slot.record["phase"] = "ready";
     auto removed = slot.remove_payload();
     slot.record["phase"] = removed ? "empty" : "cleanup_blocked";
+    slot.record.remove("transaction");
+    slot.record.remove("nonce");
     (void)slot.save();
   } else if (rolled) {
     slot.record["phase"] = "ready";
     slot.record.remove("transaction");
     slot.record.remove("nonce");
     (void)slot.save();
-    qint64 restarted;
-    QProcess::startDetached(exe, {}, target, &restarted);
+    if (!recovery || !was_terminal) {
+      qint64 restarted;
+      QProcess::startDetached(exe, {}, target, &restarted);
+    }
   } else {
     slot.record["phase"] = "installing";
     (void)slot.save();
+  }
+  if(startup_recovery && complete) {
+    qint64 restarted;
+    QProcess::startDetached(exe,{},target,&restarted);
+  } else if(startup_recovery && rolled && was_terminal) {
+    qint64 restarted;
+    QProcess::startDetached(exe,{},target,&restarted);
   }
   return complete || rolled ? 0 : 20;
 }

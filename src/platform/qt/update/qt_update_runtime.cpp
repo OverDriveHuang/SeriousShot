@@ -1,4 +1,5 @@
 #include "platform/qt/update/qt_update_runtime.hpp"
+#include "platform/qt/update/application_paths.hpp"
 #include "core/build_metadata.hpp"
 #include "ui/qt/settings_window.hpp"
 #include <QApplication>
@@ -35,8 +36,8 @@ Runtime::Runtime(Identity i, std::unique_ptr<NativeInstaller> native, std::funct
                  std::function<bool()> quit, QObject *parent)
     : QObject(parent), identity_(std::move(i)), native_(std::move(native)),
       trust_(compiled_trust()),
-      slot_(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
-                "/OverDrive/SeriousShot/updates",
+      slot_(testing_namespace(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+                "/OverDrive/SeriousShot/updates", trust_),
             QString::fromStdString(identity_.install), trust_.channel),
       busy_(std::move(busy)), quit_(std::move(quit)), coordinator_(identity_, *this) {
   const auto partition =

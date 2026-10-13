@@ -6,3 +6,7 @@ assets
 tools
 scripts
 tests/macos_analyzer_interaction_probe.mm
+tests/update/windows_update_integration.cpp
+tests/update/windows_update_locked_library.cpp
+tests/update/update_tests.cpp
+tests/update/update_runtime_tests.cpp

@@ -27,22 +27,28 @@ struct Reply final : QNetworkReply {
   QByteArray bytes;
   qint64 offset{};
   std::atomic<qint64> *max_read{};
+  std::atomic_bool *gate{};
   Reply(QNetworkRequest req, QByteArray body, int status, std::atomic<qint64> *largest, QObject *p,
-        int delay = 0)
-      : QNetworkReply(p), bytes(std::move(body)), max_read(largest) {
+        int delay = 0, std::atomic_bool *release_gate = nullptr)
+      : QNetworkReply(p), bytes(std::move(body)), max_read(largest), gate(release_gate) {
     setRequest(req);
     setUrl(req.url());
     setAttribute(QNetworkRequest::HttpStatusCodeAttribute, status);
     setRawHeader("ETag", "fixture-etag");
     open(QIODevice::ReadOnly);
-    QTimer::singleShot(delay, this, [this] {
+    QTimer::singleShot(delay, this, [this] { finish_when_allowed(); });
+  }
+  void finish_when_allowed() {
       if (isFinished())
         return;
+      if (gate && !gate->load()) {
+        QTimer::singleShot(1, this, [this] { finish_when_allowed(); });
+        return;
+      }
       if (!bytes.isEmpty())
         emit readyRead();
       setFinished(true);
       emit finished();
-    });
   }
   void redirect(const QUrl &url) { setAttribute(QNetworkRequest::RedirectionTargetAttribute, url); }
   void abort() override {
@@ -72,6 +78,7 @@ struct Wire {
   std::atomic<qint64> max_read{};
   int catalog_status{200}, release_status{200};
   int redirects{}, reply_delay_ms{}, catalog_delay_ms{}, release_delay_ms{};
+  std::atomic_bool *catalog_gate{};
 };
 struct Manager final : QNetworkAccessManager {
   Wire &wire;
@@ -81,7 +88,7 @@ struct Manager final : QNetworkAccessManager {
     if (req.url().host() == "raw.githubusercontent.com") {
       ++wire.checks;
       return new Reply(req, wire.catalog, wire.catalog_status, nullptr, this,
-                       wire.catalog_delay_ms);
+                       wire.catalog_delay_ms, wire.catalog_gate);
     }
     if (req.url().host() == "api.github.com") {
       ++wire.releases;
@@ -415,13 +422,14 @@ int main(int argc, char **argv) {
        }},
       {"shared signed cache cannot be downgraded by another Runtime",
        [] {
+         std::atomic_bool release_new{false}, release_stale{false};
          Fixture f;
          f.identity.version = f.c.version;
          Wire stale;
-         stale.catalog_delay_ms = 100;
+         stale.catalog_gate = &release_stale;
+         f.wire.catalog_gate = &release_new;
          stale.catalog = catalog_revision(f, 1);
          f.wire.catalog = catalog_revision(f, 2);
-         f.wire.catalog_delay_ms = 30;
          auto b = std::make_unique<Runtime>(
              f.identity, std::make_unique<Installer>(), [] { return true; }, [] { return false; });
          RuntimeTestAccess::configure(*b, f.trust, f.dir.path(), stale);
@@ -430,10 +438,17 @@ int main(int argc, char **argv) {
            HDRSHOT_CHECK(r);
            first = true;
          });
+         // The first initial read lock is released before starting the second
+         // request. Both HTTP replies remain in flight with the old cache.
+         f.await([&] { return f.wire.checks == 1; });
          b->check(f.identity, [&](auto r) {
            accepted = bool(r);
            second = true;
          });
+         f.await([&] { return stale.checks == 1; });
+         release_new = true;
+         f.await([&] { return first; });
+         release_stale = true;
          f.await([&] { return first && second; });
          auto cache = read_json(f.dir.path() + "/cache.json");
          auto verified = verify_catalog(
@@ -686,8 +701,11 @@ int main(int argc, char **argv) {
        [] {
          Fixture f;
          f.wire.redirects = 2;
-         f.wire.reply_delay_ms = 60;
-         RuntimeTestAccess::download_budget(*f.runtime, 90);
+         // Leave enough room for native durable state writes and Windows
+         // timer scheduling, while the second reply still exceeds the one
+         // total deadline. A reset-per-redirect implementation reaches GET3.
+         f.wire.reply_delay_ms = 650;
+         RuntimeTestAccess::download_budget(*f.runtime, 1000);
          f.start();
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::download_failed; });
          HDRSHOT_CHECK(f.wire.downloads == 2 && !QFileInfo::exists(f.dir.path() + "/payload.dmg"));

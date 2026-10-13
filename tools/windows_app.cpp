@@ -1,4 +1,5 @@
 #include "platform/qt/update/qt_update_runtime.hpp"
+#include "platform/qt/update/application_paths.hpp"
 #include "platform/windows/update/windows_update_native.hpp"
 #include "application/capture_interaction_session.hpp"
 #include "application/headless_capture.hpp"
@@ -79,12 +80,14 @@ class WindowsApplicationShell {
     const QString config=smoke_folder_.isEmpty() ?
         QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)+QStringLiteral("/settings.ini"):
         smoke_folder_+QStringLiteral("/settings.ini");
-    diagnostics_folder_=(data_root+QStringLiteral("/logs")).toStdString();
+    const auto paths=update::application_paths(data_root,config,pictures,
+        smoke_folder_.isEmpty()?update::compiled_trust():update::Trust{});
+    diagnostics_folder_=(paths.data+QStringLiteral("/logs")).toStdString();
     auto session_log=std::make_unique<QtSessionDiagnosticsPort>(diagnostics_folder_);
     const auto log_started=session_log->start(std::string(build_timestamp()),"Windows");
     if(!log_started) print_error(log_started.error());
     diagnostics_=std::move(session_log);
-    store_=std::make_unique<QtSettingsStorePort>(config.toStdString(),default_hotkey,pictures.toStdString());
+    store_=std::make_unique<QtSettingsStorePort>(paths.config.toStdString(),default_hotkey,paths.pictures.toStdString());
     const auto loaded=store_->load();
     if(!loaded) { record_diagnostic_failure(diagnostics_.get(),"startup",loaded.error());print_error(loaded.error());return false; }
     settings_=loaded.value();
@@ -461,8 +464,19 @@ int main(int argc,char** argv) {
   const bool smoke=smoke_copy || smoke_sequence || (argc==3 && std::string_view(argv[1])=="--smoke");
   const auto smoke_folder=smoke?QFileInfo(QString::fromUtf8(argv[2])).absoluteFilePath():QString{};
   if(smoke && (!QDir().mkpath(smoke_folder) || QFileInfo::exists(smoke_folder+QStringLiteral("/settings.ini")))) return 2;
-  const HANDLE instance=smoke?nullptr:CreateMutexW(nullptr,FALSE,L"Local\\Overdrive.SeriousShot.Desktop");
+  const auto instance_name=update::isolated_testing(update::compiled_trust())?
+      QStringLiteral("Local\\Overdrive.SeriousShot.Desktop.Testing"):
+      QStringLiteral("Local\\Overdrive.SeriousShot.Desktop");
+  const HANDLE instance=smoke?nullptr:CreateMutexW(nullptr,FALSE,reinterpret_cast<LPCWSTR>(instance_name.utf16()));
   if(!smoke && (!instance || GetLastError()==ERROR_ALREADY_EXISTS)) {if(instance) CloseHandle(instance);return 0;}
+  if(!smoke) {
+    const auto recovery=update::windows_begin_startup_recovery();
+    if(!recovery || recovery.value()) {
+      if(!recovery)print_error(recovery.error());
+      if(instance)CloseHandle(instance);
+      return recovery?0:1;
+    }
+  }
   int result=1;
   { WindowsApplicationShell shell(app,smoke_folder,smoke_copy,smoke_sequence);
     if(shell.initialize()) result=app.exec(); }

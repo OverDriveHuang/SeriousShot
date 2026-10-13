@@ -32,7 +32,7 @@ if(APPLE)
   target_sources(hdrshot_qt_update PRIVATE src/platform/macos/update/macos_update_backend.cpp)
 elseif(WIN32)
   target_sources(hdrshot_qt_update PRIVATE src/platform/windows/update/windows_update_backend.cpp)
-  target_link_libraries(hdrshot_qt_update PRIVATE psapi shell32)
+  target_link_libraries(hdrshot_qt_update PRIVATE hdrshot_build_metadata psapi shell32)
 endif()
 # settings UI is intentionally not a dependency of this service (avoid a cycle).
 # final applications link both UI and service.
@@ -43,6 +43,14 @@ if(WIN32)
   target_link_libraries(hdrshot_windows_update_helper PRIVATE hdrshot_qt_update psapi shell32)
   target_compile_definitions(hdrshot_qt_update PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_definitions(hdrshot_windows_update_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  if(BUILD_TESTING)
+    add_executable(hdrshot_windows_update_integration tests/update/windows_update_integration.cpp)
+    target_link_libraries(hdrshot_windows_update_integration PRIVATE hdrshot_qt_update)
+    target_compile_definitions(hdrshot_windows_update_integration PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_library(hdrshot_windows_update_locked_library SHARED tests/update/windows_update_locked_library.cpp)
+    # Explicit controller invocation only: real process/file-lock tests must
+    # never be reported as portable CTest success or silently skipped.
+  endif()
 endif()
 if(BUILD_TESTING)
   add_executable(hdrshot_update_tests tests/update/update_tests.cpp)

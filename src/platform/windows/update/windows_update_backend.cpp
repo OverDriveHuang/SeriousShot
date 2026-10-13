@@ -1,6 +1,7 @@
 #include "core/build_metadata.hpp"
 #include "platform/qt/update/native_update_backend.hpp"
 #include "platform/qt/update/update_catalog.hpp"
+#include "platform/qt/update/application_paths.hpp"
 #include "platform/windows/update/windows_update_native.hpp"
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -9,12 +10,13 @@
 #include <QJsonArray>
 #include <QProcess>
 #include <QThread>
+#include <QStandardPaths>
 #include <QUuid>
 #include <algorithm>
 #include <io.h>
+#include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
-#include <windows.h>
 namespace hdrshot::update {
 QString windows_executable() {
   wchar_t path[32768];
@@ -37,13 +39,19 @@ QString process_identity(qint64 pid) {
 bool process_alive(qint64 pid, const QString &creation) {
   if (pid <= 0 || pid > MAXDWORD)
     return false;
-  const auto current = process_identity(pid);
-  if (!current.isEmpty())
-    return creation.isEmpty() || current == creation;
-  HANDLE p = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+  // Creation-time queries can still succeed after exit while a launcher holds
+  // the process object. Query its signaled state as well as its PID identity.
+  HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                         static_cast<DWORD>(pid));
   if (!p)
     return GetLastError() == ERROR_ACCESS_DENIED;
-  const auto active = WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
+  const auto wait = WaitForSingleObject(p, 0);
+  FILETIME created{}, exited{}, kernel{}, user{};
+  const bool known = GetProcessTimes(p, &created, &exited, &kernel, &user) != 0;
+  const auto current = known ? QString::number((quint64(created.dwHighDateTime) << 32) |
+                                                created.dwLowDateTime) : QString{};
+  const bool active = wait == WAIT_TIMEOUT &&
+                      (creation.isEmpty() || !known || current == creation);
   CloseHandle(p);
   return active;
 }
@@ -357,6 +365,73 @@ public:
 };
 std::unique_ptr<NativeInstaller> native_installer() {
   return std::make_unique<WindowsInstaller>();
+}
+Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root) {
+  const auto trust=compiled_trust();
+  const auto root=isolated_root.isEmpty()?testing_namespace(
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)+
+      "/OverDrive/SeriousShot/updates",trust):QDir::fromNativeSeparators(isolated_root);
+  const auto exe=windows_executable(), owner=QFileInfo(exe).canonicalFilePath();
+  Slot slot(root,owner,trust.channel);
+  const auto acquired=slot.acquire();
+  if (acquired || !slot.lock || slot.record["owner"]!=owner ||
+      slot.record["channel"]!=trust.channel ||
+      !(slot.record["phase"]=="reserved" || slot.record["phase"]=="installing") ||
+      process_alive(slot.record["parent_pid"].toString().toLongLong(),slot.record["parent_creation"].toString()) ||
+      process_alive(slot.record["helper_pid"].toString().toLongLong(),slot.record["helper_creation"].toString()))
+    return Result<bool,Error>::success(false);
+  const auto runtime=slot.record["runtime"].toString(),journal=slot.record["journal"].toString();
+  const auto loaded=read_json(journal);
+  if (!loaded || !QFileInfo::exists(journal))
+    return Result<bool,Error>::failure(failure("startup_recovery_journal_missing"));
+  const auto j=loaded.value();
+  const auto transaction=j["transaction"].toString();
+  if (transaction.isEmpty() || transaction.contains('/') || transaction.contains('\\') ||
+      runtime!=root+"/helpers/"+transaction || journal!=runtime+"/transaction.json" ||
+      QFileInfo(runtime).isSymLink() || j["exe"].toString().compare(exe,Qt::CaseInsensitive)!=0 ||
+      j["generation"]!=slot.record["generation"] || j["nonce"]!=slot.record["nonce"] ||
+      j["owner"]!=slot.record["owner"] || j["slot"]!=root)
+    return Result<bool,Error>::failure(failure("startup_recovery_identity"));
+  const auto nonce=QUuid::createUuid().toString(QUuid::WithoutBraces);
+  const auto event_name=QString("Local\\Overdrive.SeriousShot.Update.Recover.Arm.")+transaction+"."+nonce;
+  HANDLE event=CreateEventW(nullptr,TRUE,FALSE,reinterpret_cast<LPCWSTR>(event_name.utf16()));
+  if (!event || GetLastError()==ERROR_ALREADY_EXISTS) {
+    if(event)CloseHandle(event);
+    return Result<bool,Error>::failure(failure("startup_recovery_event"));
+  }
+  bool armed=false;
+  struct CloseEvent { HANDLE event; bool &armed; ~CloseEvent(){if(!armed)ResetEvent(event);CloseHandle(event);} } close{event,armed};
+  const QJsonObject handoff{{"transaction",transaction},{"generation",j["generation"]},
+      {"nonce",j["nonce"]},{"recovery_nonce",nonce},{"event_name",event_name},
+      {"caller_pid",QString::number(QCoreApplication::applicationPid())},
+      {"caller_creation",process_identity(QCoreApplication::applicationPid())},{"caller_exe",exe}};
+  auto saved=save_json(runtime+"/recovery.json",handoff);
+  if(!saved)return saved;
+  QProcess helper;helper.setProgram(runtime+"/SeriousShotUpdater.exe");
+  helper.setArguments({"--recover-after-exit",journal});helper.setWorkingDirectory(runtime);
+  qint64 pid=0;
+  if(!helper.startDetached(&pid))return Result<bool,Error>::failure(failure("startup_recovery_helper"));
+  slot.record["helper_pid"]=QString::number(pid);slot.record["helper_creation"]=process_identity(pid);
+  saved=register_cleanup(root,j,pid);
+  if(saved)saved=slot.save();
+  if(!saved)return saved;
+  bool ready=false;
+  for(int n=0;n<100;++n){
+    const auto receipt=read_json(runtime+"/recovery-ready.json");
+    if(receipt && receipt.value()["recovery_nonce"]==nonce &&
+       receipt.value()["pid"].toString().toLongLong()==pid){ready=true;break;}
+    QThread::msleep(100);
+  }
+  if(!ready)return Result<bool,Error>::failure(failure("startup_recovery_ready_timeout"));
+#if HDRSHOT_UPDATE_TESTING
+  if(qEnvironmentVariableIsSet("SERIOUSSHOT_UPDATE_STARTUP_REFUSE"))
+    return Result<bool,Error>::failure(failure("startup_recovery_refused",ErrorCode::operation_cancelled));
+#endif
+  saved=save_json(runtime+"/recovery-armed.json",handoff);
+  if(!saved)return saved;
+  if(!SetEvent(event))return Result<bool,Error>::failure(failure("startup_recovery_arm"));
+  armed=true;slot.release();
+  return Result<bool,Error>::success(true);
 }
 void windows_write_start_receipt() {
   const auto args = QCoreApplication::arguments();

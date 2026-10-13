@@ -17,7 +17,7 @@ install=cache/'libsodium-install'; (install/'lib').mkdir(parents=True,exist_ok=T
 if sys.platform=='win32':
     # Upstream ReleaseLIB defaults /MT; match Qt's /MD without changing sodium code.
     crtprops=source/'builds/msvc/properties/ReleaseLIB.props'
-    crtprops.write_text(crtprops.read_text().replace('<RuntimeLibrary>MultiThreaded</RuntimeLibrary>','<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>'))
+    crtprops.write_text(crtprops.read_text(encoding='utf-8-sig').replace('<RuntimeLibrary>MultiThreaded</RuntimeLibrary>','<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>'),encoding='utf-8-sig')
     project=source/'builds/msvc/vs2022/libsodium/libsodium.vcxproj'
     subprocess.run(['msbuild',str(project),'/p:Configuration=ReleaseLIB','/p:Platform=x64',f'/p:OutDir={install / "lib"}\\','/p:TargetName=libsodium','/m'],check=True)
     shutil.copytree(source/'src/libsodium/include',install/'include',dirs_exist_ok=True)

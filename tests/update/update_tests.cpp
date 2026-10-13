@@ -1,6 +1,7 @@
 #include "application/update_coordinator.hpp"
 #include "platform/qt/update/update_catalog.hpp"
 #include "platform/qt/update/update_package.hpp"
+#include "platform/qt/update/application_paths.hpp"
 #include "test_support.hpp"
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -149,6 +150,21 @@ int main(int argc, char **argv) {
   HDRSHOT_CHECK(sodium_init() >= 0);
   using hdrshot::test::run;
   return run({
+      {"testing paths isolate daily settings and remain stable across versions",
+       [] {
+         Trust trust; trust.testing=true; trust.channel="testing";
+         const auto a=application_paths("app-data","config/settings.ini","Pictures/SeriousShot",trust);
+         // The path policy accepts trust and base locations only; product
+         // version is not an input, so upgrades use the same namespace.
+         const auto b=application_paths("app-data","config/settings.ini","Pictures/SeriousShot",trust);
+         HDRSHOT_CHECK(a.data==b.data && a.config==b.config && a.pictures==b.pictures);
+         HDRSHOT_CHECK(a.config=="app-data/testing/settings.ini" && a.pictures=="app-data/testing/Pictures");
+         HDRSHOT_CHECK(testing_namespace("updates",trust)=="updates/testing");
+         trust.testing=false;trust.channel="stable";
+         const auto normal=application_paths("app-data","config/settings.ini","Pictures/SeriousShot",trust);
+         HDRSHOT_CHECK(normal.data=="app-data" && normal.config=="config/settings.ini" && normal.pictures=="Pictures/SeriousShot");
+         HDRSHOT_CHECK(testing_namespace("updates",trust)=="updates");
+       }},
       {"strict version and lexicographic comparison",
        [] {
          for (const auto s : {"v0.1.5", "0.1", "0.01.5", "0.1.05", "-1.1.1", "0.1.5-beta",
@@ -402,8 +418,14 @@ int main(int argc, char **argv) {
          a.record["helper_creation"] = "dead";
          HDRSHOT_CHECK(a.save());
          a.release();
-         HDRSHOT_CHECK(a.acquire());
-         HDRSHOT_CHECK(a.record["phase"] == "ready");
+         HDRSHOT_CHECK(!a.acquire());
+         HDRSHOT_CHECK(a.record["phase"] == "reserved");
+         const auto journal=tmp.path()+"/transaction.json";
+         HDRSHOT_CHECK(save_json(journal,{{"phase","complete"}}));
+         a.record["journal"]=journal;
+         HDRSHOT_CHECK(a.save());a.release();
+         HDRSHOT_CHECK(!a.acquire());
+         HDRSHOT_CHECK(a.record["phase"]=="reserved");
        }},
       {"manual mounted slot blocks another payload",
        [] {
@@ -446,7 +468,7 @@ int main(int argc, char **argv) {
          extra.close();
          HDRSHOT_CHECK(!slot.acquire());
        }},
-      {"manual source preserved while orphan cleaned; symlink and blocked deletion fail closed",
+      {"manual source preserved; platform link semantics and blocked deletion fail closed",
        [] {
          QTemporaryDir tmp;
          Slot s(tmp.path(), "test", "stable");
@@ -469,9 +491,19 @@ int main(int argc, char **argv) {
          HDRSHOT_CHECK(QFileInfo::exists(s.payload()) && s.record["mount"] == "keep-me" &&
                        !QFileInfo::exists(part.fileName()));
          s.release();
+#ifdef Q_OS_WIN
+         // QFile::link requires an explicit .lnk extension on Windows;
+         // a Shell shortcut is not a filesystem link at payload.part.
+         const auto shortcut = part.fileName() + ".lnk";
+         HDRSHOT_CHECK(QFile::link(s.payload(), shortcut));
+         HDRSHOT_CHECK(QFileInfo::exists(shortcut) && !QFileInfo::exists(part.fileName()));
+         HDRSHOT_CHECK(s.acquire() && QFileInfo::exists(s.payload()));
+         HDRSHOT_CHECK(QFile::remove(shortcut));
+#else
          HDRSHOT_CHECK(QFile::link(s.payload(), part.fileName()));
          HDRSHOT_CHECK(!s.acquire());
          HDRSHOT_CHECK(QFile::remove(part.fileName()));
+#endif
          s.release();
          HDRSHOT_CHECK(QDir().mkpath(part.fileName() + "/child"));
          HDRSHOT_CHECK(!s.acquire());
