@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-13T00:40:06+08:00",
+  "timestamp": "2026-10-13T15:56:06+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "13b89c4c0313a0ad517f03ac477e5d17dc18e0cbefdb8d7a0a9a7ed0d3e2dde4",
+      "sha256": "f1a5f3c9aae8924888ba911dd7bd1d6bee86001c304f865238ed3027d5fa5c2c",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -115,7 +115,7 @@
       "mode": 420
     },
     "docs/UPDATES.md": {
-      "sha256": "bd23d733aa56c32f80b344627f44b804c6e09ece76a6ee251349ad800fb5bdd0",
+      "sha256": "031def8242b075032dfaec93ceeb41e72dcb0d1e59e1a0129b1d360584ee165d",
       "mode": 420
     },
     "docs/images/analyzer-2026-09-20.png": {
@@ -751,7 +751,7 @@
       "mode": 420
     },
     "src/platform/macos/metal_edr_presenter.mm": {
-      "sha256": "f056e011b6ab397cb387b80363159bf4ab9e46a3f83d9ea0dc68e07e1e3f4d40",
+      "sha256": "266abe668aa16af985029012399b9b25d03e37c5839f17dd60f519a17882bad0",
       "mode": 420
     },
     "src/platform/macos/screen_capture_kit_adapter.hpp": {
@@ -911,7 +911,7 @@
       "mode": 420
     },
     "src/platform/windows/windows_d3d_presenter.cpp": {
-      "sha256": "0fc98c74f194345d05b771aa877057c373775335050ce9d4aaf781bf9721a959",
+      "sha256": "252871657f7649376bd47b1a1be7abbcee530d2fab9f3cd01e9d954377649e4e",
       "mode": 420
     },
     "src/platform/windows/windows_d3d_presenter.hpp": {
@@ -1259,7 +1259,7 @@
       "mode": 420
     },
     "tests/macos_gpu_source_tests.mm": {
-      "sha256": "1b2c6b84bcacd575552faa4fb8d725e1564eb697c2c59e2c31279e1d2e1c07e3",
+      "sha256": "85dbb231cc55d6856afa8f3c42de7144cd541b8e38ac0ecad386dc7e1b16ea92",
       "mode": 420
     },
     "tests/macos_icc_profile_tests.mm": {
@@ -1271,7 +1271,7 @@
       "mode": 420
     },
     "tests/macos_metal_presenter_tests.cpp": {
-      "sha256": "8d8cdd1e7603c074a2f0dc1ecc7a10dce1146cf219de6df7bac12190e3928be0",
+      "sha256": "92554db1cc5b90bc76aae0f6c77cbffb562163113b44150453416dda90a2c365",
       "mode": 420
     },
     "tests/macos_preview_presenter_port_tests.cpp": {
@@ -1451,7 +1451,7 @@
       "mode": 420
     },
     "tests/windows_d3d_presenter_tests.cpp": {
-      "sha256": "77831701f54d4c036354c2c68c6f9963da4e8980c1938caa202f1349215c1c0d",
+      "sha256": "5fe57a9934a08ae004a188ca77c1ab160da9e7f6e6b085a841721cc7c052653e",
       "mode": 420
     },
     "tests/windows_display_mode_tests.cpp": {

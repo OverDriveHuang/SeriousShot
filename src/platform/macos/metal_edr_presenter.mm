@@ -196,7 +196,15 @@ float3 overlay_color(texture2d<float, access::read> source, constant ShaderParam
     int2 within=p%m[6];
     bool box=all(cell==center) && (within.x==0 || within.y==0 || within.x==m[6]-1 || within.y==m[6]-1);
     bool cross=(p.x==m[2]/2 && abs(p.y-m[3]/2)>m[6]) || (p.y==m[3]/2 && abs(p.x-m[2]/2)>m[6]);
-    return box || cross?float3(params.ui_white_edr):color;
+    // Keep the original white coordinates. The cross's black rails are
+    // symmetric; the box's black outline grows only outside the source cell.
+    int2 box_min=center*m[6]-1,box_max=(center+1)*m[6];
+    bool box_outline=all(p>=box_min) && all(p<=box_max) &&
+        (p.x==box_min.x || p.x==box_max.x || p.y==box_min.y || p.y==box_max.y);
+    bool cross_outline=(abs(p.x-m[2]/2)==1 && abs(p.y-m[3]/2)>m[6]) ||
+        (abs(p.y-m[3]/2)==1 && abs(p.x-m[2]/2)>m[6]);
+    if(box || cross) return float3(params.ui_white_edr);
+    return box_outline || cross_outline?float3(0.0f):color;
   }
   return apply_ui(clean_color(source,params,spans,samples,rows,float_source,gid),params,gid);
 }

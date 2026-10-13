@@ -51,7 +51,15 @@ float4 ps(Vertex v):SV_Target {
     int2 within=mp%z;
     bool box=all(cell==center) && (within.x==0 || within.y==0 || within.x==z-1 || within.y==z-1);
     bool cross=(mp.x==magnifier_rect.z/2 && abs(mp.y-magnifier_rect.w/2)>z) || (mp.y==magnifier_rect.w/2 && abs(mp.x-magnifier_rect.z/2)>z);
+    // Match Metal: white stays at its original coordinates, with symmetric
+    // black cross rails and a box outline entirely outside the source cell.
+    int2 box_min=center*z-1,box_max=(center+1)*z;
+    bool box_outline=all(mp>=box_min) && all(mp<=box_max) &&
+        (mp.x==box_min.x || mp.x==box_max.x || mp.y==box_min.y || mp.y==box_max.y);
+    bool cross_outline=(abs(mp.x-magnifier_rect.z/2)==1 && abs(mp.y-magnifier_rect.w/2)>z) ||
+        (abs(mp.y-magnifier_rect.w/2)==1 && abs(mp.x-magnifier_rect.z/2)>z);
     if(box || cross)p3=ui_white.xxx;
+    else if(box_outline || cross_outline)p3=0.0.xxx;
   }
   return float4(windows_present_p3(p3),1);
 }

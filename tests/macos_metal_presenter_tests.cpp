@@ -191,6 +191,62 @@ void encoded_sdr_is_linearized_before_preview() {
   // not a substitute for capturing an actual Finder/vibrancy surface.
   HDRSHOT_CHECK_NEAR(result.value().rgba_linear_display_p3[0], 0.21404114F, 0.0003F);
 }
+
+void magnifier_reticle_symmetric_rails_and_external_box() {
+  constexpr int width=128,height=112;
+  auto presenter=make_presenter();
+  for(float background:{0.015625F,1.0F,4.0F}) {
+    auto samples=std::make_shared<std::vector<std::uint16_t>>(width*height*4,float_to_half_bits(background));
+    for(std::size_t i=3;i<samples->size();i+=4) (*samples)[i]=float_to_half_bits(1.0F);
+    hdrshot::MacMetalOverlayRequest request;
+    request.width_px=width;request.height_px=height;
+    request.rgba_half_extended_p3=samples;request.source_is_linear=true;
+    request.ui_border_width_px=0;request.outside_linear_dim_factor=0.25F;
+    for(int zoom:{4,8,12,16}) for(bool fused:{false,true}) {
+      // Touch opposite viewport corners, including the last physical pixel.
+      for(hdrshot::PixelPoint origin:{hdrshot::PixelPoint{0,0},
+          hdrshot::PixelPoint{width-5*zoom,height-5*zoom}}) {
+        request.magnifier={true,{63,61},{origin.x,origin.y,5*zoom,5*zoom},zoom,1};
+        const auto rendered=presenter->render_offscreen(request,fused);
+        HDRSHOT_CHECK(rendered.has_value());
+        const auto& result=rendered.value();
+        auto check=[&](int x,int y,float expected) {
+          const auto offset=channel_offset(result,static_cast<std::size_t>(origin.x+x),static_cast<std::size_t>(origin.y+y));
+          for(std::size_t c=0;c<3;++c) HDRSHOT_CHECK_NEAR(result.rgba_linear_display_p3[offset+c],expected,0.002F);
+          HDRSHOT_CHECK(result.rgba_linear_display_p3[offset+3]==1.0F);
+        };
+        const int middle=5*zoom/2,last=5*zoom-1;
+        // Cross sections: unchanged source, black, original white, black,
+        // unchanged source. Fixed five samples expose width/center drift.
+        const float cross_section[]{background,0.0F,request.ui_white_edr,0.0F,background};
+        for(int i=0;i<5;++i) {
+          check(middle+i-2,0,cross_section[i]);check(middle+i-2,last,cross_section[i]);
+          check(0,middle+i-2,cross_section[i]);check(last,middle+i-2,cross_section[i]);
+        }
+        // No cap extends the arms into the existing one-zoom central gap.
+        for(int side:{-1,1}) for(int offset=-1;offset<=1;++offset) {
+          check(middle+offset,middle+side*zoom,background);
+          check(middle+side*zoom,middle+offset,background);
+          check(middle+offset,middle+side*(zoom+1),offset==0?request.ui_white_edr:0.0F);
+          check(middle+side*(zoom+1),middle+offset,offset==0?request.ui_white_edr:0.0F);
+        }
+        const int left=2*zoom,right=3*zoom-1;
+        for(int edge:{left,right}) {
+          const int outward=edge==left?-1:1;
+          check(edge,middle,request.ui_white_edr);check(middle,edge,request.ui_white_edr);
+          check(edge+outward,middle,0.0F);check(middle,edge+outward,0.0F);
+          check(edge+2*outward,middle,background);check(middle,edge+2*outward,background);
+        }
+        for(int y:{left-1,right+1}) for(int x:{left-1,right+1}) check(x,y,0.0F);
+        // At 4x all four interior pixels must survive; larger cells retain
+        // their entire interior too, with no black border painted inward.
+        for(int y=left+1;y<right;++y) for(int x=left+1;x<right;++x) check(x,y,background);
+        const int outside_x=origin.x==0?width-1:0,outside_y=origin.y==0?height-1:0;
+        HDRSHOT_CHECK_NEAR(result.rgba_linear_display_p3[channel_offset(result,static_cast<std::size_t>(outside_x),static_cast<std::size_t>(outside_y))],background*0.25F,0.001F);
+      }
+    }
+  }
+}
 }  // namespace
 
 int main() {
@@ -210,6 +266,7 @@ int main() {
   return hdrshot::test::run(std::vector<TestCase>{
       {"Linear P3 source readback is exact", linear_source_is_not_decoded_twice},
       {"Encoded SDR P3 is linearized before preview", encoded_sdr_is_linearized_before_preview},
+      {"Magnifier symmetric 3px rails and external box on dark, light and HDR", magnifier_reticle_symmetric_rails_and_external_box},
       {"Metal EDR surface and linear mask readback", frozen_surface_contract_and_linear_mask_pass_readback},
       {"Metal UI border is 203-nit SDR-referred", ui_border_uses_explicit_203_nit_value},
       {"Metal SDR surface clamps preview and UI", sdr_surface_clamps_preview_and_ui_to_standard_range},

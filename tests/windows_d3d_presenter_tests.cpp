@@ -203,21 +203,80 @@ void magnifier_all_pixels_modes_zoom_and_corners() {
           put(7+(col+3)*zoom+dx,11+(row+2)*zoom+dy,rgb);
       }
       const double white=mode==2?2.03:1.0; const Rgb marker{white,white,white};
+      const Rgb black{0,0,0};
+      // Paint an outer rectangular stroke, then the original white stroke;
+      // the interior source tile is never covered by the new black outline.
+      for(int t=-1;t<=zoom;++t) {
+        put(7+3*zoom+t,11+2*zoom-1,black); put(7+3*zoom+t,11+3*zoom,black);
+        put(7+3*zoom-1,11+2*zoom+t,black); put(7+4*zoom,11+2*zoom+t,black);
+      }
       for(int t=0;t<zoom;++t) {
         put(7+3*zoom+t,11+2*zoom,marker); put(7+3*zoom+t,11+3*zoom-1,marker);
         put(7+3*zoom,11+2*zoom+t,marker); put(7+4*zoom-1,11+2*zoom+t,marker);
       }
       const int mid_x=7*zoom/2,mid_y=5*zoom/2;
-      for(int y=0;y<mid_y-zoom;++y) put(7+mid_x,11+y,marker);
-      for(int y=mid_y+zoom+1;y<5*zoom;++y) put(7+mid_x,11+y,marker);
-      for(int x=0;x<mid_x-zoom;++x) put(7+x,11+mid_y,marker);
-      for(int x=mid_x+zoom+1;x<7*zoom;++x) put(7+x,11+mid_y,marker);
+      for(int rail=-1;rail<=1;++rail) {
+        const auto color=rail==0?marker:black;
+        for(int y=0;y<mid_y-zoom;++y) put(7+mid_x+rail,11+y,color);
+        for(int y=mid_y+zoom+1;y<5*zoom;++y) put(7+mid_x+rail,11+y,color);
+        for(int x=0;x<mid_x-zoom;++x) put(7+x,11+mid_y+rail,color);
+        for(int x=mid_x+zoom+1;x<7*zoom;++x) put(7+x,11+mid_y+rail,color);
+      }
       for(int y=0;y<magnifier_size.height;++y) for(int x=0;x<magnifier_size.width;++x)
         check_pixel(output.value(),x,y,display_oracle(expected[static_cast<std::size_t>(y*magnifier_size.width+x)],mode));
     }
     HDRSHOT_CHECK(r.model.frozen_desktop->canonical_segments.front().rgba_half==original);
     const auto counters=p->resource_counters();
     HDRSHOT_CHECK(counters.source_texture_uploads==1 && counters.clean_content_uploads==1);
+  }
+}
+void magnifier_reticle_cross_sections_on_flat_backgrounds() {
+  for(std::uint32_t mode:{1U,2U}) {
+    auto created=WindowsD3DPreviewPresenter::create(nullptr,magnifier_display(mode));
+    HDRSHOT_CHECK(created.has_value());const auto p=created.value();
+    std::uint64_t frame_id=1;
+    for(double background:{0.015625,1.0,4.0}) {
+      auto r=magnifier_request();
+      auto frame=std::make_shared<FrozenDesktop>(*r.model.frozen_desktop);
+      frame->frame_id=FrameId{frame_id++}; // A new capture owns each flat source.
+      auto& source=frame->canonical_segments.front().rgba_half;
+      for(std::size_t i=0;i<source.size();i+=4)
+        for(int c=0;c<3;++c) source[i+c]=ExtendedP3Mapper::encode_binary16(static_cast<float>(background));
+      r.model.frozen_desktop=frame;
+      const double white=mode==2?2.03:1.0;
+      for(int zoom:{4,8,12,16}) {
+        const int ox=magnifier_size.width-5*zoom,oy=magnifier_size.height-5*zoom;
+        r.model.magnifier={true,{63,61},{ox,oy,5*zoom,5*zoom},zoom,1};
+        const auto output=p->render_offscreen(r);HDRSHOT_CHECK(output.has_value());
+        auto check=[&](int x,int y,double level) {
+          check_pixel(output.value(),ox+x,oy+y,display_oracle({level,level,level},mode));
+        };
+        const int middle=5*zoom/2,last=5*zoom-1;
+        // Read transverse sections through all four arms. This checks
+        // actual GPU pixels against a five-pixel pattern, not shader math.
+        const double section[]{background,0,white,0,background};
+        for(int i=0;i<5;++i) {
+          check(middle+i-2,0,section[i]);check(middle+i-2,last,section[i]);
+          check(0,middle+i-2,section[i]);check(last,middle+i-2,section[i]);
+        }
+        for(int side:{-1,1}) for(int offset=-1;offset<=1;++offset) {
+          check(middle+offset,middle+side*zoom,background);
+          check(middle+side*zoom,middle+offset,background);
+          check(middle+offset,middle+side*(zoom+1),offset==0?white:0);
+          check(middle+side*(zoom+1),middle+offset,offset==0?white:0);
+        }
+        const int left=2*zoom,right=3*zoom-1;
+        for(int edge:{left,right}) {
+          const int outward=edge==left?-1:1;
+          check(edge,middle,white);check(middle,edge,white);
+          check(edge+outward,middle,0);check(middle,edge+outward,0);
+          check(edge+2*outward,middle,background);check(middle,edge+2*outward,background);
+        }
+        for(int y:{left-1,right+1}) for(int x:{left-1,right+1}) check(x,y,0);
+        for(int y=left+1;y<right;++y) for(int x=left+1;x<right;++x) check(x,y,background);
+        check_pixel(output.value(),0,0,display_oracle({background*.25,background*.25,background*.25},mode));
+      }
+    }
   }
 }
 void magnifier_uses_unannotated_undimmed_source() {
@@ -354,6 +413,7 @@ int main() {return test::run({{"FP16 linear mask and extended values",linear_mas
     {"Mac selection border geometry and white",selection_border_matches_mac_geometry},
     {"first frame committed before window exposure",first_frame_commits_while_window_hidden},
     {"magnifier all pixels, modes, zoom and four corners",magnifier_all_pixels_modes_zoom_and_corners},
+    {"magnifier symmetric reticle on dark, light and HDR",magnifier_reticle_cross_sections_on_flat_backgrounds},
     {"magnifier unannotated undimmed source",magnifier_uses_unannotated_undimmed_source},
     {"magnifier native cache and frame replacement",magnifier_native_cache_readback_and_frame_replacement},
     {"magnifier invalid parameters before readback",magnifier_invalid_parameters_fail_before_source_read}});}

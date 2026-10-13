@@ -1,6 +1,6 @@
 # 软件更新协议
 
-最后更新：2026-10-12 21:32:30 CST
+最后更新：2026-10-13 20:41:06 CST
 
 客户端通过 GitHub 托管的签名清单选择本平台的新版本，安装包保存在 Release 附件。正式源为：
 
@@ -9,6 +9,8 @@ https://raw.githubusercontent.com/OverDriveHuang/SeriousShot/main/updates/stable
 ```
 
 更新支持需要在构建中配置可信的 `HDRSHOT_UPDATE_PUBLIC_KEY` 和 `HDRSHOT_UPDATE_KEY_ID`。公钥可公开；私钥只用于签发清单，不能放入仓库或客户端。未配置可信公钥时，更新器不会接受远端更新。第一个包含更新器的版本需要手工安装。
+
+正式公钥见 [`updates/stable.public`](../updates/stable.public)，key ID 为 `stable-20261013`。Mac 0.1.5 是首个包含正式更新信任的版本。
 
 ## 版本与发行状态
 

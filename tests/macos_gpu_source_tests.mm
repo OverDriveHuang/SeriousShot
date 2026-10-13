@@ -970,8 +970,10 @@ void magnifier_native_source_nearest_neighbor_edges_and_overlay_separation() {
     HDRSHOT_CHECK(macos_source_texture(source)==texture);
     HDRSHOT_CHECK(std::all_of(actual.value().rgba_linear_display_p3.begin(),actual.value().rgba_linear_display_p3.end(),[](float v){return std::isfinite(v);}));
     for(int row=0;row<5;++row) for(int col=0;col<7;++col) {
-      // Choose cell interiors away from the center outline and crosshair.
-      const int dx=col*zoom+1,dy=row*zoom+1;
+      // At 4x the cross occupies three columns/rows of a cell. Sample its
+      // remaining edge, stepping past the outer box on the right/bottom.
+      const int dx=col*zoom+(col==4 || (col==3 && row==2)?1:0);
+      const int dy=row*zoom+(row==3 || (col==3 && row==2)?1:0);
       const int x=center.x+col-3,y=center.y+row-2;
       const auto offset=std::size_t(dy*size.width+dx)*4;
       if(x<0 || y<0 || x>=size.width || y>=size.height) {
