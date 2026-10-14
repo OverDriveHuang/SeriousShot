@@ -344,7 +344,7 @@ int main(int argc, char **argv) {
       if(*step==4) {
         v.error=failure("安装文件清单与当前程序不一致，自动更新未执行。当前版本仍可使用。");
         v.error->safe_context["manual_install_required"]="true";
-        v.error->safe_context["install_directory"]="D:/Users/OverDrive/Documents/my_projects/projects/cross_platform_hdr_screenshot/artifacts/2026-10-12_automatic_updates/deliverables/SeriousShot-0.1.4-testing-windows-x64_2026-10-14_00-28-50";
+        v.error->safe_context["install_directory"]="C:/Applications/SeriousShot/portable_installation_with_a_long_directory_name/long_directory_for_update_validation/long_directory_for_manual_replacement_validation/SeriousShot-0.1.4-windows-x64_2026-10-14_00-28-50";
         v.detail=v.error->safe_context.at("reason");
       }
       window.set_view(v);
