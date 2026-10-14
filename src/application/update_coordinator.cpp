@@ -242,6 +242,23 @@ void Coordinator::install() {
     publish();
   });
 }
+void Coordinator::manual_open_result(Result<bool,Error> result) {
+  if(result) {
+    view_.phase=Phase::manual_pending;
+    view_.detail="安装包已打开。\n"+view_.detail;
+  }
+  else {
+    const auto directory=view_.error?view_.error->safe_context.find("install_directory"):std::map<std::string,std::string>::const_iterator{};
+    const auto saved_directory=view_.error && directory!=view_.error->safe_context.end()?directory->second:std::string{};
+    view_.error=result.error();
+    if(view_.error->code!=ErrorCode::object_not_found)view_.error->safe_context["manual_install_required"]="true";
+    if(!saved_directory.empty())view_.error->safe_context["install_directory"]=saved_directory;
+    const auto reason=view_.error->safe_context.find("reason");
+    view_.detail=reason==view_.error->safe_context.end()?to_string(view_.error->code):reason->second;
+    view_.phase=view_.error->code==ErrorCode::object_not_found?Phase::download_failed:Phase::deferred;
+  }
+  publish();
+}
 void Coordinator::cancel() {
   if (installing_)
     return;

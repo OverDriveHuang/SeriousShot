@@ -308,7 +308,7 @@ int main(int argc, char **argv) {
   if (!qEnvironmentVariableIsSet("HDRSHOT_UPDATE_NATIVE"))
     qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication app(argc, argv);
-  if (argc >= 3 && std::string_view(argv[1]) == "--ui-probe") {
+  if (argc >= 3 && (std::string_view(argv[1]) == "--ui-probe" || std::string_view(argv[1]) == "--manual-ui-probe")) {
     const QString out = QString::fromUtf8(argv[2]);
     QDir().mkpath(out);
     app.styleHints()->setColorScheme(argc >= 4 && std::string_view(argv[3]) == "dark"
@@ -317,7 +317,7 @@ int main(int argc, char **argv) {
     UpdateWindow window;
     window.show();
     window.resize(400, 300);
-    auto step = std::make_shared<int>(0);
+    auto step = std::make_shared<int>(std::string_view(argv[1])=="--manual-ui-probe"?4:0);
     auto *timer = new QTimer(&window);
     QObject::connect(timer, &QTimer::timeout, &window, [&] {
       View v;
@@ -328,8 +328,8 @@ int main(int argc, char **argv) {
       v.last_check = 1791810000;
       v.last_success = 1791809400;
       const std::array phases{Phase::downloading, Phase::ready, Phase::check_failed,
-                              Phase::deferred};
-      v.phase = phases[static_cast<size_t>(*step % 4)];
+                              Phase::deferred,Phase::deferred};
+      v.phase = phases[static_cast<size_t>(*step % 5)];
       v.received = 42;
       v.total = 100;
       if (v.phase == Phase::check_failed)
@@ -341,17 +341,46 @@ int main(int argc, char **argv) {
             failure("安装目录暂时不可写，请检查安装位置后重试。", ErrorCode::path_not_writable);
         v.detail = "安装目录暂时不可写，请检查安装位置后重试。";
       }
+      if(*step==4) {
+        v.error=failure("安装文件清单与当前程序不一致，自动更新未执行。当前版本仍可使用。");
+        v.error->safe_context["manual_install_required"]="true";
+        v.error->safe_context["install_directory"]="D:/Users/OverDrive/Documents/my_projects/projects/cross_platform_hdr_screenshot/artifacts/2026-10-12_automatic_updates/deliverables/SeriousShot-0.1.4-testing-windows-x64_2026-10-14_00-28-50";
+        v.detail=v.error->safe_context.at("reason");
+      }
       window.set_view(v);
       QApplication::processEvents();
       window.grab().save(out + QString("/update-window-%1.png").arg(*step));
       ++*step;
-      if (*step == 4)
+      if (*step == 5)
         app.quit();
     });
     timer->start(700);
     return app.exec();
   }
   return hdrshot::test::run({
+      {"manual fallback opens package with selectable concrete instructions",[] {
+        UpdateWindow w;View v;v.phase=Phase::deferred;Candidate c;c.version={0,1,5};v.candidate=c;
+        v.error=failure("安装文件清单与当前程序不一致，当前版本仍可使用。");
+        v.error->safe_context["manual_install_required"]="true";
+        v.error->safe_context["install_directory"]="C:/Apps/SeriousShot";
+        v.detail=v.error->safe_context.at("reason");int opened=0,installed=0;
+        w.open_manual=[&]{++opened;};w.install=[&]{++installed;};w.set_view(v);
+        auto* button=w.findChild<QPushButton*>("updateWindowPrimary");
+        HDRSHOT_CHECK(button->text()==QStringLiteral("打开安装包"));button->click();
+        HDRSHOT_CHECK(opened==1 && installed==0);
+        auto* detail=w.findChild<QLabel*>("updateWindowDetail");
+        HDRSHOT_CHECK(detail->text().contains("从托盘退出") && detail->text().contains("C:/Apps/SeriousShot"));
+        HDRSHOT_CHECK(detail->textInteractionFlags() & Qt::TextSelectableByMouse);
+      }},
+      {"missing manual package offers redownload instead of install",[] {
+        Fixture f;
+        f.runtime->coordinator().manual_open_result(Result<bool,Error>::failure(
+          failure("安装包已缺失，请重新下载。",ErrorCode::object_not_found)));
+        const auto& view=f.runtime->coordinator().view();
+        HDRSHOT_CHECK(view.phase==Phase::download_failed);
+        auto& window=f.runtime->update_window();window.set_view(view);
+        HDRSHOT_CHECK(window.findChild<QPushButton*>("updateWindowPrimary")->text()==QStringLiteral("重试"));
+      }},
       {"window close semantics native chrome errors wrapping and release tag",
        [] {
          UpdateWindow w;

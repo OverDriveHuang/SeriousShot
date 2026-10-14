@@ -36,6 +36,7 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   detail_ = new QLabel(this);
   detail_->setObjectName("updateWindowDetail");
   detail_->setWordWrap(true);
+  detail_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   root->addWidget(detail_);
   time_ = new QLabel(this);
   time_->setObjectName("updateWindowCheckTime");
@@ -74,7 +75,10 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   connect(primary_, &QPushButton::clicked, this, [this] {
     if (view_.phase == Phase::ready || view_.phase == Phase::deferred ||
         view_.phase == Phase::manual_pending) {
-      if (install)
+      const auto flag=view_.error?view_.error->safe_context.find("manual_install_required"):std::map<std::string,std::string>::const_iterator{};
+      if(view_.error && flag!=view_.error->safe_context.end() && flag->second=="true") {
+        if(open_manual)open_manual();
+      } else if (install)
         install();
     } else if (view_.phase == Phase::downloading) {
       if (cancel)
@@ -155,6 +159,13 @@ void UpdateWindow::set_view(const View &view) {
       status = view.error->code == ErrorCode::operation_cancelled ? QStringLiteral("安装已取消")
                                                                   : QStringLiteral("安装未完成");
       detail = QString::fromStdString(view.detail);
+      const auto manual=view.error->safe_context.find("manual_install_required");
+      if(manual!=view.error->safe_context.end() && manual->second=="true") {
+        action=QStringLiteral("打开安装包");
+        detail+=QStringLiteral("\n打开安装包后，从托盘退出 SeriousShot，将 ZIP 内全部文件解压覆盖到下面的当前文件夹，再运行 SeriousShot.exe：");
+        const auto directory=view.error->safe_context.find("install_directory");
+        if(directory!=view.error->safe_context.end())detail+="\n"+QString::fromStdString(directory->second);
+      }
     } else if (view.busy) {
       status = QStringLiteral("新版本已下载");
       detail = QStringLiteral("当前工作结束后询问是否安装。");

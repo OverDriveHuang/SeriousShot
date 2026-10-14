@@ -15,7 +15,7 @@ public:
   void set_view(const View &);
   void present(QtWindowActivationPort *activation = nullptr);
   void set_release_page_opener(std::function<bool(const QUrl &)> opener);
-  std::function<void()> install, later, cancel, retry;
+  std::function<void()> install, later, cancel, retry, open_manual;
 
 protected:
   void closeEvent(QCloseEvent *) override;

@@ -83,6 +83,7 @@ private:
   QDeadlineTimer download_deadline_;
   int download_timeout_ms_{2 * 60 * 60 * 1000};
   bool barrier_{};
+  bool manual_opening_{};
 };
 Identity runtime_identity(const QString &install);
 } // namespace hdrshot::update

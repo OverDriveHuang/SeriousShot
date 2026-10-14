@@ -9,6 +9,9 @@ public:
                                       std::function<bool()> quit) = 0;
   virtual Result<bool, Error> cancel_manual(Slot &) = 0;
   virtual bool manual() const = 0;
+  virtual Result<bool, Error> open_manual(Slot &) {
+    return Result<bool,Error>::failure(failure("无法打开安装包，请从发布页面下载安装。"));
+  }
   virtual Result<bool, Error> recover(Slot &) {
     return Result<bool, Error>::success(true);
   }

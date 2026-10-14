@@ -158,7 +158,9 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
         handle=kernel.CreateFileW(str(install/locked_file),0x80000000,1,None,3,0,None)
         assert handle not in (None,ctypes.c_void_p(-1).value)
         owned_handles.append(handle)
-    parent=subprocess.Popen([str(install/'SeriousShot.exe'),'--install',str(envelope),str(archive),str(slot),'reject' if reject else 'accept'],cwd=cwd,env=childenv)
+    launch=str(install/'SeriousShot.exe')
+    if a.only_long: launch=launch.lower()
+    parent=subprocess.Popen([launch,'--install',str(envelope),str(archive),str(slot),'reject' if reject else 'accept'],cwd=cwd,env=childenv)
     owned_processes.append(parent)
     assert parent.wait(timeout=45)==0
     await_condition(lambda:len(list((slot/'helpers').glob('*/transaction.json')))==1)

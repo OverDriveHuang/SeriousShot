@@ -12,6 +12,7 @@ public:
   void later();
   void cancel();
   void restore(Candidate, Receipt, bool manual_pending);
+  void manual_open_result(Result<bool, Error>);
   const View &view() const { return view_; }
   std::function<void(const View &)> changed;
 

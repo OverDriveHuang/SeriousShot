@@ -128,6 +128,17 @@ public:
   bool manual() const override {
     return !HDRSHOT_WINDOWS_UPDATE_NATIVE_VALIDATED;
   }
+  Result<bool,Error> open_manual(Slot &slot) override {
+    slot.record["phase"]="manual_pending";
+    auto saved=slot.save();if(!saved)return saved;
+    const auto opened=ShellExecuteW(nullptr,L"open",
+      reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(slot.payload()).utf16()),nullptr,nullptr,SW_SHOWNORMAL);
+    if(reinterpret_cast<INT_PTR>(opened)>32)return Result<bool,Error>::success(true);
+    slot.record["phase"]="ready";(void)slot.save();
+    auto error=failure("无法打开安装包，请检查系统的 ZIP 打开方式后重试。",ErrorCode::permission_denied,Retryability::after_user_action);
+    error.safe_context["manual_install_required"]="true";
+    return Result<bool,Error>::failure(std::move(error));
+  }
   Result<bool, Error> recover(Slot &slot) override {
     const auto runtime = slot.record["runtime"].toString(),
                journal = slot.record["journal"].toString();
@@ -184,20 +195,28 @@ public:
     const auto target = QFileInfo(exe).absolutePath();
     if (QFileInfo(target).isSymLink())
       return Result<bool, Error>::failure(failure("target_reparse"));
+    const auto manual_required=[&target](const char *reason) {
+      auto error=failure(reason,ErrorCode::permission_denied,Retryability::after_user_action);
+      error.safe_context["manual_install_required"]="true";
+      error.safe_context["install_directory"]=target.toStdString();
+      return Result<bool,Error>::failure(std::move(error));
+    };
+    if(!QFileInfo::exists(target+"/package_manifest.json"))
+      return manual_required("当前目录缺少安装文件清单，自动更新未执行。当前版本仍可使用。");
     auto old_json = read_json(target + "/package_manifest.json");
     if (!old_json)
-      return Result<bool, Error>::failure(old_json.error());
+      return manual_required("安装文件清单无法读取，自动更新未执行。当前版本仍可使用。");
     auto old_version = Version::parse(old_json.value()["version"].toString().toStdString());
     if (!old_version)
-      return Result<bool, Error>::failure(old_version.error());
+      return manual_required("安装文件清单的版本信息无效，自动更新未执行。当前版本仍可使用。");
     auto old_candidate = c;
     old_candidate.version = old_version.value();
     auto old = package_manifest(target, old_candidate);
-    if (!old || target + "/" + old.value().entrypoint != exe)
-      return Result<bool, Error>::failure(failure("当前安装缺少可信受管清单，请手动安装"));
+    if (!old || (target + "/" + old.value().entrypoint).compare(exe,Qt::CaseInsensitive)!=0)
+      return manual_required("安装文件清单与当前程序不一致，自动更新未执行。当前版本仍可使用。");
     auto old_verified = verify_tree(target, old.value());
     if (!old_verified)
-      return old_verified;
+      return manual_required("当前目录的应用文件不完整或已被修改，自动更新未执行。当前版本仍可使用。");
     const auto transaction = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto nonce = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto staging = target + "/.seriousshot-stage-" + transaction;
@@ -387,7 +406,7 @@ Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root)
   const auto exe=windows_executable(), owner=QFileInfo(exe).canonicalFilePath();
   Slot slot(root,owner,trust.channel);
   const auto acquired=slot.acquire();
-  if (acquired || !slot.lock || slot.record["owner"]!=owner ||
+  if (acquired || !slot.lock || slot.record["owner"].toString().compare(owner,Qt::CaseInsensitive)!=0 ||
       slot.record["channel"]!=trust.channel ||
       !(slot.record["phase"]=="reserved" || slot.record["phase"]=="installing") ||
       process_alive(slot.record["parent_pid"].toString().toLongLong(),slot.record["parent_creation"].toString()) ||

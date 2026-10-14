@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
   const bool startup_recovery = args[1] == "--recover-after-exit";
   const auto journal = QFileInfo(args[2]).canonicalFilePath();
   if (journal.isEmpty() ||
-      QFileInfo(journal).absolutePath() != QCoreApplication::applicationDirPath())
+      QFileInfo(journal).absolutePath().compare(QCoreApplication::applicationDirPath(),Qt::CaseInsensitive)!=0)
     return 3;
   auto loaded = read_json(journal);
   if (!loaded)
@@ -163,8 +163,8 @@ int main(int argc, char **argv) {
   const auto target = j["target"].toString(), backup = j["backup"].toString(),
              staging = j["staging"].toString(), exe = j["exe"].toString(),
              nonce = j["nonce"].toString(), transaction = j["transaction"].toString();
-  if (nonce.isEmpty() || transaction.isEmpty() || QFileInfo(target).canonicalFilePath() != target ||
-      exe != target + "/" + j["old_manifest"].toObject()["entrypoint"].toString() ||
+  if (nonce.isEmpty() || transaction.isEmpty() || QFileInfo(target).canonicalFilePath().compare(target,Qt::CaseInsensitive)!=0 ||
+      exe.compare(target + "/" + j["old_manifest"].toObject()["entrypoint"].toString(),Qt::CaseInsensitive)!=0 ||
       backup != target + "/.seriousshot-backup-" + transaction ||
       staging != target + "/.seriousshot-stage-" + transaction)
     return 7;

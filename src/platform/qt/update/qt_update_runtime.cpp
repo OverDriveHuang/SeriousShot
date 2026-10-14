@@ -159,7 +159,7 @@ void Runtime::delay(unsigned seconds, std::function<void()> f) {
   QTimer::singleShot(static_cast<int>(seconds * 1000), this, std::move(f));
 }
 bool Runtime::busy() const {
-  return (busy_ && busy_()) || QApplication::activeModalWidget() != nullptr;
+  return manual_opening_ || (busy_ && busy_()) || QApplication::activeModalWidget() != nullptr;
 }
 bool Runtime::manual_install() const { return native_->manual(); }
 std::optional<Error> Runtime::previous_install_error(const Candidate &c) const {
@@ -194,6 +194,34 @@ UpdateWindow &Runtime::update_window() {
         coordinator_.later();
     };
     update_window_->cancel = [this] { coordinator_.cancel(); };
+    update_window_->open_manual=[this] {
+      if(busy())return;
+      const auto candidate=coordinator_.view().candidate;if(!candidate)return;
+      const auto token=coordinator_.view().generation;
+      manual_opening_=true;
+      auto view=coordinator_.view();view.busy=true;update_window_->set_view(view);
+      work([this,c=*candidate,token] {
+        auto result=slot_.acquire();
+        if(result) {
+          const auto checked=slot_.verified(c);
+          if(checked)result=native_->open_manual(slot_);
+          else {
+            if(slot_.record["owner"]==slot_.owner && slot_.record["key"].toString().toStdString()==c.key() &&
+               slot_.record["phase"]=="manual_pending")result=native_->cancel_manual(slot_);
+            if(result)result=Result<bool,Error>::failure(
+              failure("安装包已缺失或损坏，请点击重试重新下载。",ErrorCode::object_not_found));
+          }
+        }
+        slot_.release();
+        ui([this,c,token,result=std::move(result)]()mutable {
+          manual_opening_=false;
+          const auto& current=coordinator_.view();
+          if(current.generation==token && current.candidate && current.candidate->key()==c.key())
+            coordinator_.manual_open_result(std::move(result));
+          else render(current);
+        });
+      });
+    };
     update_window_->retry = [this] {
       coordinator_.trigger(QDateTime::currentSecsSinceEpoch(), false, true);
     };
