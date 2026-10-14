@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <future>
+#include <limits>
 
 using namespace hdrshot;
 namespace {
@@ -59,6 +60,81 @@ class GatedPixelSource final : public LinearSource {
   mutable std::vector<PixelRect> regions;mutable std::atomic<int> waits{};
   bool block_first{true},released{};
 };
+class ReadoutPixelSource final : public LinearSource {
+ public:
+  explicit ReadoutPixelSource(LinearFloatPixels pixels) : pixels_(std::move(pixels)) {}
+  PixelSize size_px() const override { return {1, 1}; }
+  std::size_t byte_count() const override { return 4 * sizeof(float); }
+  Result<bool, Error> wait_until_ready() const override {
+    return Result<bool, Error>::success(true);
+  }
+  Result<LinearFloatPixels, Error> read_region(PixelRect rect) const override {
+    HDRSHOT_CHECK((rect == PixelRect{0, 0, 1, 1}));
+    return Result<LinearFloatPixels, Error>::success(pixels_);
+  }
+ private:
+  LinearFloatPixels pixels_;
+};
+void sampler_frozen_sdr_provenance_reaches_scalar_rows() {
+  struct Case {
+    analysis::Rgb source;
+    bool frozen_sdr, tolerance;
+    DisplayDynamicRange range;
+    bool valid, sdr;
+  };
+  const auto first_hdr = std::nextafter(kCaptureSdrMaximumEdr,
+      std::numeric_limits<float>::infinity());
+  const std::vector<Case> cases{
+    {{1.0001456, .9998814, 1.0002469}, true, false, DisplayDynamicRange::sdr, true, true},
+    {{1.0040311, .8, .2}, true, false, DisplayDynamicRange::sdr, true, true},
+    {{1.0040311, .8, .2}, false, false, DisplayDynamicRange::sdr, true, false},
+    {{1.0001456, .9998814, 1.0002469}, false, true, DisplayDynamicRange::hdr, true, true},
+    {{kCaptureSdrMaximumEdr, .5, .2}, false, true, DisplayDynamicRange::hdr, true, true},
+    {{first_hdr, .5, .2}, false, true, DisplayDynamicRange::hdr, true, false},
+    {{2, .5, .2}, false, true, DisplayDynamicRange::hdr, true, false},
+    // A contradictory hand-built segment cannot override HDR pixels.
+    {{2, .5, .2}, true, true, DisplayDynamicRange::hdr, true, false},
+    {{-.1, .3, .7}, true, false, DisplayDynamicRange::sdr, true, true},
+    {{std::numeric_limits<double>::quiet_NaN(), .3, .7}, true, false,
+        DisplayDynamicRange::sdr, false, false},
+  };
+  MagnifierReadings fields;
+  fields.selected.fill(false);
+  for (int i : {1, 4, 7}) fields.selected[i] = true;
+  for (bool native : {false, true}) for (const auto& test : cases) {
+    auto frozen = std::make_shared<FrozenDesktop>();
+    CanonicalFrameSegment segment;
+    segment.display_id = {7}; segment.size_px = {1, 1};
+    segment.pixel_format = PixelFormat::rgba32_float;
+    segment.encoding = {ColorPrimaries::display_p3, TransferFunction::linear,
+                        AlphaMode::opaque, 0};
+    segment.display_dynamic_range = test.range;
+    segment.capture_frozen_sdr = test.frozen_sdr;
+    segment.capture_sdr_tolerance = test.tolerance;
+    LinearFloatPixels pixels{float(test.source[0]), float(test.source[1]),
+                             float(test.source[2]), 1};
+    if (native) segment.linear_source = std::make_shared<ReadoutPixelSource>(pixels);
+    else segment.rgba_float = pixels;
+    frozen->canonical_segments.push_back(std::move(segment));
+    auto completion = std::make_shared<std::promise<MagnifierSampleResult>>();
+    auto ready = completion->get_future();
+    MagnifierSampler sampler;
+    sampler.submit({frozen, {7}, {0, 0}, 1, 203},
+        [completion](auto result) { completion->set_value(std::move(result)); });
+    HDRSHOT_CHECK(ready.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    const auto result = ready.get();
+    HDRSHOT_CHECK(result.readout.valid == test.valid);
+    HDRSHOT_CHECK(result.readout.sdr == test.sdr);
+    if (test.valid) {
+      for (int c = 0; c < 3; ++c)
+        HDRSHOT_CHECK(result.readout.source[c] == pixels[c]);
+      const auto strict = magnifier_readout(result.readout.source, 203, false);
+      HDRSHOT_CHECK(result.readout.nits == strict.nits && result.readout.pq == strict.pq);
+    }
+    for (const auto& row : magnifier_scalar_rows(result.readout, fields))
+      if (!row.heading) HDRSHOT_CHECK((row.value != "--") == (test.valid && test.sdr));
+  }
+}
 FrozenDesktopRef magnifier_source(const std::shared_ptr<GatedPixelSource>& pixel,double scale=1) {
   auto frozen=std::make_shared<FrozenDesktop>();frozen->frame_id={31};frozen->display_generation=9;
   CanonicalFrameSegment s;s.display_id={7};s.desktop_frame_points={-800,-400,1000/scale,600/scale};s.point_pixel_scale=scale;s.size_px={1000,600};s.pixel_format=PixelFormat::rgba32_float;s.encoding={ColorPrimaries::display_p3,TransferFunction::linear,AlphaMode::opaque,0};s.linear_source=pixel;frozen->canonical_segments.push_back(std::move(s));return frozen;
@@ -680,6 +756,7 @@ int main(int argc, char** argv) {
     HDRSHOT_CHECK(pixels.save(screenshot));return 0;
   }
   return hdrshot::test::run({
+      {"frozen SDR capture sampler keeps SDR scalar rows with strict ordinary/HDR inputs", sampler_frozen_sdr_provenance_reaches_scalar_rows},
       {"host DPR mapping and paired native viewport, same-pixel dedup, off zero work", host_magnifier_pairs_physical_coordinates_and_off_does_no_work},
       {"magnifier image hole excludes annotation and restores on hide", magnifier_hole_excludes_existing_annotation_during_selection_resize},
       {"capture defaults freeze white/readings and refresh each new session", magnifier_capture_defaults_are_frozen_and_next_session_reads_new_defaults},

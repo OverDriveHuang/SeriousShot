@@ -65,6 +65,9 @@ struct NativeCaptureFrame {
   LinearSourceRef linear_source{}; // Already normalized FP32 Linear Display P3.
   // Platform opt-in for capture classification; never modifies source samples.
   bool capture_sdr_tolerance{};
+  // Explicit platform assertion from the frozen capture, independent of sample
+  // rounding. Ordinary inputs and platforms without this contract stay strict.
+  bool capture_frozen_sdr{};
 };
 
 struct NativeFrameBatch {
@@ -90,6 +93,7 @@ struct CanonicalFrameSegment {
   LinearSourceRef linear_source{};
   // Explicit capture provenance; generated/non-opted-in linear sources stay strict.
   bool capture_sdr_tolerance{};
+  bool capture_frozen_sdr{};
 };
 
 struct FrozenDesktop {

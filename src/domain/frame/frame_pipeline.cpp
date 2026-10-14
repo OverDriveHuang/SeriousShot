@@ -44,6 +44,10 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
   const bool native_linear_input = static_cast<bool>(frame.linear_source);
   const bool capture_sdr_tolerance = frame.capture_sdr_tolerance ||
       frame.encoding.transfer == TransferFunction::extended_srgb;
+  if (frame.capture_frozen_sdr && display.dynamic_range != DisplayDynamicRange::sdr) {
+    return Result<CanonicalFrameSegment, Error>::failure(frame_error(
+        ErrorCode::invalid_color_contract, "SourceColorInterpreter", frame.display_id));
+  }
   if (frame.pixel_format != (native_linear_input ? PixelFormat::rgba32_float : PixelFormat::rgba16_float)) {
     return Result<CanonicalFrameSegment, Error>::failure(frame_error(
         ErrorCode::unsupported_pixel_format, "SourceColorInterpreter", frame.display_id));
@@ -129,6 +133,7 @@ Result<CanonicalFrameSegment, Error> SourceColorInterpreter::interpret(
       native_linear_input ? 0U : (frame.pixel_format == PixelFormat::rgba32_float ? 1U : 0U),
       std::move(native_linear),
       capture_sdr_tolerance,
+      frame.capture_frozen_sdr,
   });
 }
 

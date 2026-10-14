@@ -63,6 +63,14 @@ void interpreter_accepts_only_unambiguous_native_linear_source() {
   HDRSHOT_CHECK(valid.value().rgba_half.empty() &&
                 valid.value().rgba_float.empty());
   HDRSHOT_CHECK(!valid.value().capture_sdr_tolerance);
+  HDRSHOT_CHECK(!valid.value().capture_frozen_sdr);
+  auto sdr_capture = native();
+  sdr_capture.capture_frozen_sdr = true;
+  const auto frozen_sdr = SourceColorInterpreter::interpret(sdr_capture, snapshot);
+  HDRSHOT_CHECK(frozen_sdr && frozen_sdr.value().capture_frozen_sdr);
+  auto hdr_snapshot = snapshot;
+  hdr_snapshot.dynamic_range = DisplayDynamicRange::hdr;
+  HDRSHOT_CHECK(!SourceColorInterpreter::interpret(std::move(sdr_capture), hdr_snapshot));
   auto capture = native();
   capture.capture_sdr_tolerance = true;
   auto opted = SourceColorInterpreter::interpret(std::move(capture), snapshot);

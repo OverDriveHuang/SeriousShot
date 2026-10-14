@@ -550,6 +550,7 @@ void WindowsCapturePort::capture(const CaptureBatchRequest& request, Completion 
         frame.encoding = WindowsColor::linear_p3_encoding();
         frame.linear_source = std::move(linear.value());
         frame.capture_sdr_tolerance = display.source_white.hdr_active;
+        frame.capture_frozen_sdr = !display.source_white.hdr_active;
         return Result<NativeCaptureFrame, Error>::success(std::move(frame));
       }));
     }

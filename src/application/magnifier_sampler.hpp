@@ -149,7 +149,10 @@ private:
             valid = valid && std::isfinite(c);
           if (valid)
             out.readout = magnifier_readout(rgb, req.reference_white_nits,
-                                            it->capture_sdr_tolerance);
+                                            it->capture_sdr_tolerance,
+                                            it->capture_frozen_sdr &&
+                                                it->display_dynamic_range ==
+                                                    DisplayDynamicRange::sdr);
         }
       }
       bool deliver = false;

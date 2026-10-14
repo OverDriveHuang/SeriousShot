@@ -50,10 +50,12 @@ int main(int argc, char** argv) {
         HDRSHOT_CHECK(result.has_value() && result.value().frames.size()==1);
         auto& frame=result.value().frames.front();
         HDRSHOT_CHECK(frame.capture_sdr_tolerance==display.source_white.hdr_active);
+        HDRSHOT_CHECK(frame.capture_frozen_sdr==!display.source_white.hdr_active);
         const auto source=frame.linear_source;
         const auto interpreted=SourceColorInterpreter::interpret(std::move(frame),display.snapshot);
         HDRSHOT_CHECK(interpreted && interpreted.value().linear_source==source);
         HDRSHOT_CHECK(interpreted.value().capture_sdr_tolerance==display.source_white.hdr_active);
+        HDRSHOT_CHECK(interpreted.value().capture_frozen_sdr==!display.source_white.hdr_active);
         std::cout<<"display="<<display.snapshot.id.value<<" frozen_mode="<<display.advanced_color_mode
             <<" hdr="<<display.source_white.hdr_active<<" system_white="<<display.source_white.sdr_white_nits
             <<" tolerance="<<interpreted.value().capture_sdr_tolerance<<" size="<<display.snapshot.capture_size_px.width
