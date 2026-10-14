@@ -26,6 +26,7 @@
 #include "ui/qt/settings_window.hpp"
 #include <windows.h>
 #include <QApplication>
+#include <QFile>
 #include <QBackingStore>
 #include <QDir>
 #include <QFileInfo>
@@ -71,6 +72,8 @@ class WindowsApplicationShell {
     executor_.drain();
     delete settings_window_;
     delete tray_menu_;
+    rasterizer_.reset();
+    if(font_id_>=0)(void)QFontDatabase::removeApplicationFont(font_id_);
   }
   bool initialize() {
     const QString data_root=smoke_folder_.isEmpty() ?
@@ -111,9 +114,14 @@ class WindowsApplicationShell {
     const auto font=QCoreApplication::applicationDirPath()+QStringLiteral("/assets/fonts/NotoSansSC-VF.ttf");
     rasterizer_=std::make_shared<FreeTypeTextRasterizerPort>(font.toStdString(),
         annotation_font::identity);
-    const int font_id=QFontDatabase::addApplicationFont(font);
-    const auto families=QFontDatabase::applicationFontFamilies(font_id);
-    if(font_id<0 || families.isEmpty()) {
+    QFile font_file(font);
+    const auto font_bytes=font_file.open(QIODevice::ReadOnly)?font_file.readAll():QByteArray{};
+    font_file.close();
+    // Do not register the managed file path with the Windows font service:
+    // its file handle can outlive this process and block an update rename.
+    font_id_=QFontDatabase::addApplicationFontFromData(font_bytes);
+    const auto families=QFontDatabase::applicationFontFamilies(font_id_);
+    if(font_id_<0 || families.isEmpty()) {
       record_diagnostic_failure(diagnostics_.get(),"startup",{ErrorCode::invalid_input,"font",Retryability::never,{}});
       std::cerr<<"font unavailable\n";return false;
     }
@@ -419,6 +427,7 @@ class WindowsApplicationShell {
   std::string diagnostics_folder_;
   std::shared_ptr<FreeTypeTextRasterizerPort> rasterizer_;
   std::string font_family_;
+  int font_id_{-1};
   WindowsLinearP3RangeProbe range_;
   std::unique_ptr<WindowsD3DExportPixelProcessor> pixels_;
   LibUltraHdrEncoder encoder_;
