@@ -229,6 +229,7 @@ void UpdateWindow::adjust_text_heights() {
                                                          label->heightForWidth(text_width)));
   layout()->invalidate();
   layout()->activate();
+  setMinimumHeight(std::max(300,layout()->minimumSize().height()));
 }
 void UpdateWindow::resizeEvent(QResizeEvent *event) {
   QWidget::resizeEvent(event);

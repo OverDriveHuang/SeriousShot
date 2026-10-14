@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-14T01:12:50+08:00",
+  "timestamp": "2026-10-14T08:16:01+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -1139,7 +1139,7 @@
       "mode": 420
     },
     "src/ui/qt/update_window.cpp": {
-      "sha256": "2c3e40692254c3e1392cb9e8af1323a5836773ff49c724c00b9d86a10a52b21e",
+      "sha256": "b40558b977b0972df27513620ff4d561ab7b1e5804cc2e507a1148e8e519bf30",
       "mode": 420
     },
     "src/ui/qt/update_window.hpp": {
