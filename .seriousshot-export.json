@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-14T08:23:34+08:00",
+  "timestamp": "2026-10-14T08:31:31+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -847,7 +847,7 @@
       "mode": 420
     },
     "src/platform/windows/update/windows_update_backend.cpp": {
-      "sha256": "8a9471444da9b597ccd0da426c2f75db59baac92eff56a0a6aef1f228d819cf1",
+      "sha256": "088f66737e5683588f4b75e94dcd481c98634e8e074ce7334e00a799240e666c",
       "mode": 420
     },
     "src/platform/windows/update/windows_update_native.hpp": {

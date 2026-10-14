@@ -150,6 +150,11 @@ public:
                       slot.record["helper_creation"].toString()))
       return Result<bool, Error>::failure(failure("恢复事务仍被占用"));
     QProcess helper;
+    // FreeType's CRT font stream is inheritable. The independent helper must
+    // never retain application resources after the GUI has exited.
+    helper.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+      args->inheritHandles=false;
+    });
     helper.setProgram(runtime + "/SeriousShotUpdater.exe");
     helper.setArguments({"--recover", journal});
     helper.setWorkingDirectory(runtime);
@@ -347,6 +352,9 @@ public:
     if (!arm_event || GetLastError() == ERROR_ALREADY_EXISTS)
       return Result<bool, Error>::failure(failure("arm_event_create"));
     QProcess helper;
+    helper.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+      args->inheritHandles=false;
+    });
     helper.setProgram(runtime + "/SeriousShotUpdater.exe");
     helper.setArguments({"--apply", journal});
     helper.setWorkingDirectory(runtime);
@@ -440,6 +448,9 @@ Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root)
   auto saved=save_json(runtime+"/recovery.json",handoff);
   if(!saved)return saved;
   QProcess helper;helper.setProgram(runtime+"/SeriousShotUpdater.exe");
+  helper.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+    args->inheritHandles=false;
+  });
   helper.setArguments({"--recover-after-exit",journal});helper.setWorkingDirectory(runtime);
   qint64 pid=0;
   if(!helper.startDetached(&pid))return Result<bool,Error>::failure(failure("startup_recovery_helper"));
