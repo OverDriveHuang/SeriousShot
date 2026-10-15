@@ -35,8 +35,17 @@ public:
     hide();
   }
   static constexpr int header_height() { return 28; }
-  int text_height(const MagnifierReadings &f) const {
-    return int(magnifier_scalar_rows({}, f).size()) * 22 + 12;
+  int text_height(const MagnifierReadings &f, int panel_width = 0) const {
+    const auto rows = magnifier_scalar_rows({}, f);
+    int height = 12;
+    bool preceding = false;
+    for (const auto &row : rows) {
+      if (preceding)
+        height += row.heading ? 7 : 3; // heading separator plus layout spacing
+      height += row.heading ? heading_height(row.name, panel_width) : 19;
+      preceding = true;
+    }
+    return height;
   }
   void show_sample(PixelPoint point, const MagnifierReadout &value,
                    const MagnifierReadings &fields, int image_height,
@@ -75,11 +84,10 @@ public:
           layout_->addWidget(line);
         }
         auto *label = new QLabel(r.name, content_);
+        label->setObjectName("magnifierGroupHeading");
         label->setWordWrap(true);
-        label->setFixedHeight(19);
-        auto font = label->font();
-        font.setPointSizeF(std::max(9., font.pointSizeF() - 1));
-        label->setFont(font);
+        label->setFont(heading_font());
+        label->setFixedHeight(heading_height(r.name));
         layout_->addWidget(label);
       } else
         row(r.name, r.value);
@@ -100,6 +108,18 @@ protected:
   }
 
 private:
+  QFont heading_font() const {
+    auto f = font();
+    f.setPointSizeF(std::max(9., f.pointSizeF() - 1));
+    return f;
+  }
+  int heading_height(const QString &text, int panel_width = 0) const {
+    const int available = std::max(1, (panel_width ? panel_width : width()) - 16);
+    return std::max(19, QFontMetrics(heading_font())
+                            .boundingRect(QRect(0, 0, available, 0),
+                                          Qt::TextWordWrap, text)
+                            .height());
+  }
   void refresh_palette() {
     auto pal = palette();
     const bool dark = pal.color(QPalette::Window).lightness() < 128;

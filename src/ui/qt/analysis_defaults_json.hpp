@@ -51,7 +51,16 @@ inline AnalysisDefaults analysis_defaults_from_json(const QString &json,
   d.reference_white_nits = o.value("white").toDouble(203);
   d.blur_sigma_px = o.value("blur").toDouble(0);
   d.sample_side = o.value("sampleSize").toInt(1);
-  readings_from_json(o.value("magnifier"), d.magnifier.selected);
+  const auto magnifier = o.value("magnifier").toArray();
+  // Version 2 originally stored nine groups. Keep every existing ID and leave
+  // the four appended groups off when reading those settings.
+  if (magnifier.size() == 9 &&
+      std::all_of(magnifier.begin(), magnifier.end(),
+                  [](const auto &v) { return v.isBool(); })) {
+    for (int i = 0; i < 9; ++i)
+      d.magnifier.selected[i] = magnifier[i].toBool();
+  } else
+    readings_from_json(o.value("magnifier"), d.magnifier.selected);
   readings_from_json(o.value("analyzer"), d.analyzer.selected);
   const AnalysisDefaults base;
   const std::array zooms{4, 8, 12, 16};

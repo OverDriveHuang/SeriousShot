@@ -4,11 +4,31 @@
 #include <QStringList>
 #include <vector>
 namespace hdrshot {
+// Menu position -> stable persisted ID. Never insert into the storage order.
+inline constexpr std::array<std::size_t, MagnifierReadings::count>
+    magnifier_reading_order{0, 1, 9, 2, 10, 3, 11, 12, 4, 5, 6, 7, 8};
+inline auto magnifier_menu_selection(const MagnifierReadings &readings) {
+  std::array<bool, MagnifierReadings::count> flags{};
+  for (std::size_t i = 0; i < flags.size(); ++i)
+    flags[i] = readings.selected[magnifier_reading_order[i]];
+  return flags;
+}
+inline MagnifierReadings magnifier_readings_from_menu(
+    const std::array<bool, MagnifierReadings::count> &flags) {
+  MagnifierReadings readings;
+  for (std::size_t i = 0; i < flags.size(); ++i)
+    readings.selected[magnifier_reading_order[i]] = flags[i];
+  return readings;
+}
 inline const QStringList &magnifier_reading_names() {
   static const QStringList n{"源线性 RGB / EDR · P3",
                              "Y′R′G′B′ / P3-sRGB（SDR）",
+                             "Y′R′G′B′ / sRGB-sRGB（SDR）",
                              "Y′R′G′B′ / P3-PQ",
+                             "Y′R′G′B′ / BT.2020-PQ",
                              "线性 YRGB / nit · P3",
+                             "线性 YRGB / nit · sRGB",
+                             "线性 YRGB / nit · BT.2020",
                              "L*a*b* · D65（SDR）",
                              "ITP",
                              "ICtCp",
@@ -46,39 +66,50 @@ magnifier_scalar_rows(const MagnifierReadout &r,
     for (int i = 0; i < 3; ++i)
       add(prefix + components[i], v[i], ok, precision);
   };
-  const auto &f = fields.selected;
   auto group = [&](int i) {
+    if (!fields.selected[magnifier_reading_order[i]])
+      return false;
     rows.push_back({magnifier_reading_names()[i], {}, true});
+    return true;
   };
-  if (f[0]) {
-    group(0);
+  if (group(0)) {
     triple("", r.source, {"R", "G", "B"}, true);
   }
-  if (f[1]) {
-    group(1);
+  if (group(1)) {
     add("Y′", r.srgb_y, r.sdr);
     triple("", r.srgb, {"R′", "G′", "B′"}, r.sdr);
   }
-  if (f[2]) {
-    group(2);
+  if (group(2)) {
+    add("Y′", r.srgb_sdr_y, r.sdr);
+    triple("", r.srgb_sdr, {"R′", "G′", "B′"}, r.sdr);
+  }
+  if (group(3)) {
     add("Y′", r.pq_y, true);
     triple("", r.pq, {"R′", "G′", "B′"}, true);
   }
-  if (f[3]) {
-    group(3);
+  if (group(4)) {
+    add("Y′", r.bt2020_pq_y, true);
+    triple("", r.bt2020_pq, {"R′", "G′", "B′"}, true);
+  }
+  if (group(5)) {
     add("Y", r.y_nits, true, 2);
     triple("", r.nits, {"R", "G", "B"}, true, 2);
   }
-  if (f[4]) {
-    group(4);
+  if (group(6)) {
+    add("Y", r.srgb_y_nits, true, 2);
+    triple("", r.srgb_nits, {"R", "G", "B"}, true, 2);
+  }
+  if (group(7)) {
+    add("Y", r.bt2020_y_nits, true, 2);
+    triple("", r.bt2020_nits, {"R", "G", "B"}, true, 2);
+  }
+  if (group(8)) {
     triple("", r.lab, {"L*", "a*", "b*"}, r.sdr, 2);
   }
-  if (f[5]) {
-    group(5);
+  if (group(9)) {
     triple("", r.itp, {"I", "T", "P"}, r.itp_valid);
   }
-  if (f[6]) {
-    group(6);
+  if (group(10)) {
     triple("", {r.itp[0], 2 * r.itp[1], r.itp[2]}, {"I", "Ct", "Cp"},
            r.itp_valid);
   }
@@ -90,9 +121,9 @@ magnifier_scalar_rows(const MagnifierReadout &r,
                         : QString("--")});
     add("Chroma " + plane, chroma, ok);
   };
-  if (f[7])
+  if (fields.selected[7])
     hc("a*b*", r.lab_hue, r.lab_chroma, r.sdr);
-  if (f[8])
+  if (fields.selected[8])
     hc("TP", r.tp_hue, r.tp_chroma, r.itp_valid);
   return rows;
 }

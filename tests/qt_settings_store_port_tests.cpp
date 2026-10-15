@@ -1,6 +1,7 @@
 #include "platform/qt/qt_settings_store_port.hpp"
 #include "test_support.hpp"
 #include "ui/qt/analysis_readings.hpp"
+#include "ui/qt/analysis_defaults_json.hpp"
 
 #include <QSettings>
 #include <QTemporaryDir>
@@ -363,12 +364,55 @@ void scalar_readings_are_separate_precise_and_deduplicated() {
   hdrshot::MagnifierReadings all;all.selected.fill(true);
   auto r=hdrshot::magnifier_readout({2,.25,.125},203,false);
   auto rows=hdrshot::magnifier_scalar_rows(r,all);
-  HDRSHOT_CHECK(std::count_if(rows.begin(),rows.end(),[](const auto& x){return x.value=="--";})==9);
+  HDRSHOT_CHECK(std::count_if(rows.begin(),rows.end(),[](const auto& x){return x.value=="--";})==13);
   hdrshot::AnalyzerReadings fields;fields.selected.fill(true);
   auto readout=hdrshot::analysis::make_readout({2,2,2},{1,1,1},1,0,{hdrshot::analysis::WorkingSpace::display_p3_sdr,203,0});
   const auto sdr=hdrshot::analyzer_reading_rows(readout,fields,hdrshot::analysis::WorkingSpace::display_p3_sdr);
   HDRSHOT_CHECK(sdr.filter("L*a*b*").size()==1 && sdr.filter("ITP").empty() && !sdr.join("\n").contains("--"));
   HDRSHOT_CHECK(std::isfinite(readout.encoded_luma));HDRSHOT_CHECK_NEAR(readout.encoded_luma,1,1e-12);
+}
+
+void magnifier_storage_ids_and_menu_order_are_compatible() {
+  using namespace hdrshot;
+  HDRSHOT_CHECK(magnifier_reading_names().size() == 13);
+  for (int old_id = 0; old_id < 9; ++old_id) {
+    QJsonArray flags;
+    for (int i = 0; i < 9; ++i) flags.append(i == old_id);
+    const auto json = QString::fromUtf8(QJsonDocument(QJsonObject{
+        {"version", 2}, {"white", 100}, {"magnifier", flags}}).toJson());
+    const auto old = analysis_defaults_from_json(json);
+    HDRSHOT_CHECK(old.reference_white_nits == 100);
+    for (int i = 0; i < 13; ++i)
+      HDRSHOT_CHECK(old.magnifier.selected[i] == (i == old_id));
+    const auto migrated = analysis_defaults_from_json(analysis_defaults_json(old));
+    HDRSHOT_CHECK(migrated == old);
+  }
+  for (std::size_t id = 0; id < MagnifierReadings::count; ++id) {
+    AnalysisDefaults chosen;
+    chosen.magnifier.selected.fill(false);
+    chosen.magnifier.selected[id] = true;
+    HDRSHOT_CHECK(analysis_defaults_from_json(analysis_defaults_json(chosen)) == chosen);
+    const auto menu = magnifier_menu_selection(chosen.magnifier);
+    HDRSHOT_CHECK(std::count(menu.begin(), menu.end(), true) == 1);
+    HDRSHOT_CHECK(magnifier_readings_from_menu(menu) == chosen.magnifier);
+    for (std::size_t i = 0; i < menu.size(); ++i)
+      HDRSHOT_CHECK(menu[i] == (magnifier_reading_order[i] == id));
+  }
+  const auto defaults = magnifier_menu_selection(MagnifierReadings{});
+  HDRSHOT_CHECK(defaults[0] && defaults[5]);
+  HDRSHOT_CHECK(std::count(defaults.begin(), defaults.end(), true) == 2);
+  for (std::size_t menu : {2u, 4u, 6u, 7u}) {
+    MagnifierReadings only;
+    only.selected.fill(false);
+    only.selected[magnifier_reading_order[menu]] = true;
+    const auto rows = magnifier_scalar_rows(magnifier_readout({.3, .4, .2}, 203, false), only);
+    HDRSHOT_CHECK(rows.size() == 5 && rows[0].heading);
+    HDRSHOT_CHECK(rows[0].name == magnifier_reading_names()[int(menu)]);
+    HDRSHOT_CHECK(rows[1].name == (menu < 5 ? "Y′" : "Y"));
+    HDRSHOT_CHECK(rows[2].name == (menu < 5 ? "R′" : "R"));
+    for (std::size_t i = 1; i < rows.size(); ++i)
+      HDRSHOT_CHECK(!rows[i].heading && rows[i].value != "--");
+  }
 }
 
 void analysis_defaults_roundtrip_migration_and_local_isolation() {
@@ -448,6 +492,7 @@ int main() {
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
       {"scalar readings preserve precision, separate components, deduplicate I and reject nonfinite", scalar_readings_are_separate_precise_and_deduplicated},
+      {"magnifier keeps all old storage IDs and maps 13 menu groups independently", magnifier_storage_ids_and_menu_order_are_compatible},
       {"defaults migrate once, persist independently and reject invalid patch", analysis_defaults_roundtrip_migration_and_local_isolation},
       {"corrupt defaults recover without reimporting local preferences", analysis_corrupt_values_recover_without_legacy_reentry},
       {"Analyzer preferences independent and bounded", analyzer_preferences_are_independent_bounded_and_preserved},

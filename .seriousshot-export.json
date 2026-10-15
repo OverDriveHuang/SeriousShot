@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-14T13:22:20+08:00",
+  "timestamp": "2026-10-15T11:19:43+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "4e1c2209adab0532a0f36440cbae9ef739d3919fb767abbd76d96442c807b3ab",
+      "sha256": "d06e2c7d3153b20edd0899cf6e79e44b5c3e9d1776971877da1d13772703094f",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "f40c2b9aaa85992d26e39837c313af68eda7d50a15034db91c3dda0ee5e32bc9",
+      "sha256": "68569d101ce7cc7544afe5954959eefe8eadc229cb99f3e2af0c77f478fb9a58",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -371,7 +371,7 @@
       "mode": 420
     },
     "src/domain/analysis/defaults.hpp": {
-      "sha256": "4fd8e77c3f05bdca4089acd38b8426feb11d9ed5a20b113de7737f36d6859bf1",
+      "sha256": "77cb648ca323a98b7a06711d78bd4c83e505d1268a40d02370b4723b297b5f58",
       "mode": 420
     },
     "src/domain/analysis/engine.cpp": {
@@ -471,7 +471,7 @@
       "mode": 420
     },
     "src/domain/capture/magnifier_readout.hpp": {
-      "sha256": "95cc2869c77337a73d7a1bdda58baae28773f268750355ad4f3a193afc000f6e",
+      "sha256": "6cdb9076e37393ab24a3332e1f3394c9cf2833f5778b2cc1147c9abbcb22d051",
       "mode": 420
     },
     "src/domain/color/bt2020_srgb_icc_profile.cpp": {
@@ -1043,11 +1043,11 @@
       "mode": 420
     },
     "src/ui/qt/analysis_defaults_json.hpp": {
-      "sha256": "751e2bee2745dfb842241ac2575e42444f1890b3efeab609d856369c0be9b117",
+      "sha256": "16e1a41c477e26693281d0d91b84868b723d865df49bc9a9383bd09968dc7a94",
       "mode": 420
     },
     "src/ui/qt/analysis_readings.hpp": {
-      "sha256": "af567ba2268f519aeb6825326e0a94d0e0b58bb96dcc046ab944444d23b628a0",
+      "sha256": "24461c641d14be55fd8770f10d7f871568813870b300c57119edbefa40b11e4c",
       "mode": 420
     },
     "src/ui/qt/analyzer_control_style.hpp": {
@@ -1099,7 +1099,7 @@
       "mode": 420
     },
     "src/ui/qt/capture_magnifier_panel.hpp": {
-      "sha256": "4890fdabeb37a6443ae062fe017c59b2f2e65ca2e7abf8f579d0af8159d000a5",
+      "sha256": "01fac3ad39b6f8d44896641bea5230818256abd286d1ea3b88b63e6bc26a5198",
       "mode": 420
     },
     "src/ui/qt/overlay_editor_widget.cpp": {
@@ -1115,7 +1115,7 @@
       "mode": 420
     },
     "src/ui/qt/qt_overlay_host.hpp": {
-      "sha256": "1d60b724b459141da55d927d42c02bffd88afbfcbf0bfeaf63b67aa3051c4033",
+      "sha256": "c3afbbd8e246dab33890c186b0a4348a9d9b9c28f7f3daf6bfc6fb084e19f0c3",
       "mode": 420
     },
     "src/ui/qt/qt_overlay_window_port.hpp": {
@@ -1131,7 +1131,7 @@
       "mode": 420
     },
     "src/ui/qt/settings_window.cpp": {
-      "sha256": "dec6c1e487f8c679be2fed383380201a24cb490c738f76ab441286c1ae65f764",
+      "sha256": "cbcbc5e97e19a4ff76e073944e394a5d23cfc97b0ca3731079461c5eb109a3d3",
       "mode": 420
     },
     "src/ui/qt/settings_window.hpp": {
@@ -1191,7 +1191,7 @@
       "mode": 420
     },
     "tests/capture_magnifier_tests.cpp": {
-      "sha256": "76934b2d15c44d2d3ad2bc66a96ccb7a40309b16cb46c288419e93233537d5b1",
+      "sha256": "442df3bc2672aad123ce12f5b215baf62a5f1cee8c2cd9bfff00d11e1849f35b",
       "mode": 420
     },
     "tests/capture_session_tests.cpp": {
@@ -1343,7 +1343,7 @@
       "mode": 420
     },
     "tests/qt_overlay_host_tests.cpp": {
-      "sha256": "ab8fcc035b3d670f2613042dba86390aac00c78077ff192e9be757b6d780eb2b",
+      "sha256": "2ff6f7fd379a443a68b0444db340007d5b1507b46b0eb2748b828ad24ad93474",
       "mode": 420
     },
     "tests/qt_session_diagnostics_port_tests.cpp": {
@@ -1351,7 +1351,7 @@
       "mode": 420
     },
     "tests/qt_settings_store_port_tests.cpp": {
-      "sha256": "9ef72e9d819f589cbf1927c52ec25c18624a96586b9e379b0f975aa00a8f40a4",
+      "sha256": "a7115e55c8e1fdcce7428664d8c7e65b80e859a58cea6fb9e4e41018bf53545d",
       "mode": 420
     },
     "tests/qt_test_input_platform_adapter.hpp": {
@@ -1363,7 +1363,7 @@
       "mode": 420
     },
     "tests/settings_window_tests.cpp": {
-      "sha256": "60d2dec6b081c2a0e6df8f3c059b25d7ccf4fb35591b2c9b3b1910078c323bd2",
+      "sha256": "d025ce79fdda869a7b031b7e49be9929e135856ceb9aadd4455c63c38353c377",
       "mode": 420
     },
     "tests/settings_workflow_tests.cpp": {

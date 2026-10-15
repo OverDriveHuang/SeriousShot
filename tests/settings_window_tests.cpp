@@ -2,6 +2,7 @@
 #include <QTimer>
 #include <QGroupBox>
 #include "ui/qt/settings_window.hpp"
+#include "ui/qt/analysis_readings.hpp"
 #include "core/build_metadata.hpp"
 #include "ui/qt/qt_window_activation_port.hpp"
 #include "qt_test_input_platform_adapter.hpp"
@@ -795,9 +796,17 @@ void analysis_tab_defaults_are_shared_independent_and_rollback_immediately() {
   HDRSHOT_CHECK(zoom->currentData().toInt()==8 && f.store.snapshot.analysis_defaults.magnifier_zoom==8);
   blur->setCurrentIndex(5); sample->setCurrentIndex(5);
   HDRSHOT_CHECK(f.store.snapshot.analysis_defaults.blur_sigma_px==8 && f.store.snapshot.analysis_defaults.sample_side==101);
-  HDRSHOT_CHECK(f.window.findChild<QCheckBox*>("magnifierReadingsOption4")->text()=="L*a*b* · D65（SDR）");
-  for(int i=0;i<9;++i)f.window.findChild<QCheckBox*>("magnifierReadingsOption"+QString::number(i))->setChecked(true);
-  HDRSHOT_CHECK(f.window.findChildren<QWidget*>("magnifierReadingsChip8").size()==1);
+  HDRSHOT_CHECK(f.window.findChild<QCheckBox*>("magnifierReadingsOption8")->text()=="L*a*b* · D65（SDR）");
+  HDRSHOT_CHECK(!f.window.findChild<QCheckBox*>("magnifierReadingsOption13"));
+  for(std::size_t i=0;i<MagnifierReadings::count;++i) {
+    auto* option=f.window.findChild<QCheckBox*>("magnifierReadingsOption"+QString::number(i));
+    HDRSHOT_CHECK(option && option->text()==magnifier_reading_names()[int(i)]);
+    option->setChecked(false);
+    HDRSHOT_CHECK(!f.store.snapshot.analysis_defaults.magnifier.selected[magnifier_reading_order[i]]);
+    option->setChecked(true);
+    HDRSHOT_CHECK(f.store.snapshot.analysis_defaults.magnifier.selected[magnifier_reading_order[i]]);
+  }
+  HDRSHOT_CHECK(f.window.findChildren<QWidget*>("magnifierReadingsChip12").size()==1);
   auto* scroll=f.window.findChild<QScrollArea*>("analysisSettingsScrollArea");
   HDRSHOT_CHECK(scroll && scroll->widgetResizable());
   // Explicitly lower the production minimum for this short-window stress
@@ -806,10 +815,20 @@ void analysis_tab_defaults_are_shared_independent_and_rollback_immediately() {
   f.window.resize(f.window.minimumWidth(),480); QApplication::processEvents();
   HDRSHOT_CHECK(f.window.height()==480);
   HDRSHOT_CHECK(scroll->verticalScrollBar()->maximum()>0);
-  auto* last=f.window.findChild<QWidget*>("magnifierReadingsChip8");
+  auto* last=f.window.findChild<QWidget*>("magnifierReadingsChip12");
   scroll->ensureWidgetVisible(last); QApplication::processEvents();
   HDRSHOT_CHECK(last->mapTo(scroll->viewport(),QPoint{}).y()>=0);
   HDRSHOT_CHECK(last->mapTo(scroll->viewport(),QPoint(0,last->height())).y()<=scroll->viewport()->height());
+  const auto* chips=f.window.findChild<QWidget*>("magnifierReadingsChips");
+  std::vector<QRect> previous;
+  for(std::size_t i=0;i<MagnifierReadings::count;++i) {
+    auto* chip=f.window.findChild<QWidget*>("magnifierReadingsChip"+QString::number(i));
+    HDRSHOT_CHECK(chip && chips->rect().contains(chip->geometry()));
+    const auto* label=chip->findChild<QLabel*>();
+    HDRSHOT_CHECK(label && label->height()>=label->heightForWidth(label->width()));
+    for(const auto& rect:previous) HDRSHOT_CHECK(!rect.intersects(chip->geometry()));
+    previous.push_back(chip->geometry());
+  }
 }
 
 void reading_selector_blank_area_opens_menu_and_chips_stay_independent() {
@@ -912,7 +931,7 @@ int main(int argc, char** argv) {
       QApplication::processEvents();
     }
     if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ALL_READINGS")){
-      for(int i=0;i<9;++i)fixture.window.findChild<QCheckBox*>("magnifierReadingsOption"+QString::number(i))->setChecked(true);
+      for(std::size_t i=0;i<MagnifierReadings::count;++i)fixture.window.findChild<QCheckBox*>("magnifierReadingsOption"+QString::number(i))->setChecked(true);
       for(int i=0;i<7;++i)fixture.window.findChild<QCheckBox*>("analyzerReadingsOption"+QString::number(i))->setChecked(true);
       QApplication::processEvents();
     }
@@ -968,6 +987,13 @@ int main(int argc, char** argv) {
     if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS")){
       auto* scroll=fixture.window.findChild<QScrollArea*>("analysisSettingsScrollArea");
       if(!scroll->widget()->grab().save(QString::fromUtf8(screenshot_path)+".full.png"))return 1;
+    }
+    if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_MAGNIFIER_MENU")) {
+      auto* menu=fixture.window.findChild<QToolButton*>("magnifierReadingsButton")->menu();
+      menu->popup(fixture.window.mapToGlobal(QPoint(20,20)));QApplication::processEvents();
+      HDRSHOT_CHECK(menu->actions().size()==13);
+      if(!menu->grab().save(QString::fromUtf8(screenshot_path)+".menu.png"))return 1;
+      menu->hide();
     }
     // Also inspect the only locally colored text in Settings in both palettes.
     auto* logging = fixture.window.findChild<QCheckBox*>("detailedLoggingCheckBox");

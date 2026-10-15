@@ -432,7 +432,7 @@ class QtOverlayHost final : public QWidget {
     const int image_px=magnifier_odd_pixels(available,zoom)*zoom;
     const int panel_width=int(std::ceil(image_px/scale));const int image_height=panel_width;
     const int max_height=std::max(1,editor_->height()-8);
-    const int panel_height=std::min(max_height,image_height+CaptureMagnifierPanel::header_height()+magnifier_panel_->text_height(d.magnifier));
+    const int panel_height=std::min(max_height,image_height+CaptureMagnifierPanel::header_height()+magnifier_panel_->text_height(d.magnifier,panel_width));
     int x=int(sample.point.x/scale)+24,y=int(sample.point.y/scale)+24;
     if(x+panel_width>editor_->width()-8)x=int(sample.point.x/scale)-panel_width-24;
     if(y+panel_height>editor_->height()-8)y=int(sample.point.y/scale)-panel_height-24;

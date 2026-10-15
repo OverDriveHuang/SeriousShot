@@ -48,10 +48,14 @@ void sdr_derived_copy_preserves_physical_source_and_matches_analyzer_policy() {
       HDRSHOT_CHECK(captured.valid && captured.sdr);
       HDRSHOT_CHECK(captured.source == source);
       HDRSHOT_CHECK(captured.nits == strict.nits && captured.y_nits == strict.y_nits);
+      HDRSHOT_CHECK(captured.srgb_nits == strict.srgb_nits && captured.srgb_y_nits == strict.srgb_y_nits);
+      HDRSHOT_CHECK(captured.bt2020_nits == strict.bt2020_nits && captured.bt2020_y_nits == strict.bt2020_y_nits);
       HDRSHOT_CHECK(captured.pq == strict.pq && captured.pq_y == strict.pq_y);
+      HDRSHOT_CHECK(captured.bt2020_pq == strict.bt2020_pq && captured.bt2020_pq_y == strict.bt2020_pq_y);
       HDRSHOT_CHECK(captured.itp_valid == strict.itp_valid && captured.itp == strict.itp);
       HDRSHOT_CHECK(captured.tp_chroma == strict.tp_chroma && captured.tp_hue == strict.tp_hue);
       HDRSHOT_CHECK(captured.srgb == expected.srgb && captured.srgb_y == expected.srgb_y);
+      HDRSHOT_CHECK(captured.srgb_sdr == expected.srgb_sdr && captured.srgb_sdr_y == expected.srgb_sdr_y);
       HDRSHOT_CHECK(captured.lab == expected.lab && captured.lab_chroma == expected.lab_chroma);
       HDRSHOT_CHECK(captured.lab_hue == expected.lab_hue);
       const auto working = analysis_math::working_rgb(analysis_math::a3(
@@ -62,6 +66,50 @@ void sdr_derived_copy_preserves_physical_source_and_matches_analyzer_policy() {
       // Precision stays double after clipping, rather than round-tripping Lab
       // through the analyzer's FP32 executor.
       HDRSHOT_CHECK(captured.lab[0] == expected.lab[0]);
+    }
+  }
+}
+void gamut_readouts_preserve_luminance_negative_values_and_transfer_boundaries() {
+  for (double white : {100., 203.}) {
+    for (double gray : {0., .18, 1., 2., 100.}) {
+      const auto r = magnifier_readout({gray, gray, gray}, white, false);
+      for (int c = 0; c < 3; ++c) {
+        HDRSHOT_CHECK_NEAR(r.srgb_nits[c], gray * white, 1e-8);
+        HDRSHOT_CHECK_NEAR(r.bt2020_nits[c], gray * white, 1e-8);
+        HDRSHOT_CHECK_NEAR(r.bt2020_pq[c], r.pq[c], 1e-10);
+      }
+    }
+    for (const analysis::Rgb source : {analysis::Rgb{1, 0, 0},
+             analysis::Rgb{0, 1, 0}, analysis::Rgb{0, 0, 1},
+             analysis::Rgb{-.2, 4, .01}, analysis::Rgb{100, .2, -1}}) {
+      const auto r = magnifier_readout(source, white, false);
+      HDRSHOT_CHECK(r.source == source);
+      HDRSHOT_CHECK_NEAR(r.srgb_y_nits, r.y_nits, 1e-9);
+      HDRSHOT_CHECK_NEAR(r.bt2020_y_nits, r.y_nits, 1e-9);
+      for (const auto code : r.bt2020_pq)
+        HDRSHOT_CHECK(std::isfinite(code) && code >= 0 && code <= 1);
+    }
+    const auto red = magnifier_readout({1, 0, 0}, white, false);
+    HDRSHOT_CHECK(red.srgb_nits[0] > white && red.srgb_nits[1] < 0 && red.srgb_nits[2] < 0);
+    HDRSHOT_CHECK((red.srgb_sdr == analysis::Rgb{analysis_math_double::srgb_encode(1), 0, 0}));
+    HDRSHOT_CHECK_NEAR(red.srgb_sdr_y, 0.2126390058715104, 1e-14);
+    HDRSHOT_CHECK_NEAR(red.srgb_y, 0.2289745640697488, 1e-14);
+    const auto negative = magnifier_readout({-1, 0, 0}, white, false);
+    HDRSHOT_CHECK(negative.bt2020_nits[0] < 0);
+    HDRSHOT_CHECK(negative.bt2020_pq[0] == analysis_math_double::pq_encode(0));
+    const auto bright = magnifier_readout({1000, 1000, 1000}, white, false);
+    HDRSHOT_CHECK((bright.bt2020_pq == analysis::Rgb{1, 1, 1}));
+    // Exercise the shared analyzer's full SDR policy: source clip, gamut
+    // conversion, target clip. Frozen-SDR outliers must follow that policy.
+    for (const analysis::Rgb source : {analysis::Rgb{-.5, .3, .7},
+                                      analysis::Rgb{1.004, .2, -.1}}) {
+      const auto r = magnifier_readout(source, white, false, true);
+      const auto expected = analysis_math::working_rgb(analysis_math::a3(
+          float(source[0]), float(source[1]), float(source[2])), 0u, float(white));
+      for (int c = 0; c < 3; ++c) {
+        const double linear = c == 0 ? expected.x : c == 1 ? expected.y : expected.z;
+        HDRSHOT_CHECK_NEAR(r.srgb_sdr[c], analysis_math_double::srgb_encode(linear), 3e-7);
+      }
     }
   }
 }
@@ -128,6 +176,7 @@ void invalid_configuration_is_rejected() {
 int main() {return hdrshot::test::run({
   {"readout uses frozen SDR or shared capture boundary with strict ordinary defaults",readout_capture_classification_and_strict_defaults},
   {"SDR derived clipping preserves physical readouts and analyzer policy",sdr_derived_copy_preserves_physical_source_and_matches_analyzer_policy},
+  {"gamut readouts preserve Y, negative nits and existing transfer boundaries",gamut_readouts_preserve_luminance_negative_values_and_transfer_boundaries},
   {"physical pixel boundaries at mixed DPR and negative desktop origin",physical_pixel_boundaries},
   {"nearest neighbor exact cells, center, and missing edge coordinates",nearest_neighbor_center_and_missing_edges},
   {"approved defaults share white/space and magnifier bypasses blur",approved_defaults_and_shared_white},

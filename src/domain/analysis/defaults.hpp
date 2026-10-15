@@ -4,8 +4,12 @@
 #include <array>
 namespace hdrshot {
 struct MagnifierReadings {
-  std::array<bool, 9> selected{true,  false, false, true, false,
-                               false, false, false, false};
+  // Persisted IDs 0–8 retain their original meanings. New groups append here;
+  // the Qt menu has its own display order.
+  static constexpr std::size_t count = 13;
+  std::array<bool, count> selected{true,  false, false, true, false,
+                                  false, false, false, false, false,
+                                  false, false, false};
   friend bool operator==(const MagnifierReadings &,
                          const MagnifierReadings &) = default;
 };

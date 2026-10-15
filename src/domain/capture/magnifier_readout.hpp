@@ -6,6 +6,8 @@ struct MagnifierReadout {
   bool valid{}, sdr{}, itp_valid{};
   analysis::Rgb source{}, srgb{}, pq{}, nits{}, lab{}, itp{};
   double srgb_y{}, pq_y{}, y_nits{}, lab_chroma{}, tp_chroma{};
+  analysis::Rgb srgb_sdr{}, bt2020_pq{}, srgb_nits{}, bt2020_nits{};
+  double srgb_sdr_y{}, bt2020_pq_y{}, srgb_y_nits{}, bt2020_y_nits{};
   std::optional<double> lab_hue, tp_hue;
 };
 inline MagnifierReadout magnifier_readout(analysis::Rgb source, double white,
@@ -34,6 +36,27 @@ inline MagnifierReadout magnifier_readout(analysis::Rgb source, double white,
   r.srgb_y = dot3(y_coefficients(1u), s);
   r.pq_y = dot3(y_coefficients(1u), p);
   r.y_nits = dot3(y_coefficients(1u), n);
+  // Reuse the analyzer's source-SDR clipping policy, then convert and clip the
+  // target SDR gamut. Physical/PQ readouts always use the untouched source.
+  const auto sdr_srgb = rgb_from_xyz(xyz_from_rgb(sdr, 1u), 0u);
+  const auto encoded_srgb = encode_working_rgb(
+      r.sdr ? a3(bound(sdr_srgb.x, 0., 1.), bound(sdr_srgb.y, 0., 1.),
+                 bound(sdr_srgb.z, 0., 1.)) : sdr_srgb,
+      0u, white);
+  const auto xyz = xyz_from_rgb(v, 1u);
+  const auto linear_srgb = rgb_from_xyz(xyz, 0u);
+  const auto linear_bt2020 = rgb_from_xyz(xyz, 2u);
+  const auto encoded_bt2020 = encode_working_rgb(linear_bt2020, 3u, white);
+  const auto nits_srgb = scale3(linear_srgb, white);
+  const auto nits_bt2020 = scale3(linear_bt2020, white);
+  r.srgb_sdr = rgb(encoded_srgb);
+  r.srgb_sdr_y = dot3(y_coefficients(0u), encoded_srgb);
+  r.bt2020_pq = rgb(encoded_bt2020);
+  r.bt2020_pq_y = dot3(y_coefficients(2u), encoded_bt2020);
+  r.srgb_nits = rgb(nits_srgb);
+  r.srgb_y_nits = dot3(y_coefficients(0u), nits_srgb);
+  r.bt2020_nits = rgb(nits_bt2020);
+  r.bt2020_y_nits = dot3(y_coefficients(2u), nits_bt2020);
   auto perceptual = [&](A3 a, unsigned space, analysis::Rgb &values,
                         double &chroma, std::optional<double> &hue) {
     values = rgb(a);

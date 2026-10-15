@@ -481,7 +481,7 @@ void SettingsWindow::restore_controls_from_snapshot() {
   {QSignalBlocker b(magnifier_enabled_); magnifier_enabled_->setChecked(d.magnifier_enabled);}
   const double values[]{double(d.magnifier_zoom),double(int(d.hdr_space)),double(int(d.sdr_space)),d.reference_white_nits,d.blur_sigma_px,double(d.sample_side)};
   for(int i=0;i<6;++i) {QSignalBlocker b(analysis_combos_[i]);analysis_combos_[i]->setCurrentIndex(std::max(0,analysis_combos_[i]->findData(values[i])));}
-  magnifier_readings_->set_selected(d.magnifier.selected);
+  magnifier_readings_->set_selected(magnifier_menu_selection(d.magnifier));
   analyzer_readings_->set_selected(d.analyzer.selected);
 
   loading_controls_ = true;
@@ -673,7 +673,7 @@ void SettingsWindow::persist_analysis_defaults() {
   auto d=snapshot_.analysis_defaults;d.magnifier_enabled=magnifier_enabled_->isChecked();d.magnifier_zoom=analysis_combos_[0]->currentData().toInt();
   d.hdr_space=analysis::WorkingSpace(analysis_combos_[1]->currentData().toInt());d.sdr_space=analysis::WorkingSpace(analysis_combos_[2]->currentData().toInt());
   d.reference_white_nits=analysis_combos_[3]->currentData().toDouble();d.blur_sigma_px=analysis_combos_[4]->currentData().toDouble();d.sample_side=analysis_combos_[5]->currentData().toInt();
-  d.magnifier.selected=magnifier_readings_->selected<9>();d.analyzer.selected=analyzer_readings_->selected<7>();
+  d.magnifier=magnifier_readings_from_menu(magnifier_readings_->selected<MagnifierReadings::count>());d.analyzer.selected=analyzer_readings_->selected<7>();
   if(d==snapshot_.analysis_defaults)return;
   SettingsPatch patch;patch.analysis_defaults=d;auto saved=settings_store_.save(patch);
   if(!saved){restore_controls_from_snapshot();show_status("分析设置保存失败，已恢复",true);return;}

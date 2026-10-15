@@ -100,7 +100,7 @@ void sampler_frozen_sdr_provenance_reaches_scalar_rows() {
   };
   MagnifierReadings fields;
   fields.selected.fill(false);
-  for (int i : {1, 4, 7}) fields.selected[i] = true;
+  for (int i : {1, 4, 7, 9}) fields.selected[i] = true;
   for (bool native : {false, true}) for (const auto& test : cases) {
     auto frozen = std::make_shared<FrozenDesktop>();
     CanonicalFrameSegment segment;
@@ -133,6 +133,46 @@ void sampler_frozen_sdr_provenance_reaches_scalar_rows() {
     }
     for (const auto& row : magnifier_scalar_rows(result.readout, fields))
       if (!row.heading) HDRSHOT_CHECK((row.value != "--") == (test.valid && test.sdr));
+  }
+}
+void magnifier_all_groups_keep_complete_headings_and_scalar_lines() {
+  for (bool all : {false, true}) for (int width : {200, 208, 216}) {
+    QWidget parent;
+    CaptureMagnifierPanel panel(&parent);
+    // Force the long new heading to wrap so the previous fixed 19px height
+    // fails this regression even on platforms with a small default font.
+    if (!all) panel.setFont(QFont(panel.font().family(), 16));
+    MagnifierReadings fields;
+    fields.selected.fill(all);
+    if (!all) fields.selected[9] = true;
+    // Compute the very first frame with its target width, before setGeometry.
+    const int text_height = panel.text_height(fields, width);
+    panel.resize(width, CaptureMagnifierPanel::header_height() + width + text_height);
+    panel.show_sample({1, 2}, magnifier_readout({.2, .5, .1}, 203, false), fields, width, 8);
+    parent.resize(panel.size());
+    parent.show();
+    QApplication::processEvents();
+    HDRSHOT_CHECK(panel.text_height(fields) == text_height);
+    const auto headings = panel.findChildren<QLabel*>("magnifierGroupHeading");
+    HDRSHOT_CHECK(headings.size() == (all ? 11 : 1));
+    if (!all) HDRSHOT_CHECK(headings.front()->height() > 19);
+    QStringList actual;
+    for (const auto* label : headings) {
+      actual << label->text();
+      HDRSHOT_CHECK(label->wordWrap());
+      HDRSHOT_CHECK(label->height() >= label->heightForWidth(label->width()));
+      HDRSHOT_CHECK(label->geometry().right() < width - 8);
+    }
+    HDRSHOT_CHECK(actual == (all ? magnifier_reading_names().mid(0, 11)
+                                 : QStringList{magnifier_reading_names()[2]}));
+    const auto rows = magnifier_scalar_rows(magnifier_readout({.2, .5, .1}, 203, false), fields);
+    const auto values = panel.findChildren<QLabel*>("magnifierScalarValue");
+    HDRSHOT_CHECK(values.size() == std::count_if(rows.begin(), rows.end(), [](const auto& r) { return !r.heading; }));
+    auto* content = panel.findChild<QWidget*>("captureMagnifierReadings");
+    for (const auto* label : values) {
+      HDRSHOT_CHECK(label->text() != "--");
+      HDRSHOT_CHECK(label->mapTo(content, QPoint(0, label->height())).y() <= content->height() - 6);
+    }
   }
 }
 FrozenDesktopRef magnifier_source(const std::shared_ptr<GatedPixelSource>& pixel,double scale=1) {
@@ -747,16 +787,21 @@ int main(int argc, char** argv) {
     if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_DARK")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#25282d"));pal.setColor(QPalette::WindowText,Qt::white);app.setPalette(pal);}
     QWidget parent;CaptureMagnifierPanel panel(&parent);MagnifierReadings fields;
     if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_ALL"))fields.selected.fill(true);
-    panel.resize(216,CaptureMagnifierPanel::header_height()+216+panel.text_height(fields));
+    if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_SRGB_ONLY")){fields.selected.fill(false);fields.selected[9]=true;}
+    panel.resize(216,CaptureMagnifierPanel::header_height()+216+panel.text_height(fields,216));
     analysis::Rgb rgb{.5,.3,.1};const auto rgb_path=qEnvironmentVariable("HDRSHOT_MAGNIFIER_NATIVE_RGB");if(!rgb_path.isEmpty()){std::ifstream file(rgb_path.toStdString());for(auto& c:rgb)file>>c;HDRSHOT_CHECK(file.good());}
     panel.show_sample({159,240},magnifier_readout(rgb,203,false),fields,216,8);
     parent.resize(panel.size());parent.show();QApplication::processEvents();
+    std::printf("magnifier_size=%dx%d platform=%s dpr=%.2f\n",panel.width(),panel.height(),QGuiApplication::platformName().toUtf8().constData(),panel.devicePixelRatioF());
+    for(const auto* h:panel.findChildren<QLabel*>("magnifierGroupHeading"))
+      std::printf("heading=%s geometry=%dx%d natural_height=%d\n",h->text().toUtf8().constData(),h->width(),h->height(),h->heightForWidth(h->width()));
     auto pixels=panel.grab();const auto native_path=qEnvironmentVariable("HDRSHOT_MAGNIFIER_NATIVE_IMAGE");
     if(!native_path.isEmpty()){QImage native(native_path);HDRSHOT_CHECK(!native.isNull());QPainter paint(&pixels);paint.drawImage(QRect(0,CaptureMagnifierPanel::header_height(),216,216),native);}
     HDRSHOT_CHECK(pixels.save(screenshot));return 0;
   }
   return hdrshot::test::run({
       {"frozen SDR capture sampler keeps SDR scalar rows with strict ordinary/HDR inputs", sampler_frozen_sdr_provenance_reaches_scalar_rows},
+      {"all magnifier groups retain complete wrapped headings and one scalar per line", magnifier_all_groups_keep_complete_headings_and_scalar_lines},
       {"host DPR mapping and paired native viewport, same-pixel dedup, off zero work", host_magnifier_pairs_physical_coordinates_and_off_does_no_work},
       {"magnifier image hole excludes annotation and restores on hide", magnifier_hole_excludes_existing_annotation_during_selection_resize},
       {"capture defaults freeze white/readings and refresh each new session", magnifier_capture_defaults_are_frozen_and_next_session_reads_new_defaults},
