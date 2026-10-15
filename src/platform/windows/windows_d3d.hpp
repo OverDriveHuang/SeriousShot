@@ -9,12 +9,20 @@
 #include <winrt/base.h>
 #include <cstring>
 #include <iostream>
+#include <optional>
 
 namespace hdrshot {
-inline Error windows_d3d_error(const char* module, const char* reason, HRESULT code=E_FAIL) {
-  return {ErrorCode::presenter_failed,module,Retryability::after_recreate,
-      {{"reason",reason},{"hresult",std::to_string(static_cast<std::uint32_t>(code))}}};
+inline Error windows_d3d_error(const char* module, const char* reason,
+    std::optional<HRESULT> code = {},
+    std::source_location origin = std::source_location::current()) {
+  Error error{ErrorCode::presenter_failed,module,Retryability::after_recreate,
+      {{"reason",reason}},origin};
+  if(code) error.safe_context["hresult"]=std::to_string(static_cast<std::uint32_t>(*code));
+  return error;
 }
+// Application validation may use WinRT's exception transport, but its code is
+// not an observed API return. Catch separately before hresult_error.
+struct WindowsSyntheticFailure { Error error; };
 struct WindowsD3DDevice {
   winrt::com_ptr<ID3D11Device> device;
   winrt::com_ptr<ID3D11DeviceContext> context;

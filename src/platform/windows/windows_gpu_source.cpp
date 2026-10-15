@@ -37,12 +37,14 @@ void main(uint3 position : SV_DispatchThreadID) {
   output[position.xy] = float4(p3, 1.0);
 }
 )HLSL";
-Error source_error(const char *reason, HRESULT hr = E_FAIL) {
-  return {ErrorCode::invalid_color_contract,
+Error source_error(const char *reason, std::optional<HRESULT> hr = {},
+                   std::source_location origin = std::source_location::current()) {
+  Error error{ErrorCode::invalid_color_contract,
           "WindowsGpuSource",
           Retryability::after_recreate,
-          {{"reason", reason},
-           {"hresult", std::to_string(static_cast<std::uint32_t>(hr))}}};
+          {{"reason", reason}}, origin};
+  if (hr) error.safe_context["hresult"] = std::to_string(static_cast<std::uint32_t>(*hr));
+  return error;
 }
 class WindowsGpuSource final : public LinearSource {
 public:
@@ -110,7 +112,7 @@ public:
           source_error("readback", e.code()));
     } catch (const std::bad_alloc &) {
       return Result<LinearFloatPixels, Error>::failure(
-          source_error("allocation", E_OUTOFMEMORY));
+          source_error("allocation"));
     }
   }
 
@@ -235,7 +237,7 @@ windows_normalize_scrgb_source(PixelSize size,
         source_error("normalization", e.code()));
   } catch (const std::bad_alloc &) {
     return Result<LinearSourceRef, Error>::failure(
-        source_error("allocation", E_OUTOFMEMORY));
+        source_error("allocation"));
   }
 }
 } // namespace hdrshot

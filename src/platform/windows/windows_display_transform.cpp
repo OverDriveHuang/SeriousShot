@@ -10,8 +10,9 @@ struct alignas(16) DisplayConstants {
   float padding[2]{};
 };
 
-Error transform_error(const char *reason, HRESULT hr = E_FAIL) {
-  return windows_d3d_error("WindowsDisplayTransform", reason, hr);
+Error transform_error(const char *reason, std::optional<HRESULT> hr = {},
+                      std::source_location origin = std::source_location::current()) {
+  return windows_d3d_error("WindowsDisplayTransform", reason, hr, origin);
 }
 float srgb_eotf(float code) {
   return code <= 0.04045F ? code / 12.92F

@@ -59,6 +59,9 @@ void gain_vectors_and_alpha() {
 }
 void invalid_source_and_gain() {
   const std::vector<std::uint16_t> raw{0x4000, 0x4000, 0x4000, 0x3c00};
+  const auto rejected = windows_normalize_scrgb_source({1, 1}, raw, 1.0F, -0.01);
+  HDRSHOT_CHECK(!rejected && !rejected.error().safe_context.contains("hresult"));
+  HDRSHOT_CHECK(std::string_view(rejected.error().origin.function_name()).find("windows_normalize_scrgb_source") != std::string_view::npos);
   HDRSHOT_CHECK(!windows_normalize_scrgb_source({1, 1}, raw, 1.0F, -0.01));
   HDRSHOT_CHECK(!windows_normalize_scrgb_source({1, 1}, raw, 1.0F, 3.01));
   HDRSHOT_CHECK(!windows_normalize_scrgb_source(

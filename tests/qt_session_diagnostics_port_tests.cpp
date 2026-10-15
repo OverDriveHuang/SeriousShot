@@ -233,9 +233,47 @@ void capture_compatibility_fields_survive_actual_sink() {
       resolve_capture_adjustment(tiny,true,1.0F).value(),204.0,1.0F,true);
   HDRSHOT_CHECK(read(log.exact_path()).contains("scale=1e-08"));
 }
+void native_codes_are_strict_and_mode_independent() {
+  for (const bool detailed : {false, true}) {
+    QTemporaryDir dir;
+    QtSessionDiagnosticsPort log(dir.path().toStdString());
+    HDRSHOT_CHECK(log.start(build, "Windows").has_value());
+    log.set_detailed_logging(detailed);
+    const auto emit_record = [&](const std::string& key, const std::string& value) {
+      const auto before = read(log.exact_path()).size();
+      Error error{ErrorCode::capture_failed, "fixture", Retryability::never,
+          {{"reason", "injected_failure"}, {"path", "/private/secret"}}};
+      error.safe_context[key] = value;
+      record_diagnostic_stage(&log, SessionId{17}, OperationId{2}, "capture", "ready", "failure", {}, &error);
+      return read(log.exact_path()).mid(before);
+    };
+    for (const auto& [value, expected] : std::vector<std::pair<std::string, std::string>>{
+        {"0", "0x00000000"}, {"1", "0x00000001"}, {"2147483648", "0x80000000"},
+        {"2147942405", "0x80070005"}, {"4294967295", "0xFFFFFFFF"}}) {
+      const auto line = emit_record("hresult", value);
+      HDRSHOT_CHECK(line.contains(QByteArray::fromStdString("hresult=" + expected)));
+      HDRSHOT_CHECK(line.contains(" at=") == detailed);
+      HDRSHOT_CHECK(!line.contains("secret"));
+      HDRSHOT_CHECK(line.count('\n') == 1);
+    }
+    for (const auto* value : {"", "-1", "4294967296", " 1", "1 ", "+1", "1.0", "1e3",
+        "0x80070005", "1x", "1\ninjected", "999999999999999999999999999999999"})
+      HDRSHOT_CHECK(!emit_record("hresult", value).contains("hresult="));
+    for (const auto* value : {"-3801", "0", "9223372036854775807", "-9223372036854775808"})
+      HDRSHOT_CHECK(emit_record("nativeCode", value).contains(QByteArray("nativeCode=") + value));
+    for (const auto* value : {"", "9223372036854775808", "-9223372036854775809", "+1", "-1.0",
+        "nan", " 1", "1 ", "1e3", "1\nsecret"})
+      HDRSHOT_CHECK(!emit_record("nativeCode", value).contains("nativeCode="));
+    const auto no_native = emit_record("reason", "frame_timeout");
+    HDRSHOT_CHECK(!no_native.contains("hresult="));
+    HDRSHOT_CHECK(!no_native.contains("nativeCode="));
+    HDRSHOT_CHECK(no_native.contains("reason=frame_timeout"));
+  }
+}
 }  // namespace
 int main() {
   return hdrshot::test::run({
+      {"native integer fields and both modes", native_codes_are_strict_and_mode_independent},
       {"capture compatibility actual detailed sink", capture_compatibility_fields_survive_actual_sink},
       {"detailed hot switch, source origin and privacy", detailed_mode_hot_switch_preserves_file_and_privacy},
       {"hot switch during background writes", hot_switch_is_safe_while_worker_records},

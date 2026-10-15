@@ -60,8 +60,9 @@ inline void record_diagnostic_stage(DiagnosticsPort* port,
   (void)port->record(event);
 }
 
-// Stable error code only; native context, paths and image data stay out of the
-// default log. Hosts may use this for startup/capture failures, not exports
+// The sink admits stable codes/reasons and strictly validated native integers
+// in its default log; paths, free-form context and image data remain excluded.
+// Hosts may use this for startup/capture failures, not exports
 // already recorded by ExportCompletionCoordinator.
 inline void record_diagnostic_failure(DiagnosticsPort* port,
     const std::string& subsystem, const Error& error) {

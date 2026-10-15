@@ -29,7 +29,9 @@ void mode_and_profile_guards() {
   HDRSHOT_CHECK(WindowsDisplayTransform::create(gpu.device.get(), display(1)).has_value());
   HDRSHOT_CHECK(WindowsDisplayTransform::create(gpu.device.get(), display(2)).has_value());
   auto invalid = display(3);
-  HDRSHOT_CHECK(!WindowsDisplayTransform::create(gpu.device.get(), invalid));
+  const auto rejected = WindowsDisplayTransform::create(gpu.device.get(), invalid);
+  HDRSHOT_CHECK(!rejected && !rejected.error().safe_context.contains("hresult"));
+  HDRSHOT_CHECK(std::string_view(rejected.error().origin.function_name()).find("WindowsDisplayTransform::create") != std::string_view::npos);
   invalid = display(2); invalid.source_white = {false, 203};
   HDRSHOT_CHECK(!WindowsDisplayTransform::create(gpu.device.get(), invalid));
 }

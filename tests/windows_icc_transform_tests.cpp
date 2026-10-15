@@ -371,6 +371,8 @@ void reject_bad_curves_and_luts() {
     const auto loaded=windows_load_icc_profile(fixtures().write(name,data));
     if(loaded) std::cerr << "Unexpected ICC acceptance: " << name << '\n';
     HDRSHOT_CHECK(!loaded.has_value());
+    HDRSHOT_CHECK(!loaded.error().safe_context.contains("hresult"));
+    HDRSHOT_CHECK(std::string_view(loaded.error().origin.function_name()).find("windows_load_icc_profile") != std::string_view::npos);
   };
   auto bad=original;signature(bad,trc_offset(bad),"curv");
   reject("bad-curve.icc",bad);

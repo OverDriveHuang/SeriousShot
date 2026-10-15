@@ -16,8 +16,9 @@ namespace {
 using namespace analysis;
 using Clock = std::chrono::steady_clock;
 
-Error native_error(const char *reason, HRESULT hr = E_FAIL) {
-  return windows_d3d_error("WindowsAnalysis", reason, hr);
+Error native_error(const char *reason, std::optional<HRESULT> hr = {},
+                   std::source_location origin = std::source_location::current()) {
+  return windows_d3d_error("WindowsAnalysis", reason, hr, origin);
 }
 
 // All buffers are indexed by source pixel, never by viewport sampling density.

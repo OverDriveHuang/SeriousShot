@@ -7,6 +7,7 @@
 #include <QRegularExpression>
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <vector>
 #include <utility>
@@ -34,6 +35,25 @@ QByteArray now() {
   return QDateTime::currentDateTime().toString(
       QStringLiteral("yyyy-MM-ddTHH:mm:ss.zzz")).toLatin1();
 }
+// Native codes have integer semantics. Reject partial parses, whitespace,
+// exponents and overflow instead of coercing arbitrary context to a code.
+template<class Integer>
+std::optional<Integer> native_integer(const std::string& text) {
+  if (text.empty() || text.size() > 20) return {};
+  Integer value{};
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return {};
+  return value;
+}
+QByteArray native_fields(const DiagnosticEvent& event) {
+  QByteArray out;
+  if (const auto code = native_integer<std::uint32_t>(field(event, "hresult"))) {
+    out += " hresult=0x" + QByteArray::number(*code, 16).rightJustified(8, '0').toUpper();
+  }
+  if (const auto code = native_integer<std::int64_t>(field(event, "nativeCode")))
+    out += " nativeCode=" + QByteArray::number(static_cast<qlonglong>(*code));
+  return out;
+}
 bool owned_log(const QFileInfo& info) {
   static const QRegularExpression pattern(
       QStringLiteral("^runtime-[0-9]{8}-[0-9]{6}-[0-9]{3}(?:-[0-9]+)?\\.log$"));
@@ -50,7 +70,7 @@ QByteArray detailed_fields(const DiagnosticEvent& event) {
       "logicalWidth", "logicalHeight", "scale", "currentEDR", "potentialEDR",
       "stride", "bitmapInfo", "bitsPerComponent", "bitsPerPixel", "elapsedMs",
       "diffuseWhite", "precision", "quality", "dimFactor", "uiWhite",
-      "borderWidth", "maximumLinear", "maxCLL", "maxFALL", "nativeCode",
+      "borderWidth", "maximumLinear", "maxCLL", "maxFALL",
       "linearizationPasses", "sourceBytes", "contentBuilds", "contentCacheHits", "composedPixels", "cleanBytes",
       "clippedPixels", "clippedChannels", "encodeMs", "publishMs", "queuedMs"};
   static const std::vector<std::string> codes{
@@ -87,7 +107,7 @@ QByteArray detailed_fields(const DiagnosticEvent& event) {
           QByteArray::number(location.line()) + " function=" + token(location.function_name(), 240);
     }
   }
-  return out;
+  return native_fields(event) + out;
 }
 }  // namespace
 
@@ -192,6 +212,7 @@ Result<DiagnosticReceipt, Error> QtSessionDiagnosticsPort::record(const Diagnost
     if (!reason.empty() && reason.size() <= 64 &&
         reason.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") == std::string::npos)
       line += " reason=" + QByteArray::fromStdString(reason);
+    line += native_fields(event);
   }
   return append(line + '\n');
 }

@@ -450,7 +450,8 @@ private:
         DXGI_SWAP_CHAIN_DESC1 actual{};
         winrt::check_hresult(swapchain_->GetDesc1(&actual));
         if (actual.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
-          winrt::throw_hresult(DXGI_ERROR_UNSUPPORTED);
+          throw WindowsSyntheticFailure{windows_d3d_error(
+              "WindowsAnalysisPresenter", "unsupported_surface_format")};
         record_diagnostic_stage(diagnostics_.get(),{}, {},"windows.color",
             "analysis.surface_actual","success",
             {{"requestedFormat","R16G16B16A16_FLOAT"},
@@ -572,6 +573,8 @@ public:
               }
             }
           }
+        } catch (const WindowsSyntheticFailure &e) {
+          result = Result<bool, Error>::failure(e.error);
         } catch (const winrt::hresult_error &e) {
           result = Result<bool, Error>::failure(windows_d3d_error(
               "WindowsAnalysisPresenter", "initialize", e.code()));
@@ -672,6 +675,8 @@ windows_analysis_render_offscreen(const Input &input, const SourceView &view) {
     if (!drawn)
       return Out::failure(drawn.error());
     return renderer.readback(view.target_size);
+  } catch (const WindowsSyntheticFailure &e) {
+    return Out::failure(e.error);
   } catch (const winrt::hresult_error &e) {
     return Out::failure(windows_d3d_error("WindowsAnalysisPresenter",
                                           "offscreen_initialize", e.code()));

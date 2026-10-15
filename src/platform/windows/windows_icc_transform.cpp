@@ -6,17 +6,20 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <vector>
 #include <bcrypt.h>
 #include <windows.h>
 
 namespace hdrshot {
 namespace {
-Error icc_error(const char *reason, HRESULT hr = E_FAIL) {
-  return {ErrorCode::invalid_color_contract, "WindowsIccTransform",
+Error icc_error(const char *reason, std::optional<HRESULT> hr = {},
+                std::source_location origin = std::source_location::current()) {
+  Error error{ErrorCode::invalid_color_contract, "WindowsIccTransform",
           Retryability::after_recreate,
-          {{"reason", reason},
-           {"hresult", std::to_string(static_cast<std::uint32_t>(hr))}}};
+          {{"reason", reason}}, origin};
+  if (hr) error.safe_context["hresult"] = std::to_string(static_cast<std::uint32_t>(*hr));
+  return error;
 }
 
 std::uint32_t be32(const std::vector<std::uint8_t> &v, std::size_t p) {

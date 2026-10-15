@@ -785,6 +785,7 @@ int main(int argc, char** argv) {
   const auto screenshot=qEnvironmentVariable("HDRSHOT_MAGNIFIER_SCREENSHOT");
   if(!screenshot.isEmpty()){
     if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_DARK")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#25282d"));pal.setColor(QPalette::WindowText,Qt::white);app.setPalette(pal);}
+    else if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_LIGHT")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#efefef"));pal.setColor(QPalette::WindowText,Qt::black);app.setPalette(pal);}
     QWidget parent;CaptureMagnifierPanel panel(&parent);MagnifierReadings fields;
     if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_ALL"))fields.selected.fill(true);
     if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_SRGB_ONLY")){fields.selected.fill(false);fields.selected[9]=true;}

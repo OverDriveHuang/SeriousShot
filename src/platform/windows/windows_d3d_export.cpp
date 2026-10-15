@@ -249,7 +249,7 @@ struct WindowsD3DExportPixelProcessor::Impl {
     } catch(const winrt::hresult_error& e) {
       return Result<Output,Error>::failure(windows_d3d_error("WindowsD3DExport","compute_or_readback",e.code()));
     } catch(const std::bad_alloc&) {
-      return Result<Output,Error>::failure(windows_d3d_error("WindowsD3DExport","allocation_failed",E_OUTOFMEMORY));
+      return Result<Output,Error>::failure(windows_d3d_error("WindowsD3DExport","allocation_failed"));
     }
   }
 };

@@ -100,7 +100,7 @@ struct WindowsD3DPreviewPresenter::Impl {
   Impl(HWND hwnd,WindowsDisplayInfo info,std::shared_ptr<DiagnosticsPort> log)
       :display(std::move(info)),diagnostics(std::move(log)) {
     if(display.snapshot.capture_size_px.width<=0 || display.snapshot.capture_size_px.height<=0)
-      winrt::throw_hresult(E_INVALIDARG);
+      throw WindowsSyntheticFailure{windows_d3d_error("WindowsD3DPreview", "invalid_capture_size")};
     auto transform=WindowsDisplayTransform::create(gpu.device.get(),display);
     if(!transform) {
       initialization_error=transform.error();
@@ -158,7 +158,7 @@ struct WindowsD3DPreviewPresenter::Impl {
     DXGI_SWAP_CHAIN_DESC1 actual{};
     winrt::check_hresult(swapchain->GetDesc1(&actual));
     if(actual.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT)
-      winrt::throw_hresult(DXGI_ERROR_UNSUPPORTED);
+      throw WindowsSyntheticFailure{windows_d3d_error("WindowsD3DPreview", "unsupported_surface_format")};
     record_diagnostic_stage(diagnostics.get(),{}, {},"windows.color","overlay.surface_actual","success",
         {{"requestedFormat","R16G16B16A16_FLOAT"},{"requestedSpace","RGB_FULL_G10_NONE_P709"},
          {"format",std::to_string(actual.Format)},
@@ -292,6 +292,8 @@ struct WindowsD3DPreviewPresenter::Impl {
       return Result<PresentReceipt,Error>::success({model.session_id,request.operation_id,model.frozen_desktop->frame_id,
           model.display_generation,model.selection.revision,model.annotation_document.revision,
           model.initial_highlight.revision});
+    } catch(const WindowsSyntheticFailure& e) {
+      return Result<PresentReceipt,Error>::failure(e.error);
     } catch(const winrt::hresult_error& e) {
       return Result<PresentReceipt,Error>::failure(windows_d3d_error("WindowsD3DPreview","present",e.code()));
     }
@@ -334,6 +336,9 @@ Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error> WindowsD3DPreviewPrese
       return Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error>::failure(*impl->initialization_error);
     return Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error>::success(
       std::shared_ptr<WindowsD3DPreviewPresenter>(new WindowsD3DPreviewPresenter(std::move(impl)))); }
+  catch(const WindowsSyntheticFailure& e) {
+    return Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error>::failure(e.error);
+  }
   catch(const winrt::hresult_error& e) {
     return Result<std::shared_ptr<WindowsD3DPreviewPresenter>,Error>::failure(windows_d3d_error("WindowsD3DPreview","create",e.code()));
   }

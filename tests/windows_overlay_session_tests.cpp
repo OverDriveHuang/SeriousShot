@@ -216,7 +216,42 @@ std::vector<bool> text_ink(const QImage& image) {
   return mask;
 }
 
-void actual_screen_magnifier_readings(bool native_control = false) {
+// Capture the composed desktop only. Do not ask any QWidget to paint or flush
+// its backing store: that would conceal the historical native-child defect.
+QImage desktop_pixels(const RECT& monitor) {
+  const int width = monitor.right - monitor.left;
+  const int height = monitor.bottom - monitor.top;
+  HDC screen = GetDC(nullptr);
+  HDRSHOT_CHECK(screen);
+  HDC memory = CreateCompatibleDC(screen);
+  BITMAPINFO info{};
+  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = width;
+  info.bmiHeader.biHeight = -height;
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits{};
+  HBITMAP bitmap = memory ? CreateDIBSection(screen, &info, DIB_RGB_COLORS,
+                                            &bits, nullptr, 0) : nullptr;
+  HGDIOBJ previous = bitmap ? SelectObject(memory, bitmap) : nullptr;
+  const bool captured = previous && previous != HGDI_ERROR &&
+      BitBlt(memory, 0, 0, width, height, screen, monitor.left, monitor.top,
+             SRCCOPY | CAPTUREBLT) && GdiFlush();
+  QImage pixels;
+  if (captured)
+    pixels = QImage(static_cast<const uchar*>(bits), width, height, width * 4,
+                    QImage::Format_RGB32).copy();
+  if (previous && previous != HGDI_ERROR) SelectObject(memory, previous);
+  if (bitmap) DeleteObject(bitmap);
+  if (memory) DeleteDC(memory);
+  ReleaseDC(nullptr, screen);
+  HDRSHOT_CHECK(captured && !pixels.isNull());
+  return pixels;
+}
+
+void actual_screen_magnifier_readings(bool native_control = false,
+                                     bool gamut = false) {
   CursorRestore restore_cursor(false);
   auto* screen = QGuiApplication::primaryScreen();
   HDRSHOT_CHECK(screen);
@@ -257,10 +292,16 @@ void actual_screen_magnifier_readings(bool native_control = false) {
   }
   editor.setGeometry(host.rect());
   CaptureMagnifierPanel panel(&editor);
-  const MagnifierReadings fields;
-  constexpr int image_height = 216;
+  MagnifierReadings fields;
+  // A shorter image area keeps all four new groups visible together, including
+  // wrapped Windows headings; production geometry is not changed by this test.
+  const int image_height = gamut ? 32 : 216;
+  if (gamut) {
+    fields.selected.fill(false);
+    for (int id : {9, 10, 11, 12}) fields.selected[id] = true;
+  }
   panel.setGeometry(30, 30, 216,
-                    panel.header_height() + image_height + panel.text_height(fields));
+                    panel.header_height() + image_height + panel.text_height(fields, 216));
   editor.set_magnifier_exclusion(panel.geometry());
   editor.show();
   window->configure(host, true);
@@ -270,11 +311,33 @@ void actual_screen_magnifier_readings(bool native_control = false) {
 
   const QString output = qEnvironmentVariable("HDRSHOT_MAGNIFIER_SCREEN_OUTPUT");
   if (!output.isEmpty()) HDRSHOT_CHECK(QDir().mkpath(output));
-  auto verify = [&](const char* stage, const QString& source, const QString& nit) {
+  std::cerr << "screen fixture gamut=" << gamut << " nativeControl=" << native_control
+            << " dpr=" << scale << " available=" << available.width() << 'x' << available.height()
+            << " physical=" << monitor.rcMonitor.right - monitor.rcMonitor.left << 'x'
+            << monitor.rcMonitor.bottom - monitor.rcMonitor.top << " panel="
+            << panel.width() << 'x' << panel.height() << " output=" << output.toStdString() << '\n';
+  auto verify = [&](const QString& stage, const std::vector<QString>& expected) {
     settle_visual_events();
-    const auto labels = panel.findChildren<QLabel*>("magnifierScalarValue");
-    HDRSHOT_CHECK(labels.size() == 7);
-    const std::array<QString, 7> expected{source, source, source, nit, nit, nit, nit};
+    auto labels = panel.findChildren<QLabel*>("magnifierScalarValue");
+    HDRSHOT_CHECK(labels.size() == qsizetype(expected.size()));
+    for (qsizetype i = 0; i < labels.size(); ++i)
+      HDRSHOT_CHECK(labels[i]->text() == expected[std::size_t(i)]);
+    if (gamut) {
+      QStringList selected_headings;
+      for (std::size_t position : {2u, 4u, 6u, 7u})
+        if (fields.selected[magnifier_reading_order[position]])
+          selected_headings << magnifier_reading_names()[int(position)];
+      const auto headings = panel.findChildren<QLabel*>("magnifierGroupHeading");
+      HDRSHOT_CHECK(headings.size() == selected_headings.size());
+      int previous_bottom = -1;
+      for (qsizetype i = 0; i < headings.size(); ++i) {
+        HDRSHOT_CHECK(headings[i]->text() == selected_headings[i]);
+        HDRSHOT_CHECK(headings[i]->y() > previous_bottom);
+        HDRSHOT_CHECK(headings[i]->height() >= headings[i]->heightForWidth(headings[i]->width()));
+        previous_bottom = headings[i]->geometry().bottom();
+        labels.push_back(headings[i]);
+      }
+    }
     auto* store = panel.backingStore();
     HDRSHOT_CHECK(store);
     const auto* image = dynamic_cast<const QImage*>(store->paintDevice());
@@ -283,19 +346,29 @@ void actual_screen_magnifier_readings(bool native_control = false) {
     // child surface and hide this regression. Save only owned label crops.
     std::vector<QImage> backing;
     for (qsizetype i = 0; i < labels.size(); ++i) {
-      HDRSHOT_CHECK(labels[i]->text() == expected[std::size_t(i)]);
       const QPoint offset = labels[i]->mapTo(&host, QPoint{});
       const QRect roi(qRound(offset.x() * scale), qRound(offset.y() * scale),
                       qRound(labels[i]->width() * scale), qRound(labels[i]->height() * scale));
       HDRSHOT_CHECK(image->rect().contains(roi));
       backing.push_back(image->copy(roi));
     }
-    const QImage desktop = screen->grabWindow(0).toImage();
+    const QImage desktop = gamut ? desktop_pixels(monitor.rcMonitor)
+                                : screen->grabWindow(0).toImage();
     HDRSHOT_CHECK(!desktop.isNull());
     HDRSHOT_CHECK(desktop.width() == monitor.rcMonitor.right - monitor.rcMonitor.left);
     HDRSHOT_CHECK(desktop.height() == monitor.rcMonitor.bottom - monitor.rcMonitor.top);
     POINT host_origin{};
     HDRSHOT_CHECK(ClientToScreen(reinterpret_cast<HWND>(host.winId()), &host_origin));
+    if (gamut) {
+      const QPoint origin = panel.mapTo(&host, QPoint{});
+      const QRect panel_roi(host_origin.x - monitor.rcMonitor.left + qRound(origin.x() * scale),
+                            host_origin.y - monitor.rcMonitor.top + qRound(origin.y() * scale),
+                            qRound(panel.width() * scale), qRound(panel.height() * scale));
+      HDRSHOT_CHECK(desktop.rect().contains(panel_roi));
+      HDRSHOT_CHECK(panel.geometry().bottom() < host.height());
+      if (!output.isEmpty())
+        HDRSHOT_CHECK(desktop.copy(panel_roi).save(QDir(output).filePath(stage + "-panel-screen.png")));
+    }
     for (qsizetype i = 0; i < labels.size(); ++i) {
       const QPoint offset = labels[i]->mapTo(&host, QPoint{});
       const QRect roi(host_origin.x - monitor.rcMonitor.left + qRound(offset.x() * scale),
@@ -317,7 +390,7 @@ void actual_screen_magnifier_readings(bool native_control = false) {
         actual_count += actual_ink[pixel];
         different += expected_ink[pixel] != actual_ink[pixel];
       }
-      std::cerr << "actual screen " << stage << " row=" << i
+      std::cerr << "actual screen " << stage.toStdString() << " row=" << i
                 << " value=" << labels[i]->text().toStdString()
                 << " backingInk=" << expected_count << " screenInk=" << actual_count
                 << " different=" << different << '\n';
@@ -325,16 +398,54 @@ void actual_screen_magnifier_readings(bool native_control = false) {
       HDRSHOT_CHECK(different <= std::max(3, expected_count * 12 / 100));
     }
   };
+  if (gamut) {
+    // Lock the full menu/float order to the confirmed contract independently
+    // of the production order array, then inspect every new group on screen.
+    constexpr std::array<std::size_t, 13> order{0,1,9,2,10,3,11,12,4,5,6,7,8};
+    HDRSHOT_CHECK(magnifier_reading_order == order);
+    const auto exercise = [&](const QString& selection) {
+      panel.setFixedHeight(panel.header_height() + image_height + panel.text_height(fields, 216));
+      editor.set_magnifier_exclusion(panel.geometry());
+      const std::array<MagnifierReadout, 4> samples{
+          MagnifierReadout{}, magnifier_readout({.5,.5,.5},203,false),
+          magnifier_readout({.75,.75,.75},203,false),
+          magnifier_readout({2,.5,.25},203,false)};
+      const std::array<QString, 4> stages{"placeholder", "half", "three-quarters", "hdr"};
+      for (std::size_t stage = 0; stage < samples.size(); ++stage) {
+        std::vector<QString> expected;
+        for (const auto& row : magnifier_scalar_rows(samples[stage], fields))
+          if (!row.heading) expected.push_back(row.value);
+        panel.show_sample({100,100},samples[stage],fields,image_height,8);
+        verify(selection + '-' + stages[stage], expected);
+      }
+    };
+    exercise("all-new");
+    for (int id : {9,10,11,12}) {
+      fields.selected.fill(false);
+      fields.selected[id] = true;
+      exercise("id" + QString::number(id));
+    }
+    if (!native_control) {
+      HDRSHOT_CHECK(!editor.testAttribute(Qt::WA_NativeWindow));
+      HDRSHOT_CHECK(!toolbar->testAttribute(Qt::WA_NativeWindow));
+      HDRSHOT_CHECK(!property->testAttribute(Qt::WA_NativeWindow));
+    }
+    return;
+  }
+  const auto verify_default = [&](const char* stage, const QString& source,
+                                  const QString& nit) {
+    verify(stage, {source, source, source, nit, nit, nit, nit});
+  };
   // The GPU/sampler path is covered separately by the two-host tests. This
   // case isolates delivery to the real Windows desktop, without mouse input.
   panel.show_sample({100, 100}, {}, fields, image_height, 8);
-  verify("placeholder", "--", "--");
+  verify_default("placeholder", "--", "--");
   panel.show_sample({100, 100}, magnifier_readout({.5, .5, .5}, 203, false),
                     fields, image_height, 8);
-  verify("half", "0.5000", "101.50");
+  verify_default("half", "0.5000", "101.50");
   panel.show_sample({100, 100}, magnifier_readout({.75, .75, .75}, 203, false),
                     fields, image_height, 8);
-  verify("three-quarters", "0.7500", "152.25");
+  verify_default("three-quarters", "0.7500", "152.25");
   if (!native_control) {
     HDRSHOT_CHECK(!editor.testAttribute(Qt::WA_NativeWindow));
     HDRSHOT_CHECK(!toolbar->testAttribute(Qt::WA_NativeWindow));
@@ -836,8 +947,12 @@ int main(int argc, char **argv) {
   const bool message_replay =
       argc > 1 && std::string(argv[1]) == "--message-replay";
   const bool native_control =
-      argc > 1 && std::string(argv[1]) == "--visual-readings-native-control";
-  const bool visual_readings = native_control ||
+      argc > 1 && (std::string(argv[1]) == "--visual-readings-native-control" ||
+                   std::string(argv[1]) == "--visual-gamut-readings-native-control");
+  const bool gamut_only = argc > 1 &&
+      (std::string(argv[1]) == "--visual-gamut-readings" ||
+       std::string(argv[1]) == "--visual-gamut-readings-native-control");
+  const bool visual_readings = native_control || gamut_only ||
       (argc > 1 && std::string(argv[1]) == "--visual-readings");
   if (!QGuiApplication::primaryScreen() ||
       (!message_replay && !interactive_input_desktop()) ||
@@ -861,9 +976,13 @@ int main(int argc, char **argv) {
       std::cerr << "SKIP: actual-screen readings require a visible 600-point host\n";
       return 77;
     }
-    return hdrshot::test::run({
-        {"actual Windows screen: placeholder then stationary scalar refresh",
-         [=] { actual_screen_magnifier_readings(native_control); }}});
+    std::vector<hdrshot::test::TestCase> cases;
+    if (!gamut_only)
+      cases.emplace_back("actual Windows screen: placeholder then stationary scalar refresh",
+                         [=] { actual_screen_magnifier_readings(native_control); });
+    cases.emplace_back("actual Windows BitBlt screen: four new gamut groups order and SDR/HDR refresh",
+                       [=] { actual_screen_magnifier_readings(native_control, true); });
+    return hdrshot::test::run(cases);
   }
   std::vector<hdrshot::test::TestCase> cases{
       {"two native overlays: candidate click, toolbar, Enter",
