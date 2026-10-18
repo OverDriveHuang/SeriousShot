@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-10-19 00:19:00 CST
+最后更新：2026-10-19 00:50:00 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -25,7 +25,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接画圈、加箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-[0.1.7 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.7) 提供 macOS arm64 DMG；Windows x64 ZIP 见 [0.1.6 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.6)。
+[0.1.7 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.7) 提供 macOS arm64 DMG 和 Windows x64 ZIP。
 
 ## 截图、标注、分享，一次完成
 
@@ -74,10 +74,10 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### Windows 解压运行与更新
 
-下载 [0.1.6 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.6)，完整解压到一个可写目录，不要直接在压缩包中启动。
+下载 [0.1.7 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.7)，完整解压到一个可写目录，不要直接在压缩包中启动。
 0.1.5 起支持检查、下载、校验并在原目录安装更新；点击安装后程序退出，更新完成后自动重新启动。从 0.1.4 或更早版本升级，以及从 testing 测试版切换到正式版时，请先退出旧版，手工下载并完整解压正式包，再从正式目录启动。首次运行后按需设置截图快捷键、输出格式与保存位置。Windows 10 的亮度兼容选项见下方系统支持说明。
 
-已安装 Windows 0.1.5 的用户可在软件更新中检查并下载 0.1.6，校验完成后点击安装。
+已安装 Windows 0.1.5／0.1.6 的用户可在软件更新中检查并下载 0.1.7，校验完成后点击安装。若旧版检查受到接口限流，请从 Release 页面手工下载。
 
 ### macOS 软件更新
 
