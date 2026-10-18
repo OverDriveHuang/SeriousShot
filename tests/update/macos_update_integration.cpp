@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
     return 19;
   const auto mount = slot.record["mount"].toString();
   auto wrong = c;
-  wrong.version = {0, 1, 7};
+  wrong.version.patch = c.version.patch == 0 ? 1 : 0;
   if (verify_macos_update_bundle(mount, wrong))
     return 13;
   wrong = c;
