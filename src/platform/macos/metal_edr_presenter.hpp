@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,13 @@ struct MacMetalOverlayRequest {
   std::shared_ptr<const CleanContentSnapshot> clean_content;
   LinearSourceRef linear_source;
   MagnifierPreview magnifier{};
+};
+
+// Source geometry stays in desktop pixels; the output/UI is card-local.
+struct MacMetalCardRequest {
+  MacMetalOverlayRequest source;
+  PixelSize size_px;
+  std::vector<std::uint8_t> ui_rgba;
 };
 
 struct MacMetalOverlayReadback {
@@ -80,6 +88,14 @@ class MacMetalEdrPresenter {
   [[nodiscard]] Result<MacMetalPresentReceipt, Error> present_to_layer(
       void* native_metal_layer,
       const MacMetalOverlayRequest& request);
+
+  using RefreshCard = std::function<bool(MacMetalCardRequest&)>;
+  [[nodiscard]] Result<MacMetalOverlayReadback, Error> render_card_offscreen(
+      const MacMetalCardRequest& request, bool readback = true);
+  // Refresh runs after nextDrawable, before binding any input resources. False
+  // cancels invalidated work; geometry/source/size changes stay in the queue.
+  [[nodiscard]] Result<MacMetalPresentReceipt, Error> present_card_to_layer(
+      void* layer, MacMetalCardRequest request, RefreshCard refresh);
 
  private:
   struct Impl;

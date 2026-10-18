@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-10-16 00:13:30 CST
+最后更新：2026-10-19 00:19:00 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -25,7 +25,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接画圈、加箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-[0.1.6 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.6) 提供 macOS arm64 DMG 和 Windows x64 ZIP。
+[0.1.7 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.7) 提供 macOS arm64 DMG；Windows x64 ZIP 见 [0.1.6 Release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.6)。
 
 ## 截图、标注、分享，一次完成
 

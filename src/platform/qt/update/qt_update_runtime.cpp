@@ -278,12 +278,18 @@ void Runtime::get(const QUrl &url, const QByteArray &etag,
         const auto response_etag = r->rawHeader("ETag");
         const auto error = r->error();
         const auto original = r->url();
+        const bool rate_limited = status == 429 ||
+            (status == 403 && (r->rawHeader("X-RateLimit-Remaining") == "0" ||
+                               !r->rawHeader("Retry-After").isEmpty()));
         r->deleteLater();
-        if (status >= 300 && status < 400 && status != 304 && !location.isEmpty()) {
+        // Aborted replies may retain HTTP status/Location headers. They must
+        // neither follow redirects nor turn a cached 304 into success.
+        if (error == QNetworkReply::NoError && status >= 300 && status < 400 &&
+            status != 304 && !location.isEmpty()) {
           get(original.resolved(location), etag, std::move(done), redirects + 1);
           return;
         }
-        if (status == 304) {
+        if (error == QNetworkReply::NoError && status == 304) {
           done(Result<QByteArray, Error>::success({}),
                response_etag.isEmpty() ? etag : response_etag);
           return;
@@ -295,7 +301,8 @@ void Runtime::get(const QUrl &url, const QByteArray &etag,
           const bool transient = status == 0 || status >= 500;
           done(Result<QByteArray, Error>::failure(
                    failure(status == 404                    ? "更新清单不存在"
-                           : status == 429 || status == 403 ? "更新源限流，请稍后重试"
+                           : rate_limited ? "更新源限流，请稍后重试"
+                           : status == 403 ? "更新源拒绝访问，请稍后重试"
                                                             : "更新网络请求失败",
                            ErrorCode::precondition_failed,
                            transient ? Retryability::same_input : Retryability::never)),
@@ -324,9 +331,16 @@ void Runtime::check(const Identity &identity, std::function<void(Result<Checked,
 }
 void Runtime::check_worker(const Identity &identity,
                            std::function<void(Result<Checked, Error>)> done) {
-  metadata_deadline_ = QDeadlineTimer(30000);
+  fetch_catalog(identity, [done = std::move(done)](auto fetched) {
+    done(fetched ? Result<Checked, Error>::success(fetched.value().checked)
+                 : Result<Checked, Error>::failure(fetched.error()));
+  });
+}
+void Runtime::fetch_catalog(const Identity &identity,
+                           std::function<void(Result<FetchedCatalog, Error>)> done) {
+  metadata_deadline_ = QDeadlineTimer(metadata_timeout_ms_);
   if (!trust_.configured()) {
-    done(Result<Checked, Error>::failure(failure("正式更新签名源尚未配置")));
+    done(Result<FetchedCatalog, Error>::failure(failure("正式更新签名源尚未配置")));
     return;
   }
   // Catalog acceptance is shared across installations, not a per-Runtime
@@ -336,13 +350,13 @@ void Runtime::check_worker(const Identity &identity,
     QLockFile catalog_lock(cache_path_ + ".lock");
     catalog_lock.setStaleLockTime(0);
     if (!catalog_lock.tryLock(0)) {
-      done(Result<Checked, Error>::failure(
+      done(Result<FetchedCatalog, Error>::failure(
           failure("catalog_busy", ErrorCode::precondition_failed, Retryability::same_input)));
       return;
     }
     const auto current = read_json(cache_path_);
     if (!current) {
-      done(Result<Checked, Error>::failure(current.error()));
+      done(Result<FetchedCatalog, Error>::failure(current.error()));
       return;
     }
     cache_ = current.value();
@@ -353,36 +367,36 @@ void Runtime::check_worker(const Identity &identity,
   get(trust_.catalog, etag,
       [this, identity, cached, prior, done = std::move(done)](auto body, auto response_etag) {
         if (!body) {
-          done(Result<Checked, Error>::failure(body.error()));
+          done(Result<FetchedCatalog, Error>::failure(body.error()));
           return;
         }
         const auto bytes = body.value().isEmpty() ? cached : body.value();
         const auto verified = verify_catalog(bytes, trust_);
         if (!verified) {
-          done(Result<Checked, Error>::failure(verified.error()));
+          done(Result<FetchedCatalog, Error>::failure(verified.error()));
           return;
         }
         if (prior && (verified.value().revision < prior.value().revision ||
                       (verified.value().revision == prior.value().revision &&
                        verified.value().digest != prior.value().digest))) {
-          done(Result<Checked, Error>::failure(failure("catalog_replay_conflict")));
+          done(Result<FetchedCatalog, Error>::failure(failure("catalog_replay_conflict")));
           return;
         }
         auto selected = select(verified.value().targets, identity);
         if (!selected) {
-          done(Result<Checked, Error>::failure(selected.error()));
+          done(Result<FetchedCatalog, Error>::failure(selected.error()));
           return;
         }
         QLockFile catalog_lock(cache_path_ + ".lock");
         catalog_lock.setStaleLockTime(0);
         if (!catalog_lock.tryLock(0)) {
-          done(Result<Checked, Error>::failure(
+          done(Result<FetchedCatalog, Error>::failure(
               failure("catalog_busy", ErrorCode::precondition_failed, Retryability::same_input)));
           return;
         }
         const auto current = read_json(cache_path_);
         if (!current) {
-          done(Result<Checked, Error>::failure(current.error()));
+          done(Result<FetchedCatalog, Error>::failure(current.error()));
           return;
         }
         const auto disk = verify_catalog(
@@ -390,17 +404,18 @@ void Runtime::check_worker(const Identity &identity,
         if (disk && (verified.value().revision < disk.value().revision ||
                      (verified.value().revision == disk.value().revision &&
                       verified.value().digest != disk.value().digest))) {
-          done(Result<Checked, Error>::failure(failure("catalog_replay_conflict")));
+          done(Result<FetchedCatalog, Error>::failure(failure("catalog_replay_conflict")));
+          return;
+        }
+        const QJsonObject accepted{{"envelope", QString::fromLatin1(bytes.toBase64())},
+                                   {"etag", QString::fromLatin1(response_etag)}};
+        const auto saved = save_json(cache_path_, accepted);
+        if (!saved) {
+          done(Result<FetchedCatalog, Error>::failure(saved.error()));
           return;
         }
         envelope_ = bytes;
-        cache_ = {{"envelope", QString::fromLatin1(bytes.toBase64())},
-                  {"etag", QString::fromLatin1(response_etag)}};
-        const auto saved = save_json(cache_path_, cache_);
-        if (!saved) {
-          done(Result<Checked, Error>::failure(saved.error()));
-          return;
-        }
+        cache_ = accepted;
         catalog_lock.unlock();
         std::optional<Candidate> incompatible;
         for (const auto &c : verified.value().targets)
@@ -409,28 +424,7 @@ void Runtime::check_worker(const Identity &identity,
               !c.draft && !c.prerelease && c.minimum_os > identity.os &&
               (!incompatible || c.version > incompatible->version))
             incompatible = c;
-        // Even same-version metadata requests are authenticated and recorded.
-        if (!selected.value() || selected.value()->version <= identity.version) {
-          done(Result<Checked, Error>::success({selected.value(), incompatible}));
-          return;
-        }
-        const auto candidate = *selected.value();
-        get(QUrl("https://api.github.com/repos/OverDriveHuang/SeriousShot/"
-                 "releases/" +
-                 QString::number(candidate.release_id)),
-            {}, [candidate, done](auto release, auto) {
-              if (!release) {
-                done(Result<Checked, Error>::failure(release.error()));
-                return;
-              }
-              const auto valid =
-                  verify_release(QJsonDocument::fromJson(release.value()).object(), candidate);
-              if (!valid) {
-                done(Result<Checked, Error>::failure(valid.error()));
-                return;
-              }
-              done(Result<Checked, Error>::success({candidate}));
-            });
+        done(Result<FetchedCatalog, Error>::success({{selected.value(), incompatible}, bytes}));
       });
 }
 void Runtime::acquire_and_download(const Candidate &candidate,
@@ -548,7 +542,7 @@ void Runtime::download_worker(Candidate c,
             *start = {};
             return;
           }
-          if (status >= 300 && status < 400 && !redirect.isEmpty()) {
+          if (error == QNetworkReply::NoError && status >= 300 && status < 400 && !redirect.isEmpty()) {
             (*start)(url.resolved(redirect), redirects + 1);
             return;
           }
@@ -624,29 +618,33 @@ void Runtime::cancel_download(Done done) {
 void Runtime::install(const Candidate &c, const Receipt &receipt, Done done) {
 #ifdef Q_OS_MACOS
   // Opening a manual DMG now hands off to a normal exit. Prevent new work during
-  // asynchronous Release verification, then recheck busy on the GUI thread.
+  // asynchronous catalog verification, then recheck busy on the GUI thread.
   barrier_ = true;
 #else
   barrier_ = !manual_install();
 #endif
   work([this, c, receipt, done = std::move(done)] {
-    metadata_deadline_ = QDeadlineTimer(30000);
-    get(QUrl("https://api.github.com/repos/OverDriveHuang/SeriousShot/"
-             "releases/" +
-             QString::number(c.release_id)),
-        {}, [this, c, receipt, done](auto release, auto) {
-          auto result = release
-                            ? verify_release(QJsonDocument::fromJson(release.value()).object(), c)
-                            : Result<bool, Error>::failure(release.error());
+    fetch_catalog(identity_, [this, c, receipt, done](auto checked) {
+          auto result = checked ? Result<bool, Error>::success(true)
+                                : Result<bool, Error>::failure(checked.error());
+          if (result && (!checked.value().checked.candidate ||
+                         checked.value().checked.candidate->version <= identity_.version ||
+                         *checked.value().checked.candidate != c))
+            result = Result<bool, Error>::failure(failure("更新清单已变化，请重新检查更新"));
+          if (!result) {
+            auto error = result.error();
+            error.safe_context["recheck_required"] = "true";
+            result = Result<bool, Error>::failure(std::move(error));
+          }
           if (result) {
             result = slot_.acquire();
             if (result) {
-              auto checked = slot_.verified(c);
-              if (!slot_.matches(receipt) || !checked)
+              auto package = slot_.verified(c);
+              if (!slot_.matches(receipt) || !package)
                 result = Result<bool, Error>::failure(failure(
                     "安装包已缺失或损坏，请检查更新以自动补下载", ErrorCode::object_not_found));
               else
-                result = native_->install(slot_, c, envelope_, [this] {
+                result = native_->install(slot_, c, checked.value().envelope, [this] {
                   struct Decision {
                     std::atomic_bool done{false};
                     bool accepted{};

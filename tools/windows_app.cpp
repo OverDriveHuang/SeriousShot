@@ -250,10 +250,11 @@ class WindowsApplicationShell {
       if(!qt_screen) {report({ErrorCode::display_configuration_changed,"WindowsShell",Retryability::after_recreate,{{"reason","qt_screen_not_found"}}});finish_capture();return;}
       auto* host=new QtOverlayHost(std::make_unique<WindowsQtOverlayWindow>(display),display.snapshot.id,initial,input_,input_recovery);
       host->setGeometry(qt_screen->geometry());
-      host->prepare_hidden_native_surface();
+      const auto prepared=host->prepare_hidden_native_surface();
+      if(!prepared) {host->deleteLater();report(prepared.error());finish_capture();return;}
       host->windowHandle()->setScreen(qt_screen);
       host->set_text_rasterizer(rasterizer_,font_family_);
-      host->set_clean_composition(windows_clean_composition());
+      host->set_background_clean_composition(executor_,windows_clean_composition());
       host->set_diagnostics(diagnostics_);
       host->set_finished([this,session] {finish_capture(session);});
       host->set_interaction_allowed([this,session](DisplayId id){return lifecycle_.allows(session,id);});
@@ -280,8 +281,9 @@ class WindowsApplicationShell {
       host->set_analysis_requested([this](auto snapshot,auto completed) {
         analyzer_->open(std::move(snapshot),std::move(completed));
       });
-      auto presenter=WindowsD3DPreviewPresenter::create(host->native_surface(),display,diagnostics_);
+      auto presenter=WindowsD3DPreviewPresenter::create(host->native_surface(),display,diagnostics_,host->native_magnifier_surface());
       if(!presenter) {host->deleteLater();report(presenter.error());finish_capture();return;}
+      host->set_magnifier_card(presenter.value());
       targets.push_back(display.snapshot.id);
       endpoints.push_back({display.snapshot.id,presenter.value()});
       overlays_.push_back({display.snapshot.id,host,presenter.value()});
@@ -348,20 +350,19 @@ class WindowsApplicationShell {
       }
       SetWindowDisplayAffinity(static_cast<HWND>(host->native_surface()),WDA_NONE);
       SetWindowDisplayAffinity(reinterpret_cast<HWND>(host->winId()),WDA_NONE);
+      SetWindowDisplayAffinity(static_cast<HWND>(host->native_magnifier_surface()),WDA_NONE);
       QTimer::singleShot(300,&app_,[this,guard=QPointer<QtOverlayHost>(host)] {
         if(!guard) {shutdown(1);return;}
         auto* panel=guard->findChild<QWidget*>("captureMagnifierPanel");
         if(!panel) {shutdown(1);return;}
         const auto scale=guard->devicePixelRatioF();
-        const auto native_rect=[scale](QPoint at,QSize size) {
-          return QRect(qRound(at.x()*scale),qRound(at.y()*scale),
-              qRound(size.width()*scale),qRound(size.height()*scale));
-        };
-        if(auto* backing=dynamic_cast<QImage*>(guard->backingStore()->paintDevice()))
-          backing->copy(native_rect(panel->mapTo(guard.data(),QPoint{}),panel->size()))
-              .save(smoke_folder_+QStringLiteral("/magnifier-backing.png"));
-        guard->screen()->grabWindow(0).toImage().copy(native_rect(
-            panel->mapToGlobal(QPoint{})-guard->screen()->geometry().topLeft(),panel->size()))
+        RECT rect{};
+        if(!GetWindowRect(static_cast<HWND>(guard->native_magnifier_surface()),&rect)) {shutdown(1);return;}
+        // Desktop observation does not render the hidden Qt panel or read its backing store.
+        const auto origin=guard->screen()->geometry().topLeft();
+        guard->screen()->grabWindow(0).toImage().copy(QRect(
+            rect.left-qRound(origin.x()*scale),rect.top-qRound(origin.y()*scale),
+            rect.right-rect.left,rect.bottom-rect.top))
             .save(smoke_folder_+QStringLiteral("/magnifier-screen.png"));
         smoke_select_and_save();
       });

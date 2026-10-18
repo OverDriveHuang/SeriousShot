@@ -92,6 +92,26 @@ Result<bool, Error> validate_request(const MacMetalOverlayRequest& request) {
   return Result<bool, Error>::success(true);
 }
 
+Result<bool, Error> validate_card(const MacMetalCardRequest& card) {
+  auto source = card.source;
+  source.magnifier = {};
+  const auto valid = validate_request(source);
+  if (!valid) return valid;
+  const auto& m = card.source.magnifier;
+  // Destination validation uses the card, while sampling uses source bounds.
+  auto local = m; local.center = {};
+  if (card.size_px.width <= 0 || card.size_px.height <= 0 ||
+      card.size_px.width > 8192 || card.size_px.height > 8192 ||
+      card.ui_rgba.size() != std::size_t(card.size_px.width) * card.size_px.height * 4 ||
+      !m.visible || !valid_magnifier_preview(local, card.size_px) ||
+      m.center.x < 0 || m.center.y < 0 ||
+      m.center.x >= int(source.width_px) || m.center.y >= int(source.height_px) ||
+      source.clean_content || !source.selection_px.empty())
+    return Result<bool, Error>::failure(presenter_error(ErrorCode::invalid_input,
+        Retryability::never, {{"reason", "invalid_card"}}));
+  return Result<bool, Error>::success(true);
+}
+
 Result<bool, Error> verify_native_content(const MacMetalOverlayRequest& request) {
   if (request.linear_source) {
     auto ready = request.linear_source->wait_until_ready();
@@ -273,6 +293,28 @@ fragment half4 fullscreen_fragment(
   return half4(half3(overlay_color(source, params, spans, samples, rows, float_source, gid)), 1.0h);
 }
 
+fragment half4 card_fragment(
+    VertexOut in [[stage_in]], texture2d<float, access::read> source [[texture(0)]],
+    texture2d<float, access::read> ui [[texture(1)]],
+    constant ShaderParameters& params [[buffer(0)]], device const uint4* spans [[buffer(1)]],
+    device const float4* samples [[buffer(2)]], device const uint2* rows [[buffer(3)]],
+    device const float4* float_source [[buffer(4)]]) {
+  const uint2 gid = uint2(in.position.xy);
+  int2 p = int2(gid) - int2(params.magnifier[0], params.magnifier[1]);
+  float3 color = float3(0.025f);
+  if (all(p >= int2(0)) && p.x < params.magnifier[2] && p.y < params.magnifier[3])
+    color = overlay_color(source, params, spans, samples, rows, float_source, gid);
+  const float4 text = ui.read(gid);
+  const float3 rgb = extended_srgb_to_linear(text.rgb);
+  const float3 p3 = float3(
+      dot(rgb, float3(0.82246197f, 0.17753803f, 0.0f)),
+      dot(rgb, float3(0.03319420f, 0.96680580f, 0.0f)),
+      dot(rgb, float3(0.01708263f, 0.07239744f, 0.91051993f)));
+  color = mix(color, p3, text.a);
+  if (params.clamp_to_sdr != 0u) color = clamp(color, 0.0f, 1.0f);
+  return half4(half3(color), 1.0h);
+}
+
 )METAL";
 
 }  // namespace
@@ -283,6 +325,8 @@ struct MacMetalEdrPresenter::Impl {
   id<MTLCommandQueue> command_queue{nil};
   id<MTLComputePipelineState> compute_pipeline{nil};
   id<MTLRenderPipelineState> render_pipeline{nil};
+  id<MTLRenderPipelineState> card_pipeline{nil};
+  id<MTLTexture> card_ui{nil}, card_output{nil};
   id<MTLTexture> cached_source_texture{nil};
   id<MTLBuffer> cached_source_buffer{nil};
   bool source_aliases_cpu{};
@@ -478,6 +522,43 @@ struct MacMetalEdrPresenter::Impl {
     return Result<id<MTLTexture>, Error>::success(cached_output_texture);
   }
 
+  Result<bool, Error> encode_card(const MacMetalCardRequest& card,
+      id<MTLCommandBuffer> command, id<MTLTexture> target) {
+    const auto source = compose(card.source, command, false);
+    if (!source) return Result<bool, Error>::failure(source.error());
+    const auto w = std::size_t(card.size_px.width), h = std::size_t(card.size_px.height);
+    if (!card_ui || card_ui.width != w || card_ui.height != h) {
+      auto descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+          width:w height:h mipmapped:NO];
+      descriptor.storageMode = MTLStorageModeShared;
+      descriptor.usage = MTLTextureUsageShaderRead;
+      card_ui = [device newTextureWithDescriptor:descriptor];
+    }
+    if (!card_ui || !command || !target) return Result<bool, Error>::failure(
+        presenter_error(ErrorCode::presenter_failed, Retryability::after_recreate,
+            {{"reason", "card_resource_failed"}}));
+    [card_ui replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0
+        withBytes:card.ui_rgba.data() bytesPerRow:w*4];
+    auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = target;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    auto encoder = [command renderCommandEncoderWithDescriptor:pass];
+    if (!encoder) return Result<bool, Error>::failure(presenter_error(
+        ErrorCode::presenter_failed, Retryability::after_recreate, {{"reason", "card_encoder_failed"}}));
+    [encoder setRenderPipelineState:card_pipeline];
+    [encoder setFragmentTexture:source.value() atIndex:0];
+    [encoder setFragmentTexture:card_ui atIndex:1];
+    [encoder setFragmentBytes:&parameters length:sizeof(parameters) atIndex:0];
+    [encoder setFragmentBuffer:clean_spans offset:0 atIndex:1];
+    [encoder setFragmentBuffer:clean_samples offset:0 atIndex:2];
+    [encoder setFragmentBuffer:clean_rows offset:0 atIndex:3];
+    [encoder setFragmentBuffer:cached_source_buffer offset:source_buffer_offset atIndex:4];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [encoder endEncoding];
+    return Result<bool, Error>::success(true);
+  }
+
   void configure_layer(
       CAMetalLayer* layer,
       const MacMetalSurfaceRange surface_range) {
@@ -485,6 +566,7 @@ struct MacMetalEdrPresenter::Impl {
         configured_surface_range == surface_range) {
       return;
     }
+    layer.allowsNextDrawableTimeout = YES;
     layer.device = device;
     layer.pixelFormat = MTLPixelFormatRGBA16Float;
     layer.wantsExtendedDynamicRangeContent =
@@ -581,6 +663,12 @@ Result<std::unique_ptr<MacMetalEdrPresenter>, Error> MacMetalEdrPresenter::creat
          {"nativeCode", std::to_string(pipeline_error.code)},
          {"nativeDescription", ns_string_to_utf8(pipeline_error.localizedDescription)}}));
   }
+  render_descriptor.fragmentFunction = [library newFunctionWithName:@"card_fragment"];
+  impl->card_pipeline = [impl->device newRenderPipelineStateWithDescriptor:render_descriptor error:&pipeline_error];
+  if (!impl->card_pipeline) return Result<std::unique_ptr<MacMetalEdrPresenter>, Error>::failure(
+      presenter_error(ErrorCode::presenter_failed, Retryability::never,
+          {{"reason", "card_pipeline_creation_failed"},
+           {"nativeDescription", ns_string_to_utf8(pipeline_error.localizedDescription)}}));
   return Result<std::unique_ptr<MacMetalEdrPresenter>, Error>::success(
       std::unique_ptr<MacMetalEdrPresenter>(new MacMetalEdrPresenter(std::move(impl))));
 }
@@ -771,6 +859,77 @@ Result<MacMetalPresentReceipt, Error> MacMetalEdrPresenter::present_to_layer(
       kLayerColorSpace,
       kOpticalOutputScaleNits,
   });
+  }
+}
+
+Result<MacMetalOverlayReadback, Error> MacMetalEdrPresenter::render_card_offscreen(
+    const MacMetalCardRequest& card, bool readback) {
+  @autoreleasepool {
+    const auto valid = validate_card(card);
+    if (!valid) return Result<MacMetalOverlayReadback, Error>::failure(valid.error());
+    const auto w = std::size_t(card.size_px.width), h = std::size_t(card.size_px.height);
+    if (!impl_->card_output || impl_->card_output.width != w || impl_->card_output.height != h) {
+      auto descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+          width:w height:h mipmapped:NO];
+      descriptor.storageMode = MTLStorageModeShared;
+      descriptor.usage = MTLTextureUsageRenderTarget;
+      impl_->card_output = [impl_->device newTextureWithDescriptor:descriptor];
+    }
+    auto command = [impl_->command_queue commandBuffer];
+    const auto encoded = impl_->encode_card(card, command, impl_->card_output);
+    if (!encoded) return Result<MacMetalOverlayReadback, Error>::failure(encoded.error());
+    [command commit]; [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted)
+      return Result<MacMetalOverlayReadback, Error>::failure(presenter_error(
+          ErrorCode::presenter_failed, Retryability::after_recreate, {{"reason", "card_gpu_failed"}}));
+    auto ready = verify_native_content(card.source);
+    if (!ready) return Result<MacMetalOverlayReadback, Error>::failure(ready.error());
+    std::vector<float> pixels;
+    if (readback) {
+      std::vector<std::uint16_t> half(w*h*4);
+      [impl_->card_output getBytes:half.data() bytesPerRow:w*8
+          fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0];
+      pixels.reserve(half.size());
+      for (auto value : half) pixels.push_back(half_to_float(value));
+    }
+    return Result<MacMetalOverlayReadback, Error>::success({w,h,std::move(pixels),
+        kTextureFormat,kLayerColorSpace,kOpticalOutputScaleNits,
+        (command.GPUEndTime-command.GPUStartTime)*1000,impl_->source_aliases_cpu});
+  }
+}
+
+Result<MacMetalPresentReceipt, Error> MacMetalEdrPresenter::present_card_to_layer(
+    void* native_layer, MacMetalCardRequest card, RefreshCard refresh) {
+  @autoreleasepool {
+    using Output = Result<MacMetalPresentReceipt, Error>;
+    auto valid = validate_card(card);
+    if (!valid) return Output::failure(valid.error());
+    CAMetalLayer* layer = (__bridge CAMetalLayer*)native_layer;
+    if (!layer || !impl_->is_layer_configured(layer, card.source.target_surface_range))
+      return Output::failure(presenter_error(ErrorCode::presenter_failed, Retryability::after_recreate,
+          {{"reason", "card_layer_not_configured"}}));
+    auto drawable = [layer nextDrawable];
+    if (!drawable) return Output::failure(presenter_error(ErrorCode::presenter_failed,
+        Retryability::after_recreate, {{"reason", "card_drawable_unavailable"}}));
+    if (refresh && !refresh(card)) return Output::failure(presenter_error(
+        ErrorCode::operation_cancelled, Retryability::never));
+    valid = validate_card(card);
+    if (!valid) return Output::failure(valid.error());
+    if (drawable.texture.width != std::size_t(card.size_px.width) ||
+        drawable.texture.height != std::size_t(card.size_px.height))
+      return Output::failure(presenter_error(ErrorCode::operation_cancelled,
+          Retryability::never, {{"reason", "card_drawable_size_changed"}}));
+    auto command = [impl_->command_queue commandBuffer];
+    const auto encoded = impl_->encode_card(card, command, drawable.texture);
+    if (!encoded) return Output::failure(encoded.error());
+    [command presentDrawable:drawable]; [command commit]; [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted)
+      return Output::failure(presenter_error(ErrorCode::presenter_failed,
+          Retryability::after_recreate, {{"reason", "card_gpu_failed"}}));
+    auto ready = verify_native_content(card.source);
+    if (!ready) return Output::failure(ready.error());
+    return Output::success({card.source.width_px,card.source.height_px,
+        drawable.texture.width,drawable.texture.height,kTextureFormat,kLayerColorSpace,kOpticalOutputScaleNits});
   }
 }
 

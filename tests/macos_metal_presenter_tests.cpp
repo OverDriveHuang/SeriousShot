@@ -1,5 +1,6 @@
 #include "platform/macos/metal_edr_presenter.hpp"
 #include "test_support.hpp"
+#include "domain/color/extended_p3_mapper.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -247,6 +248,57 @@ void magnifier_reticle_symmetric_rails_and_external_box() {
     }
   }
 }
+void card_matches_desktop_image_and_linear_ui() {
+  using namespace hdrshot;
+  auto presenter = make_presenter();
+  auto pixels = std::make_shared<LinearFloatPixels>(256*256*4);
+  for (int y=0;y<256;++y) for (int x=0;x<256;++x) {
+    auto i=std::size_t(y*256+x)*4;
+    (*pixels)[i]=float(x)/32.F-.5F; (*pixels)[i+1]=float(y)/64.F;
+    (*pixels)[i+2]=.75F; (*pixels)[i+3]=1.F;
+  }
+  MacMetalOverlayRequest source;
+  source.width_px=source.height_px=256; source.rgba_float_linear_p3=pixels;
+  source.source_is_linear=true;source.source_frame_key=10;
+  for(int zoom : {4,8,12,16}) for(PixelPoint center : {PixelPoint{0,0},{255,0},{0,255},{255,255},{128,128}}) {
+    const int image=13*zoom;
+    source.magnifier={true,center,{0,8,image,image},zoom,1};
+    MacMetalCardRequest card{source,{image,image+24},std::vector<std::uint8_t>(std::size_t(image)*(image+24)*4)};
+    auto full=presenter->render_offscreen(source,true);
+    auto local=presenter->render_card_offscreen(card);
+    HDRSHOT_CHECK(full && local);
+    for(int y=8;y<8+image;++y) for(int x=0;x<image;++x) for(int c=0;c<4;++c)
+      HDRSHOT_CHECK(local.value().rgba_linear_display_p3[(y*image+x)*4+c]==
+          full.value().rgba_linear_display_p3[(y*256+x)*4+c]);
+    // Header sRGB red, footer half-alpha white: convert once and blend in P3.
+    card.ui_rgba[0]=255;card.ui_rgba[3]=255;
+    auto footer=std::size_t(image*(image+16)+3)*4;
+    card.ui_rgba[footer]=card.ui_rgba[footer+1]=card.ui_rgba[footer+2]=255;
+    card.ui_rgba[footer+3]=128;
+    auto text=presenter->render_card_offscreen(card);HDRSHOT_CHECK(text.has_value());
+    auto red=ExtendedP3Mapper::annotation_linear_display_p3(0xff0000);
+    for(int c=0;c<3;++c) {
+      HDRSHOT_CHECK_NEAR(text.value().rgba_linear_display_p3[c],red[c],.0005);
+      HDRSHOT_CHECK_NEAR(text.value().rgba_linear_display_p3[footer+c],.025+(1.-.025)*128./255.,.0005);
+    }
+    card.source.target_surface_range=MacMetalSurfaceRange::sdr;
+    auto sdr=presenter->render_card_offscreen(card);HDRSHOT_CHECK(sdr.has_value());
+    for(auto v:sdr.value().rgba_linear_display_p3) HDRSHOT_CHECK(v>=0 && v<=1);
+  }
+}
+void card_rejects_invalid_storage_and_geometry() {
+  using namespace hdrshot;
+  auto presenter=make_presenter();auto source=make_request();source.selection_px={};
+  source.magnifier={true,{1,1},{0,4,12,12},4,1};
+  MacMetalCardRequest card{source,{12,24},std::vector<std::uint8_t>(12*24*4)};
+  HDRSHOT_CHECK(presenter->render_card_offscreen(card).has_value()); // Card may exceed source size.
+  card.ui_rgba.pop_back(); HDRSHOT_CHECK(!presenter->render_card_offscreen(card));
+  card.ui_rgba.push_back(0);card.source.magnifier.center={8,1};
+  HDRSHOT_CHECK(!presenter->render_card_offscreen(card));
+  card.source.magnifier.center={1,1};card.source.magnifier.viewport.height=13;
+  HDRSHOT_CHECK(!presenter->render_card_offscreen(card));
+}
+
 }  // namespace
 
 int main() {
@@ -264,6 +316,8 @@ int main() {
   }
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
+      {"Card matches full image at all zooms/corners, HDR and linear UI", card_matches_desktop_image_and_linear_ui},
+      {"Card validates separate source and destination geometry", card_rejects_invalid_storage_and_geometry},
       {"Linear P3 source readback is exact", linear_source_is_not_decoded_twice},
       {"Encoded SDR P3 is linearized before preview", encoded_sdr_is_linearized_before_preview},
       {"Magnifier symmetric 3px rails and external box on dark, light and HDR", magnifier_reticle_symmetric_rails_and_external_box},

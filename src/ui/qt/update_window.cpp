@@ -45,13 +45,14 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   root->addStretch();
   auto *release_row = new QHBoxLayout;
   release_row->addStretch();
-  auto *releases = new QPushButton(QStringLiteral("查看发布说明 ↗"), this);
-  releases->setObjectName("openReleasesButton");
-  releases->setFlat(true);
-  release_row->addWidget(releases);
+  releases_ = new QPushButton(QStringLiteral("查看发布说明 ↗"), this);
+  releases_->setObjectName("openReleasesButton");
+  releases_->setFlat(true);
+  release_row->addWidget(releases_);
   root->addLayout(release_row);
-  connect(releases, &QPushButton::clicked, this, [this] {
-    const QUrl url(view_.candidate &&
+  connect(releases_, &QPushButton::clicked, this, [this] {
+    const QUrl url(!view_.error && view_.phase != Phase::check_failed &&
+                           view_.phase != Phase::download_failed && view_.candidate &&
                            view_.candidate->release_tag == "v" + view_.candidate->version.text()
                        ? QString("https://github.com/OverDriveHuang/SeriousShot/releases/"
                                  "tag/") +
@@ -109,6 +110,9 @@ void UpdateWindow::closeEvent(QCloseEvent *event) {
 }
 void UpdateWindow::set_view(const View &view) {
   view_ = view;
+  const bool failed = view.phase == Phase::check_failed || view.phase == Phase::download_failed ||
+                      view.phase == Phase::cleanup_blocked || view.error.has_value();
+  releases_->setText(failed ? QStringLiteral("前往官网下载 ↗") : QStringLiteral("查看发布说明 ↗"));
   const auto version =
       view.candidate ? QString::fromStdString(view.candidate->version.text()) : QString();
   heading_->setText(version.isEmpty() ? QStringLiteral("SeriousShot")
@@ -198,7 +202,7 @@ void UpdateWindow::set_view(const View &view) {
   }
   if (view.phase == Phase::check_failed || view.phase == Phase::download_failed ||
       view.phase == Phase::cleanup_blocked)
-    detail = QStringLiteral("当前程序可以继续使用。你可以重试，或等待下一次正常检查。");
+    detail = QStringLiteral("当前程序可以继续使用。请重试，或点击“前往官网下载”手动下载。");
   status_->setText(status);
   detail_->setText(detail);
   detail_->setVisible(!detail.isEmpty());

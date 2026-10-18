@@ -13,6 +13,11 @@ class MacQtOverlayWindow final : public QtOverlayWindowPort {
   void set_input_interrupted(std::function<void()>) override;
   void restore_input_focus(QWidget&) override;
   [[nodiscard]] void* native_surface() const override;
+  [[nodiscard]] std::optional<Error> preparation_error() const override;
+  [[nodiscard]] void* magnifier_surface() const override;
+  void move_magnifier(QWidget&, const QRect&) override;
+  void show_magnifier() override;
+  void hide_magnifier() override;
  private:
   struct Impl;
   std::shared_ptr<Impl> impl_;

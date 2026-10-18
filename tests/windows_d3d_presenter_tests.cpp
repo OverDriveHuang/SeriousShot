@@ -1,6 +1,8 @@
 #include "platform/windows/windows_d3d_presenter.hpp"
 #include "domain/color/extended_p3_mapper.hpp"
 #include "application/clean_content_cache.hpp"
+#include "domain/analysis/math.hpp"
+#include <atomic>
 #include "platform/windows/windows_icc_transform.hpp"
 #include "platform/windows/windows_gpu_source.hpp"
 #include "test_support.hpp"
@@ -407,8 +409,77 @@ void magnifier_invalid_parameters_fail_before_source_read() {
   HDRSHOT_CHECK(p->render_offscreen(r).has_value());
   HDRSHOT_CHECK(counting->reads().size()==1);
 }
+MagnifierCardFrame card_frame(const PresentPreviewRequest& r,int zoom=8) {
+  const int image=5*zoom;
+  MagnifierCardFrame f{r.model.session_id,r.model.frozen_desktop,r.target_display_id,
+      r.model.display_generation,1,1,{image+8,image+16},
+      {true,{63,61},{4,8,image,image},zoom,1},{}};
+  f.ui_rgba.assign(std::size_t(f.size_px.width)*f.size_px.height*4,0);return f;
 }
-int main() {return test::run({{"FP16 linear mask and extended values",linear_mask_and_extended_values},
+void card_local_pixels_ui_and_background_resource_isolation() {
+  for(unsigned mode:{0U,1U,2U}) {
+    auto created=WindowsD3DPreviewPresenter::create(nullptr,magnifier_display(mode));HDRSHOT_CHECK(bool(created));
+    auto p=created.value();auto r=magnifier_request();
+    for(int zoom:{4,8,12,16}) for(PixelPoint center:{PixelPoint{63,61},PixelPoint{0,0},PixelPoint{127,111}}) {
+      r.model.magnifier={true,center,{7,11,5*zoom,5*zoom},zoom,1};
+      const auto old=p->render_offscreen(r);HDRSHOT_CHECK(bool(old));
+      const auto before=p->resource_counters();
+      auto f=card_frame(r,zoom);f.image.center=center;
+      const auto output=p->render_card_offscreen(f);HDRSHOT_CHECK(bool(output));
+      for(int y=0;y<5*zoom;++y)for(int x=0;x<5*zoom;++x)for(int c=0;c<4;++c)
+        HDRSHOT_CHECK(output.value()[(std::size_t(y+8)*f.size_px.width+x+4)*4+c]==
+            old.value()[(std::size_t(y+11)*magnifier_size.width+x+7)*4+c]);
+      for(int code:{0,64,128,255}) {
+        f.ui_rgba[0]=f.ui_rgba[1]=f.ui_rgba[2]=std::uint8_t(code);f.ui_rgba[3]=128;
+        const auto ui=p->render_card_offscreen(f);HDRSHOT_CHECK(bool(ui));
+        const double encoded=code/255.,linear=encoded<=.04045?encoded/12.92:std::pow((encoded+.055)/1.055,2.4);
+        const double blended=.025*(1-128/255.)+linear*128/255.;
+        const auto expected=display_oracle({blended,blended,blended},mode);
+        for(int c=0;c<3;++c)HDRSHOT_CHECK_NEAR(ExtendedP3Mapper::decode_binary16(ui.value()[c]).value(),expected[c],.003);
+      }
+      const auto after=p->resource_counters();
+      HDRSHOT_CHECK(after.background_draws==before.background_draws && after.background_presents==before.background_presents);
+      HDRSHOT_CHECK(after.source_texture_uploads==1 && after.clean_content_uploads==1);
+      HDRSHOT_CHECK(after.card_draws==before.card_draws+5);
+    }
+    auto invalid=card_frame(r);invalid.display_generation++;
+    HDRSHOT_CHECK(!p->render_card_offscreen(invalid));
+    invalid=card_frame(r);invalid.image.zoom=0;HDRSHOT_CHECK(!p->render_card_offscreen(invalid));
+  }
+}
+void background_pressure_cannot_starve_card_and_invalidation_completes() {
+  auto created=WindowsD3DPreviewPresenter::create(nullptr,magnifier_display(1));HDRSHOT_CHECK(bool(created));
+  const auto p=created.value();const auto r=magnifier_request();
+  std::atomic<int> backgrounds{},cards{},cancelled_cards{};
+  std::atomic<bool> keep_going{true};
+  std::promise<void> done,background_done;auto ready=done.get_future();auto drained=background_done.get_future();
+  std::atomic<bool> background_finished{};
+  auto background=std::make_shared<PreviewPresenterPort::Completion>();
+  *background=[&,p,background](auto result) {
+    if(result) ++backgrounds;
+    if(keep_going && backgrounds.load()<200) p->present(r,*background);
+    else {
+      if(backgrounds>=200 && cards==0)done.set_value();
+      if(!background_finished.exchange(true))background_done.set_value();
+    }
+  };
+  // Keep a fresh background queued before every scheduling decision. A card
+  // must complete before this pressure ends, not only when motion stops.
+  p->invalidate_card(1);p->present(r,*background);
+  p->present_card(card_frame(r),[&](auto result){if(result)++cards;keep_going=false;done.set_value();});
+  HDRSHOT_CHECK(ready.wait_for(std::chrono::seconds(5))==std::future_status::ready);
+  keep_going=false;HDRSHOT_CHECK(cards==1 && backgrounds<200);
+  HDRSHOT_CHECK(drained.wait_for(std::chrono::seconds(2))==std::future_status::ready);
+  *background={}; // break callback's shared ownership cycle after submissions stop
+  auto stale=card_frame(r);stale.generation=1;p->invalidate_card(2);
+  p->present_card(stale,[&](auto result){HDRSHOT_CHECK(!result && result.error().code==ErrorCode::operation_cancelled);++cancelled_cards;});
+  HDRSHOT_CHECK(cancelled_cards==1);
+}
+
+}
+int main() {return test::run({
+    {"card local pixels/UI and shared background resources",card_local_pixels_ui_and_background_resource_isolation},
+    {"background pressure preserves card progress and stale generation cancels",background_pressure_cannot_starve_card_and_invalidation_completes},{"FP16 linear mask and extended values",linear_mask_and_extended_values},
     {"HDR white units and P3 primaries",white_and_primary_matrix},{"frame contract and cancellation",frame_contract_and_cancellation},
     {"Mac selection border geometry and white",selection_border_matches_mac_geometry},
     {"first frame committed before window exposure",first_frame_commits_while_window_hidden},

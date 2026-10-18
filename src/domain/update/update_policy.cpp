@@ -51,7 +51,7 @@ Result<std::optional<Candidate>, Error> select(const std::vector<Candidate> &can
             {ErrorCode::invalid_input, "update.digest", Retryability::never, {}});
     if (!best || c.version > best->version)
       best = c;
-    else if (c.version == best->version && c.key() != best->key())
+    else if (c.version == best->version && c != *best)
       return Result<std::optional<Candidate>, Error>::failure(
           {ErrorCode::metadata_conflict, "update.candidate", Retryability::never, {}});
   }

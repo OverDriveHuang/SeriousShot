@@ -9,6 +9,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QFontDatabase>
+#include <QPalette>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -50,6 +52,7 @@ struct Reply final : QNetworkReply {
       setFinished(true);
       emit finished();
   }
+  void rate_limited() { setRawHeader("X-RateLimit-Remaining", "0"); }
   void redirect(const QUrl &url) { setAttribute(QNetworkRequest::RedirectionTargetAttribute, url); }
   void abort() override {
     if (isFinished())
@@ -77,6 +80,7 @@ struct Wire {
   std::atomic<int> checks{}, releases{}, downloads{};
   std::atomic<qint64> max_read{};
   int catalog_status{200}, release_status{200};
+  bool rate_limit_header{}, abort_redirect{}, abort_catalog{};
   int redirects{}, reply_delay_ms{}, catalog_delay_ms{}, release_delay_ms{};
   std::atomic_bool *catalog_gate{};
 };
@@ -87,8 +91,11 @@ struct Manager final : QNetworkAccessManager {
     HDRSHOT_CHECK(op == GetOperation);
     if (req.url().host() == "raw.githubusercontent.com") {
       ++wire.checks;
-      return new Reply(req, wire.catalog, wire.catalog_status, nullptr, this,
-                       wire.catalog_delay_ms, wire.catalog_gate);
+      auto *reply = new Reply(req, wire.catalog, wire.catalog_status, nullptr, this,
+                              wire.catalog_delay_ms, wire.catalog_gate);
+      if (wire.rate_limit_header) reply->rate_limited();
+      if (wire.abort_catalog) QTimer::singleShot(0,reply,&QNetworkReply::abort);
+      return reply;
     }
     if (req.url().host() == "api.github.com") {
       ++wire.releases;
@@ -99,6 +106,7 @@ struct Manager final : QNetworkAccessManager {
     if (wire.downloads <= wire.redirects) {
       auto *r = new Reply(req, {}, 302, nullptr, this, wire.reply_delay_ms);
       r->setProperty("fixture_redirect", true);
+      if (wire.abort_redirect) QTimer::singleShot(0,r,&QNetworkReply::abort);
       r->redirect(QUrl("https://github.com/OverDriveHuang/SeriousShot/releases/"
                        "download/v0.1.5/fixture.dmg?step=" +
                        QString::number(wire.downloads)));
@@ -124,6 +132,7 @@ public:
   static void idle(Runtime &r) {
     r.busy_ = [] { return false; };
   }
+  static void metadata_budget(Runtime &r, int milliseconds) { r.metadata_timeout_ms_ = milliseconds; }
   static void download_budget(Runtime &r, int milliseconds) {
     r.download_timeout_ms_ = milliseconds;
   }
@@ -259,6 +268,15 @@ struct FailedInstaller final : Installer {
         failure("隔离故障：安装目录不可写", ErrorCode::path_not_writable));
   }
 };
+struct CapturingInstaller final : Installer {
+  QByteArray &captured;
+  explicit CapturingInstaller(QByteArray &out) : captured(out) {}
+  Result<bool, Error> install(Slot &, const Candidate &, const QByteArray &envelope,
+                              std::function<bool()>) override {
+    captured = envelope;
+    return Result<bool, Error>::failure(failure("fixture stop", ErrorCode::operation_cancelled));
+  }
+};
 struct ExitingManualInstaller final : Installer {
   std::atomic_bool &entered;
   explicit ExitingManualInstaller(std::atomic_bool &value) : entered(value) {}
@@ -284,12 +302,14 @@ struct DelayedInstaller final : Installer {
                : Result<bool, Error>::failure(failure("cancelled", ErrorCode::operation_cancelled));
   }
 };
-QByteArray catalog_revision(const Fixture &f, int revision, bool altered = false) {
+QByteArray catalog_revision(const Fixture &f, int revision, bool altered = false,
+                            std::function<void(QJsonObject &)> mutate = {}) {
   const auto envelope = QJsonDocument::fromJson(f.wire.catalog).object();
   auto payload = QJsonDocument::fromJson(
                      QByteArray::fromBase64(envelope["payload_base64"].toString().toLatin1()))
                      .object();
   payload["revision"] = revision;
+  if (mutate) mutate(payload);
   if (altered)
     payload["altered_fixture"] = true;
   const auto bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact),
@@ -311,12 +331,32 @@ int main(int argc, char **argv) {
   if (argc >= 3 && (std::string_view(argv[1]) == "--ui-probe" || std::string_view(argv[1]) == "--manual-ui-probe")) {
     const QString out = QString::fromUtf8(argv[2]);
     QDir().mkpath(out);
-    app.styleHints()->setColorScheme(argc >= 4 && std::string_view(argv[3]) == "dark"
-                                         ? Qt::ColorScheme::Dark
-                                         : Qt::ColorScheme::Light);
+    // The offscreen Windows plugin has no system font/theme integration.
+    // Keep these explicit presentation fixtures confined to the UI probe.
+#ifdef Q_OS_WIN
+    const int font_id = QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
+    if (font_id < 0 || QFontDatabase::applicationFontFamilies(font_id).isEmpty())
+      return 2;
+    app.setFont(QFont(QFontDatabase::applicationFontFamilies(font_id).front(), 10));
+#endif
+    app.setStyle("Fusion");
+    const bool dark = argc >= 4 && std::string_view(argv[3]) == "dark";
+    QPalette palette;
+    palette.setColor(QPalette::Window, dark ? QColor(32, 32, 32) : QColor(245, 245, 245));
+    palette.setColor(QPalette::WindowText, dark ? Qt::white : Qt::black);
+    palette.setColor(QPalette::Base, dark ? QColor(24, 24, 24) : Qt::white);
+    palette.setColor(QPalette::AlternateBase, dark ? QColor(40, 40, 40) : QColor(235, 235, 235));
+    palette.setColor(QPalette::Text, dark ? Qt::white : Qt::black);
+    palette.setColor(QPalette::Button, dark ? QColor(48, 48, 48) : QColor(235, 235, 235));
+    palette.setColor(QPalette::ButtonText, dark ? Qt::white : Qt::black);
+    palette.setColor(QPalette::Highlight, QColor(0, 120, 215));
+    palette.setColor(QPalette::HighlightedText, Qt::white);
+    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(128, 128, 128));
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(128, 128, 128));
+    app.setPalette(palette);
     UpdateWindow window;
     window.show();
-    window.resize(400, 300);
+    window.resize(argc >= 5 ? QString::fromUtf8(argv[4]).toInt() : 400, 320);
     auto step = std::make_shared<int>(std::string_view(argv[1])=="--manual-ui-probe"?4:0);
     auto *timer = new QTimer(&window);
     QObject::connect(timer, &QTimer::timeout, &window, [&] {
@@ -328,14 +368,12 @@ int main(int argc, char **argv) {
       v.last_check = 1791810000;
       v.last_success = 1791809400;
       const std::array phases{Phase::downloading, Phase::ready, Phase::check_failed,
-                              Phase::deferred,Phase::deferred};
-      v.phase = phases[static_cast<size_t>(*step % 5)];
+                              Phase::download_failed,Phase::deferred,Phase::deferred};
+      v.phase = phases[static_cast<size_t>(*step % 6)];
       v.received = 42;
       v.total = 100;
-      if (v.phase == Phase::check_failed)
-        v.detail = "更新源请求失败：网络暂时不可用或服务器限流。请稍后检查更新"
-                   "；已知的新版本与已下"
-                   "载的安装包仍保留，可以在网络恢复后继续安装。";
+      if (v.phase == Phase::check_failed || v.phase == Phase::download_failed)
+        v.detail = "更新源拒绝访问，请稍后重试";
       if (v.phase == Phase::deferred) {
         v.error =
             failure("安装目录暂时不可写，请检查安装位置后重试。", ErrorCode::path_not_writable);
@@ -351,7 +389,7 @@ int main(int argc, char **argv) {
       QApplication::processEvents();
       window.grab().save(out + QString("/update-window-%1.png").arg(*step));
       ++*step;
-      if (*step == 5)
+      if (*step == 6)
         app.quit();
     });
     timer->start(700);
@@ -416,7 +454,8 @@ int main(int argc, char **argv) {
            return true;
          });
          w.findChild<QPushButton *>("openReleasesButton")->click();
-         HDRSHOT_CHECK(url.path() == "/OverDriveHuang/SeriousShot/releases/tag/v0.1.5");
+         HDRSHOT_CHECK(url.path() == "/OverDriveHuang/SeriousShot/releases");
+         HDRSHOT_CHECK(w.findChild<QPushButton *>("openReleasesButton")->text() == QStringLiteral("前往官网下载 ↗"));
          w.show();
          w.close();
          HDRSHOT_CHECK(later == 1);
@@ -726,6 +765,26 @@ int main(int argc, char **argv) {
                        QFileInfo::exists(f.dir.path() + "/payload.dmg"));
        }},
 #endif
+      {"aborted redirect never starts another download", [] {
+         Fixture f; f.wire.redirects=1; f.wire.reply_delay_ms=100; f.wire.abort_redirect=true;
+         f.start();
+         f.await([&] { const auto p=f.runtime->coordinator().view().phase;
+           return p==Phase::download_failed || p==Phase::ready; });
+         HDRSHOT_CHECK(f.wire.downloads==1);
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase==Phase::download_failed);
+         HDRSHOT_CHECK(!QFileInfo::exists(f.dir.path()+"/payload.dmg"));
+       }},
+      {"aborted 304 never authenticates a successful check", [] {
+         Fixture f;f.start();
+         f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready;});
+         f.runtime->coordinator().later();
+         f.wire.catalog_status=304;f.wire.catalog.clear();f.wire.abort_catalog=true;
+         f.wire.catalog_delay_ms=100;
+         f.runtime->coordinator().trigger(200,false,true);
+         f.await([&]{auto p=f.runtime->coordinator().view().phase;
+           return p==Phase::check_failed || p==Phase::deferred;});
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase==Phase::check_failed);
+       }},
       {"download total deadline survives redirects",
        [] {
          Fixture f;
@@ -744,12 +803,12 @@ int main(int argc, char **argv) {
          HDRSHOT_CHECK(QSslSocket::supportsSsl());
          HDRSHOT_CHECK(!QSslSocket::availableBackends().isEmpty());
        }},
-      {"signed catalog Release and bounded stream to single file",
+      {"signed catalog without Release API and bounded stream to single file",
        [] {
          Fixture f;
          f.start();
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
-         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.releases == 1 && f.wire.downloads == 1);
+         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.releases == 0 && f.wire.downloads == 1);
          HDRSHOT_CHECK(f.wire.max_read <= 1024 * 1024);
          auto state = read_json(f.dir.path() + "/slot.json");
          HDRSHOT_CHECK(state && state.value()["phase"] == "ready");
@@ -787,15 +846,97 @@ int main(int argc, char **argv) {
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::check_failed; });
          HDRSHOT_CHECK(f.wire.downloads == 0);
        }},
-      {"Release prerelease prevents archive GET",
-       [] {
+      {"403 needs response header evidence before claiming rate limit", [] {
+         for (const bool limited : {false, true}) {
+           Fixture f; f.wire.catalog_status = 403; f.wire.rate_limit_header = limited;
+           bool done = false; std::string reason;
+           f.runtime->check(f.identity, [&](auto result) {
+             HDRSHOT_CHECK(!result); reason = result.error().safe_context.at("reason"); done = true;
+           });
+           f.await([&] { return done; });
+           HDRSHOT_CHECK(reason == (limited ? "更新源限流，请稍后重试" : "更新源拒绝访问，请稍后重试"));
+         }
+       }},
+      {"API access denied is irrelevant to catalog download and install", [] {
+         Fixture f; f.wire.release_status = 403;
+         int calls = 0;
+         RuntimeTestAccess::replace_native(*f.runtime, std::make_unique<FailedInstaller>(calls));
+         f.start(); f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+         RuntimeTestAccess::idle(*f.runtime);
+         f.runtime->coordinator().install();
+         f.await([&] { return calls == 1 && f.runtime->coordinator().view().phase == Phase::deferred; });
+         HDRSHOT_CHECK(f.wire.checks == 2 && f.wire.releases == 0 && f.wire.downloads == 1);
+       }},
+      {"unchanged candidate installation receives freshly signed revision", [] {
+         Fixture f; QByteArray captured;
+         RuntimeTestAccess::replace_native(*f.runtime, std::make_unique<CapturingInstaller>(captured));
+         f.start(); f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+         f.wire.catalog = catalog_revision(f, 2);
+         const auto expected = f.wire.catalog;
+         RuntimeTestAccess::idle(*f.runtime); f.runtime->coordinator().install();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::deferred; });
+         HDRSHOT_CHECK(captured == expected && !f.runtime->barrier_active());
+       }},
+      {"withdrawal leaves retry route and successful empty check clears error", [] {
          Fixture f;
-         auto release = QJsonDocument::fromJson(f.wire.release).object();
-         release["prerelease"] = true;
-         f.wire.release = QJsonDocument(release).toJson();
-         f.start();
+         f.start(); f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+         f.wire.catalog = catalog_revision(f, 2, false, [](QJsonObject &p) { p["targets"] = QJsonArray{}; });
+         RuntimeTestAccess::idle(*f.runtime); f.runtime->coordinator().install();
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::check_failed; });
-         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.releases == 1 && f.wire.downloads == 0);
+         f.runtime->coordinator().trigger(200, false, true);
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::idle; });
+         HDRSHOT_CHECK(!f.runtime->coordinator().view().error && !f.runtime->coordinator().view().candidate);
+         HDRSHOT_CHECK(f.wire.downloads == 1 && f.wire.releases == 0);
+       }},
+      {"installation requires current authenticated catalog even with ready package", [] {
+         for (int mode = 0; mode < 7; ++mode) {
+           Fixture f; int calls = 0;
+           RuntimeTestAccess::replace_native(*f.runtime, std::make_unique<FailedInstaller>(calls));
+           f.start(); f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+           if (mode == 0) f.wire.catalog_status = 403;
+           if (mode == 1) f.wire.catalog = "invalid signature";
+           if (mode == 2) f.wire.catalog = catalog_revision(f, 0);
+           if (mode == 3) f.wire.catalog = catalog_revision(f, 1, true);
+           if (mode == 4) { f.wire.catalog_status = 304; f.wire.catalog.clear(); }
+           if (mode == 5) { f.wire.catalog_status = 304; f.wire.catalog.clear();
+                           HDRSHOT_CHECK(QFile::remove(f.dir.path() + "/cache.json")); }
+           if (mode == 6) { RuntimeTestAccess::metadata_budget(*f.runtime, 30); f.wire.catalog_delay_ms = 100; }
+           RuntimeTestAccess::idle(*f.runtime); f.runtime->coordinator().install();
+           f.await([&] { return f.runtime->coordinator().view().phase ==
+                             (mode == 4 ? Phase::deferred : Phase::check_failed); });
+           HDRSHOT_CHECK(calls == (mode == 4 ? 1 : 0));
+           HDRSHOT_CHECK(!f.runtime->barrier_active() && f.wire.releases == 0);
+         }
+       }},
+      {"install rechecks every signed candidate field and releases barrier", [] {
+         for (int mode = 0; mode < 11; ++mode) {
+           Fixture f; int calls = 0;
+           RuntimeTestAccess::replace_native(*f.runtime, std::make_unique<FailedInstaller>(calls));
+           f.start(); f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+           f.wire.catalog = catalog_revision(f, 2, false, [mode](QJsonObject &p) {
+             auto ts = p["targets"].toArray(); auto t = ts[0].toObject();
+             switch (mode) {
+             case 0: p["targets"] = QJsonArray{}; return;
+             case 1: t["sha256"] = QString(64, 'a'); break;
+             case 2: t["asset_size"] = t["asset_size"].toDouble() + 1; break;
+             case 3: t["asset_url"] = t["asset_url"].toString() + "?changed=1"; break;
+             case 4: t["prerelease"] = true; break;
+             case 5: t["minimum_os"] = "99.0.0"; break;
+             case 6: t["installer_protocol"] = 2; break;
+             case 7: t["release_id"] = 999; break;
+             case 8: t["asset_id"] = 999; break;
+             case 9: t["version"] = "0.1.6"; t["release_tag"] = "v0.1.6"; break;
+             case 10: t["asset_name"] = "changed.dmg";
+                      t["asset_url"] = "https://github.com/OverDriveHuang/SeriousShot/releases/download/v0.1.5/changed.dmg"; break;
+             }
+             ts[0] = t; p["targets"] = ts;
+           });
+           RuntimeTestAccess::idle(*f.runtime); f.runtime->coordinator().install();
+           f.await([&] { return f.runtime->coordinator().view().phase == Phase::check_failed; });
+           HDRSHOT_CHECK(calls == 0 && !f.runtime->barrier_active() && f.wire.releases == 0);
+           f.runtime->coordinator().tick(300);
+           HDRSHOT_CHECK(calls == 0);
+         }
        }},
       {"missing Ready package repaired on next normal trigger without reprompt",
        [] {

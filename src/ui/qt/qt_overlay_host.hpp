@@ -1,6 +1,8 @@
 #pragma once
 #include "application/capture_session.hpp"
 #include "application/magnifier_sampler.hpp"
+#include "application/async_clean_content_cache.hpp"
+#include "ports/magnifier_card_port.hpp"
 #include "ui/qt/capture_magnifier_panel.hpp"
 #include "domain/color/capture_edr_boundary.hpp"
 #include "application/export_workflow.hpp"
@@ -16,6 +18,7 @@
 #include <QTimer>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -62,12 +65,30 @@ class QtOverlayHost final : public QWidget {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setProperty("seriousshotCaptureOverlay", true);
+    magnifier_readout_timer_.setSingleShot(true);
+    magnifier_readout_timer_.setTimerType(Qt::PreciseTimer);
+    connect(&magnifier_readout_timer_, &QTimer::timeout, this, [this] {
+      if (!magnifier_readout_deadline_) return;
+      expire_magnifier_readout();
+      if (capture_active_ && magnifier_.visible)
+        show_magnifier({magnifier_.center, magnifier_revision_, {}});
+    });
+    magnifier_settle_timer_.setSingleShot(true);
+    magnifier_settle_timer_.setTimerType(Qt::PreciseTimer);
+    connect(&magnifier_settle_timer_, &QTimer::timeout, this, [this] {
+      if (!magnifier_readout_expired_ || !magnifier_readout_.valid) return;
+      magnifier_readout_expired_ = false;
+      if (capture_active_ && magnifier_.visible)
+        show_magnifier({magnifier_.center, magnifier_revision_, magnifier_readout_});
+    });
     window_->set_input_interrupted([this] { input_interrupted(); });
     qApp->installEventFilter(this);
   }
 
   ~QtOverlayHost() override {
     capture_active_ = false;
+    hide_magnifier();
+    if (async_clean_cache_) async_clean_cache_->close();
     magnifier_sampler_.close();
     window_->set_input_interrupted({});
     if (qApp) qApp->removeEventFilter(this);
@@ -78,8 +99,10 @@ class QtOverlayHost final : public QWidget {
     editor_ = nullptr;
   }
 
-  void prepare_hidden_native_surface() {
+  Result<bool,Error> prepare_hidden_native_surface() {
     window_->prepare(*this);
+    if(auto error=window_->preparation_error()) return Result<bool,Error>::failure(std::move(*error));
+    return Result<bool,Error>::success(true);
   }
 
   [[nodiscard]] void* native_surface() const { return window_->native_surface(); }
@@ -130,6 +153,12 @@ class QtOverlayHost final : public QWidget {
     }
   }
 
+  void set_magnifier_card(std::shared_ptr<MagnifierCardPresenterPort> card) { magnifier_card_ = std::move(card); }
+  void* native_magnifier_surface() const { return window_->magnifier_surface(); }
+  void set_background_clean_composition(ExportTaskExecutorPort& tasks, std::shared_ptr<CleanCompositionPort> composition) {
+    async_clean_cache_ = std::make_unique<AsyncCleanContentCache>(tasks, std::move(composition));
+  }
+
   void set_clean_composition(std::shared_ptr<CleanCompositionPort> executor) {
     clean_cache_ = std::make_unique<CleanContentCache>(std::move(executor));
   }
@@ -145,6 +174,7 @@ class QtOverlayHost final : public QWidget {
       const hdrshot::CaptureReadyPayload& payload,
       std::shared_ptr<hdrshot::PreviewPresenterPort> presenter,
       std::shared_ptr<std::atomic<std::uint64_t>> operation_sequence) {
+    hide_magnifier();
     frozen_desktop_ = payload.frozen_desktop;
     presenter_ = std::move(presenter);
     operation_sequence_ = std::move(operation_sequence);
@@ -164,7 +194,7 @@ class QtOverlayHost final : public QWidget {
         input_platform_,
         selection_,
         this);
-    editor_->set_clean_content_presented(clean_cache_ != nullptr);
+    editor_->set_clean_content_presented(clean_cache_ != nullptr || async_clean_cache_ != nullptr);
     editor_->set_analysis_available(static_cast<bool>(analysis_requested_));
     editor_->setGeometry(rect());
     editor_->setObjectName(QStringLiteral("overlayEditor"));
@@ -231,57 +261,33 @@ class QtOverlayHost final : public QWidget {
       selection_ = editor_->selection();
       annotation_document_ = editor_->annotations();
       annotation_render_plan_ = editor_->annotation_render_plan();
-      // Completion has already committed pending text. Resolve this exact plan,
-      // independent of asynchronous screen refresh completion.
-      if (!refresh_clean_content()) return;
-      exporting_ = true;
-      const QPointer<QtOverlayHost> guard(this);
-      if (command == hdrshot::UiCommand::analyze) {
-        editor_->setEnabled(false);
-        editor_->show_status(QStringLiteral("正在准备分析…"), false);
-        analysis_requested_(hdrshot::ExportSnapshot{
-            session_id_, next_operation_id(), frozen_desktop_, selection_,
-            annotation_document_, annotation_render_plan_, export_settings_.default_save_folder,
-            target_display_id_, export_settings_.save_format, export_settings_.pq_diffuse_white,
-            export_settings_.hdr_pq_precision, export_settings_.ultra_hdr_jpeg_quality,
-            clean_content_, annotation_document_.revision},
-            [guard](Result<bool, Error> result) {
-              if (!guard) return;
-              guard->exporting_ = false;
-              if (result && result.value()) { guard->finish_capture(); return; }
-              guard->editor_->setEnabled(true);
-              guard->editor_->show_status(QStringLiteral("分析准备失败，选区和标注已保留"), true);
-              if (!result) record_diagnostic_failure(guard->diagnostics_.get(), "analysis.prepare", result.error());
-            });
+      // Pending text is committed before this action. Freeze this version.
+      ExportSnapshot snapshot{session_id_, next_operation_id(), frozen_desktop_, selection_,
+          annotation_document_, annotation_render_plan_, export_settings_.default_save_folder,
+          target_display_id_, export_settings_.save_format, export_settings_.pq_diffuse_white,
+          export_settings_.hdr_pq_precision, export_settings_.ultra_hdr_jpeg_quality,
+          clean_content_, annotation_document_.revision};
+      if (async_clean_cache_ && annotation_render_plan_) {
+        exporting_ = true; hide_magnifier(); editor_->setEnabled(false);
+        editor_->show_status(QStringLiteral("正在准备图像…"), false);
+        const QPointer<QtOverlayHost> guard(this);
+        async_clean_cache_->exact(frozen_desktop_, target_display_id_, annotation_render_plan_,
+            [guard, command, snapshot=std::move(snapshot)](auto result) mutable {
+          if (!guard || !guard->capture_active_ || guard->session_id_ != snapshot.session_id || guard->frozen_desktop_ != snapshot.frozen_desktop) return;
+          if (!result) {
+            guard->exporting_ = false; guard->editor_->setEnabled(true);
+            guard->editor_->show_status(QStringLiteral("标注合成失败，编辑内容已保留"), true);
+            record_diagnostic_failure(guard->diagnostics_.get(), "overlay.clean_content", result.error());
+            return;
+          }
+          snapshot.clean_content = std::move(result.value());
+          guard->dispatch_completion(command, std::move(snapshot));
+        });
         return;
       }
-      const bool dispatched = export_requested_(
-          command,
-          hdrshot::ExportSnapshot{
-              session_id_,
-              next_operation_id(),
-              frozen_desktop_,
-              selection_,
-              annotation_document_,
-              annotation_render_plan_,
-              export_settings_.default_save_folder,
-              target_display_id_,
-              export_settings_.save_format,
-              export_settings_.pq_diffuse_white,
-              export_settings_.hdr_pq_precision,
-              export_settings_.ultra_hdr_jpeg_quality,
-              clean_content_, annotation_document_.revision},
-          [guard](ExportResult result) mutable {
-        if (guard != nullptr) {
-          guard->handle_export_completed(std::move(result));
-        }
-      });
-      if (dispatched) {
-        // The immutable snapshot and destination ports are owned by the
-        // background job. Return the user to the desktop immediately; the shell
-        // reports any later failure through the resident tray application.
-        finish_capture();
-      }
+      if (!refresh_clean_content()) return;
+      snapshot.clean_content = clean_content_;
+      dispatch_completion(command, std::move(snapshot));
     });
 
     magnifier_panel_=new CaptureMagnifierPanel(editor_);
@@ -294,10 +300,13 @@ class QtOverlayHost final : public QWidget {
     editor_->show();
     editor_->raise();
     editor_->setFocus();
-    QTimer::singleShot(0, this, [this] {
+    const auto initial_magnifier_revision = magnifier_revision_;
+    const QPointer<OverlayEditorWidget> initial_editor(editor_);
+    QTimer::singleShot(0, this, [this, initial_magnifier_revision, initial_editor] {
+      if (!capture_active_ || editor_ != initial_editor) return;
       if (!interaction_locked_ && isVisible())
         editor_->refresh_window_candidate(editor_->mapFromGlobal(QCursor::pos()));
-      if(magnifier_revision_==0)request_magnifier(editor_->mapFromGlobal(QCursor::pos()));
+      if(magnifier_revision_==initial_magnifier_revision)request_magnifier(editor_->mapFromGlobal(QCursor::pos()));
       present();
     });
     std::cout << "qtHostReady=1 displayId=" << target_display_id_.value
@@ -400,12 +409,73 @@ class QtOverlayHost final : public QWidget {
 
  private:
 
+  void dispatch_completion(UiCommand command, ExportSnapshot snapshot) {
+      exporting_ = true;
+      const QPointer<QtOverlayHost> guard(this);
+      if (command == hdrshot::UiCommand::analyze) {
+        editor_->setEnabled(false);
+        editor_->show_status(QStringLiteral("正在准备分析…"), false);
+        analysis_requested_(std::move(snapshot),
+            [guard](Result<bool, Error> result) {
+              if (!guard) return;
+              guard->exporting_ = false;
+              if (result && result.value()) { guard->finish_capture(); return; }
+              guard->editor_->setEnabled(true);
+              guard->editor_->show_status(QStringLiteral("分析准备失败，选区和标注已保留"), true);
+              if (!result) record_diagnostic_failure(guard->diagnostics_.get(), "analysis.prepare", result.error());
+            });
+        return;
+      }
+      const bool dispatched = export_requested_(
+          command,
+          std::move(snapshot),
+          [guard](ExportResult result) mutable {
+        if (guard != nullptr) {
+          guard->handle_export_completed(std::move(result));
+        }
+      });
+      if (!dispatched) {
+        exporting_ = false; editor_->setEnabled(true);
+      }
+      if (dispatched) {
+        // The immutable snapshot and destination ports are owned by the
+        // background job. Return the user to the desktop immediately; the shell
+        // reports any later failure through the resident tray application.
+        finish_capture();
+      }
+  }
+
+  void stop_magnifier_readout_grace() {
+    magnifier_readout_timer_.stop();
+    magnifier_readout_deadline_.reset();
+  }
+  void reset_magnifier_readout() {
+    stop_magnifier_readout_grace();
+    magnifier_settle_timer_.stop();
+    magnifier_readout_expired_ = false;
+    magnifier_readout_ = {};
+  }
+  void expire_magnifier_readout() {
+    stop_magnifier_readout_grace();
+    magnifier_readout_ = {};
+    magnifier_readout_expired_ = true;
+    // After an actual 80ms timeout, require 50ms at the same cursor point
+    // before restoring digits. Sporadic successes during motion stay hidden.
+    const auto remaining = std::chrono::milliseconds(50) -
+        (std::chrono::steady_clock::now() - magnifier_last_move_);
+    if (remaining > std::chrono::steady_clock::duration::zero())
+      magnifier_settle_timer_.start(int(std::chrono::ceil<std::chrono::milliseconds>(remaining).count()));
+  }
   void hide_magnifier() {
+    reset_magnifier_readout();
     ++magnifier_revision_;magnifier_sampler_.invalidate();
     const bool shown=magnifier_.visible;magnifier_.visible=false;
     if(magnifier_panel_)magnifier_panel_->hide();
+    ++card_generation_;
+    window_->hide_magnifier();
+    if(magnifier_card_) magnifier_card_->invalidate_card(card_generation_);
     if(editor_)editor_->set_magnifier_exclusion({});
-    if(shown)present();
+    if(shown && capture_active_ && !magnifier_card_)present();
   }
   void request_magnifier(QPointF position) {
     if(!editor_ || !capture_active_ || interaction_locked_ || system_dialog_active_ || exporting_ || recovery_->pending() || recovery_->swallowing() ||
@@ -414,13 +484,35 @@ class QtOverlayHost final : public QWidget {
     const auto point=magnifier_source_point(position.x(),position.y(),segment->point_pixel_scale,segment->size_px);
     if(magnifier_.visible && magnifier_.center==point)return;
     const auto revision=++magnifier_revision_;
-    // Native image follows the cursor immediately; pending values are cleared.
-    show_magnifier({point,revision,{}});
+    const auto now = std::chrono::steady_clock::now();
+    magnifier_last_move_ = now;
+    // Image/coordinates follow immediately. A completed reading may bridge one
+    // short readback gap, bounded from the first move, never extended by motion.
+    if (magnifier_readout_expired_) {
+      magnifier_readout_ = {};
+      magnifier_settle_timer_.start(50);
+    } else if (magnifier_readout_.valid) {
+      if (!magnifier_readout_deadline_) {
+        magnifier_readout_deadline_ = now + std::chrono::milliseconds(80);
+        magnifier_readout_timer_.start(80);
+      } else if (now >= *magnifier_readout_deadline_) {
+        expire_magnifier_readout();
+      }
+    }
+    show_magnifier({point,revision,magnifier_readout_expired_ ? MagnifierReadout{} : magnifier_readout_});
     const QPointer<QtOverlayHost> guard(this);
     magnifier_sampler_.submit({frozen_desktop_,target_display_id_,point,revision,export_settings_.analysis_defaults.reference_white_nits},
       [guard](MagnifierSampleResult result){QMetaObject::invokeMethod(qApp,[guard,result=std::move(result)]{
         if(!guard || !guard->capture_active_ || result.revision!=guard->magnifier_revision_)return;
-        guard->show_magnifier(result);
+        guard->stop_magnifier_readout_grace();
+        guard->magnifier_readout_ = result.readout;
+        if (guard->magnifier_readout_expired_ && result.readout.valid &&
+            std::chrono::steady_clock::now() - guard->magnifier_last_move_ >= std::chrono::milliseconds(50)) {
+          guard->magnifier_readout_expired_ = false;
+          guard->magnifier_settle_timer_.stop();
+        }
+        guard->show_magnifier({result.point,result.revision,
+            guard->magnifier_readout_expired_ ? MagnifierReadout{} : result.readout});
       },Qt::QueuedConnection);});
   }
   void show_magnifier(const MagnifierSampleResult& sample) {
@@ -442,9 +534,56 @@ class QtOverlayHost final : public QWidget {
     const MagnifierPreview next{true,sample.point,{native_x,native_y,image_px,image_px},zoom,sample.revision};
     const bool image_changed=next!=magnifier_;magnifier_=next;
     magnifier_panel_->setGeometry(x,y,panel_width,panel_height);
-    editor_->set_magnifier_exclusion(magnifier_panel_->geometry());
-    magnifier_panel_->show_sample(sample.point,sample.readout,d.magnifier,image_height,zoom);
-    if(image_changed)present();
+    if (magnifier_card_) {
+      // Desktop movement never enters the render worker or its resource mutex.
+      window_->move_magnifier(*this, QRect(x,y,panel_width,panel_height));
+      editor_->set_magnifier_exclusion({});
+      magnifier_panel_->show_sample(sample.point,sample.readout,d.magnifier,image_height,zoom,false);
+      const auto backing = devicePixelRatioF();
+      const PixelSize size{qRound(panel_width*backing),qRound(panel_height*backing)};
+      // Logical ceil() can add a physical UI pixel at fractional DPI. Keep
+      // the HDR image on the original odd, integral source-cell grid.
+      const int output_image_px=std::min(image_px,
+          magnifier_odd_pixels(qRound(image_height*backing),zoom)*zoom);
+      if (size != card_size_) {
+        card_size_ = size; ++card_generation_;
+        window_->hide_magnifier(); magnifier_card_->invalidate_card(card_generation_);
+      }
+      // QMacStyle needs a Core Graphics-compatible premultiplied bitmap,
+      // even for QLabel's NoFrame draw. Convert to the card's straight RGBA
+      // upload contract only after native style painting has finished.
+#ifdef Q_OS_MACOS
+      QImage ui(size.width,size.height,QImage::Format_ARGB32_Premultiplied);
+#else
+      QImage ui(size.width,size.height,QImage::Format_RGBA8888);
+#endif
+      ui.setDevicePixelRatio(backing); ui.fill(Qt::transparent);
+      magnifier_panel_->render(&ui);
+      ui=ui.convertToFormat(QImage::Format_RGBA8888);
+      MagnifierCardFrame frame{session_id_,frozen_desktop_,target_display_id_,
+          frozen_desktop_->display_generation,card_generation_,sample.revision,size,
+          {true,sample.point,{0,qRound(CaptureMagnifierPanel::header_height()*backing),
+           output_image_px,output_image_px},zoom,sample.revision},{}};
+      frame.ui_rgba.resize(std::size_t(size.width)*size.height*4);
+      for(int row=0;row<size.height;++row)
+        std::copy_n(ui.constScanLine(row),std::size_t(size.width)*4,
+            frame.ui_rgba.data()+std::size_t(row)*size.width*4);
+      const auto generation=card_generation_;
+      const QPointer<QtOverlayHost> guard(this);
+      magnifier_card_->present_card(std::move(frame),[guard,generation](auto result) {
+        QMetaObject::invokeMethod(qApp,[guard,generation,result=std::move(result)] {
+          if(!guard || !guard->capture_active_ || !guard->magnifier_.visible ||
+              guard->card_generation_!=generation) return;
+          if(result) guard->window_->show_magnifier();
+          else if(result.error().code!=ErrorCode::operation_cancelled)
+            record_diagnostic_failure(guard->diagnostics_.get(),"overlay.card",result.error());
+        },Qt::QueuedConnection);
+      });
+    } else {
+      editor_->set_magnifier_exclusion(magnifier_panel_->geometry());
+      magnifier_panel_->show_sample(sample.point,sample.readout,d.magnifier,image_height,zoom);
+      if(image_changed)present();
+    }
   }
 
   void input_interrupted() {
@@ -486,6 +625,7 @@ class QtOverlayHost final : public QWidget {
   void finish_capture() {
     capture_active_ = false;
     hide_magnifier();
+    if(async_clean_cache_) async_clean_cache_->close();
     magnifier_sampler_.close();
     hide();
     if (finished_) {
@@ -524,11 +664,35 @@ class QtOverlayHost final : public QWidget {
   }
 
   void present() {
-    if (presenter_ == nullptr || frozen_desktop_ == nullptr ||
+    if (!capture_active_ || presenter_ == nullptr || frozen_desktop_ == nullptr ||
         operation_sequence_ == nullptr) {
       return;
     }
-    if (!refresh_clean_content()) return;
+    if (async_clean_cache_ && annotation_render_plan_) {
+      const auto plan = annotation_render_plan_;
+      if (clean_ready_plan_ != plan) {
+        if (clean_pending_plan_ == plan) return;
+        clean_pending_plan_ = plan;
+        const QPointer<QtOverlayHost> guard(this);
+        const auto source=frozen_desktop_;
+        async_clean_cache_->preview(source, target_display_id_, plan,
+            [guard,plan,source](auto result) {
+          if (!guard || !guard->capture_active_ || guard->frozen_desktop_ != source || guard->annotation_render_plan_ != plan) return;
+          guard->clean_pending_plan_.reset();
+          if (!result) {
+            if(result.error().code!=ErrorCode::operation_cancelled) {
+              guard->editor_->show_status(QStringLiteral("标注合成失败，编辑内容已保留"), true);
+              record_diagnostic_failure(guard->diagnostics_.get(),"overlay.clean_content",result.error());
+            }
+            return;
+          }
+          guard->clean_content_ = std::move(result.value());
+          guard->clean_ready_plan_ = plan;
+          guard->present();
+        });
+        return;
+      }
+    } else if (!refresh_clean_content()) return;
     const auto operation_id = next_operation_id();
     presenter_->present(
         hdrshot::PresentPreviewRequest{
@@ -542,7 +706,7 @@ class QtOverlayHost final : public QWidget {
                 frozen_desktop_->display_generation,
                 initial_highlight_,
                 clean_content_,
-                magnifier_,
+                magnifier_card_ ? MagnifierPreview{} : magnifier_,
             },
             target_display_id_,
         },
@@ -580,6 +744,8 @@ class QtOverlayHost final : public QWidget {
   std::shared_ptr<const hdrshot::AnnotationRenderPlan> annotation_render_plan_;
   std::unique_ptr<CleanContentCache> clean_cache_;
   CleanContentRef clean_content_;
+  std::unique_ptr<AsyncCleanContentCache> async_clean_cache_;
+  std::shared_ptr<const AnnotationRenderPlan> clean_ready_plan_, clean_pending_plan_;
   hdrshot::PreviewHighlight initial_highlight_{};
   bool interaction_locked_{false};
   bool exporting_{false};
@@ -596,8 +762,17 @@ class QtOverlayHost final : public QWidget {
   hdrshot::SettingsSnapshot export_settings_{};
   MagnifierSampler magnifier_sampler_;
   CaptureMagnifierPanel* magnifier_panel_{};
+  std::shared_ptr<MagnifierCardPresenterPort> magnifier_card_;
+  std::uint64_t card_generation_{};
+  PixelSize card_size_{};
   MagnifierPreview magnifier_{};
   std::uint64_t magnifier_revision_{};
+  MagnifierReadout magnifier_readout_{};
+  QTimer magnifier_readout_timer_;
+  QTimer magnifier_settle_timer_;
+  bool magnifier_readout_expired_{};
+  std::chrono::steady_clock::time_point magnifier_last_move_{};
+  std::optional<std::chrono::steady_clock::time_point> magnifier_readout_deadline_;
 };
 
 

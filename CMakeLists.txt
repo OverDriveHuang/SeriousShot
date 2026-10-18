@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.6 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.7 LANGUAGES CXX)
 set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
 if(HDRSHOT_UPDATE_TEST_VERSION)
   if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
@@ -200,6 +200,7 @@ hdrshot_enable_warnings(hdrshot_multi_display_preview)
 
 add_library(hdrshot_export_workflow STATIC
   src/application/clean_content_cache.cpp
+  src/application/async_clean_content_cache.cpp
   src/application/export_workflow.cpp
   src/application/export_completion_coordinator.cpp
 )
@@ -447,6 +448,13 @@ if(HDRSHOT_ENABLE_QT_HOST)
     hdrshot_enable_warnings(hdrshot_qt_overlay_host_tests)
     add_test(NAME hdrshot_qt_overlay_host_tests COMMAND hdrshot_qt_overlay_host_tests)
     set_tests_properties(hdrshot_qt_overlay_host_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+    if(APPLE)
+      # QMacStyle's Core Graphics bitmap bridge is absent with offscreen/Fusion.
+      add_test(NAME hdrshot_macos_magnifier_native_raster_tests
+        COMMAND hdrshot_qt_overlay_host_tests --magnifier-native-raster)
+      set_tests_properties(hdrshot_macos_magnifier_native_raster_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=cocoa" TIMEOUT 20)
+    endif()
 
     add_executable(hdrshot_qt_settings_store_tests
       tests/qt_settings_store_port_tests.cpp
@@ -610,6 +618,7 @@ if(APPLE)
 
   add_library(hdrshot_macos_preview_presenter_port STATIC
     src/platform/macos/macos_preview_presenter_port.cpp
+    src/platform/macos/macos_magnifier_card_presenter.cpp
   )
   target_link_libraries(hdrshot_macos_preview_presenter_port
     PUBLIC hdrshot_ports hdrshot_macos_metal_presenter
@@ -867,7 +876,7 @@ if(APPLE)
         tests/macos_qt_overlay_window_tests.mm
         src/platform/macos/macos_qt_overlay_window.mm)
       target_link_libraries(hdrshot_macos_qt_overlay_window_tests PRIVATE
-        Qt6::Widgets "-framework AppKit" "-framework QuartzCore")
+        Qt6::Widgets hdrshot_macos_metal_presenter "-framework AppKit" "-framework QuartzCore")
       target_include_directories(hdrshot_macos_qt_overlay_window_tests PRIVATE src tests)
       target_compile_options(hdrshot_macos_qt_overlay_window_tests PRIVATE -fobjc-arc)
       set_target_properties(hdrshot_macos_qt_overlay_window_tests PROPERTIES
@@ -876,7 +885,7 @@ if(APPLE)
       add_test(NAME hdrshot_macos_qt_overlay_window_tests
         COMMAND hdrshot_macos_qt_overlay_window_tests)
       # Native attributes cannot be tested with Qt's offscreen platform plugin.
-      # These tests create hidden windows only; no show/event loop/capture/input.
+      # Hidden windows and bounded event processing only; no show/capture/input.
       set_tests_properties(hdrshot_macos_qt_overlay_window_tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=cocoa" TIMEOUT 10 SKIP_RETURN_CODE 77)
 
@@ -1224,6 +1233,12 @@ if(BUILD_TESTING)
   hdrshot_enable_warnings(hdrshot_macos_global_hotkey_port_tests)
   add_test(NAME hdrshot_macos_global_hotkey_port_tests COMMAND hdrshot_macos_global_hotkey_port_tests)
 
+    if(HDRSHOT_ENABLE_QT_HOST)
+      add_executable(hdrshot_macos_magnifier_benchmark tools/macos_magnifier_benchmark.cpp)
+      target_link_libraries(hdrshot_macos_magnifier_benchmark PRIVATE hdrshot_macos_metal_presenter
+        hdrshot_macos_export_pixel_processor hdrshot_export_workflow hdrshot_frame_pipeline Qt6::Core)
+    endif()
+
     add_executable(hdrshot_macos_metal_presenter_tests tests/macos_metal_presenter_tests.cpp)
     target_link_libraries(hdrshot_macos_metal_presenter_tests PRIVATE hdrshot_macos_metal_presenter)
     target_include_directories(hdrshot_macos_metal_presenter_tests PRIVATE tests)
@@ -1298,6 +1313,11 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(hdrshot_clean_content_tests tests/clean_content_tests.cpp)
+  add_executable(hdrshot_async_clean_content_tests tests/async_clean_content_tests.cpp)
+  target_link_libraries(hdrshot_async_clean_content_tests PRIVATE hdrshot_export_workflow)
+  target_include_directories(hdrshot_async_clean_content_tests PRIVATE tests)
+  add_test(NAME hdrshot_async_clean_content_tests COMMAND hdrshot_async_clean_content_tests)
+  set_tests_properties(hdrshot_async_clean_content_tests PROPERTIES TIMEOUT 15)
   target_link_libraries(hdrshot_clean_content_tests PRIVATE hdrshot_export_workflow hdrshot_frame_pipeline hdrshot_ultra_hdr_input)
   target_include_directories(hdrshot_clean_content_tests PRIVATE tests)
   if(APPLE)

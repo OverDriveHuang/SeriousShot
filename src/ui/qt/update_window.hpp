@@ -29,6 +29,7 @@ private:
   QLabel *detail_{};
   QLabel *time_{};
   QProgressBar *progress_{};
+  QPushButton *releases_{};
   QPushButton *secondary_{};
   QPushButton *primary_{};
   std::function<bool(const QUrl &)> release_opener_;

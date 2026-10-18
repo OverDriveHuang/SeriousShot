@@ -152,6 +152,28 @@ int main(int argc, char **argv) {
   HDRSHOT_CHECK(sodium_init() >= 0);
   using hdrshot::test::run;
   return run({
+      {"schema one clients at 0.1.5 and 0.1.6 accept future and skipped versions", [] {
+         QByteArray pk(32, 0), sk(64, 0);
+         crypto_sign_keypair(reinterpret_cast<unsigned char *>(pk.data()), reinterpret_cast<unsigned char *>(sk.data()));
+         Trust trust{pk, "test", "stable", QUrl("https://raw.githubusercontent.com/OverDriveHuang/SeriousShot/main/updates/stable.json"), false};
+         for (const auto installed : {Version{0,1,5}, Version{0,1,6}}) {
+           for (const auto future : {Version{0,1,7}, Version{0,1,8}}) {
+             auto c = candidate(); c.version = future; c.release_tag = "v" + future.text();
+             c.asset_url = "https://github.com/OverDriveHuang/SeriousShot/releases/download/" + c.release_tag + "/" + c.asset_name;
+             const auto signed_catalog = sign_payload({{"product", "SeriousShot"}, {"channel", "stable"}, {"revision", 4}, {"targets", QJsonArray{target(c)}}}, sk);
+             const auto verified = verify_catalog(signed_catalog, trust);
+             HDRSHOT_CHECK(verified);
+             auto i = identity(); i.version = installed;
+             const auto selected = select(verified.value().targets, i);
+             HDRSHOT_CHECK(selected && selected.value() && selected.value()->version == future && selected.value()->version > installed);
+           }
+         }
+       }},
+      {"same version different full metadata conflicts even with identical key", [] {
+         auto a = candidate(), b = a; ++b.asset_id;
+         HDRSHOT_CHECK(a.key() == b.key() && a != b);
+         HDRSHOT_CHECK(!select({a,b}, identity()));
+       }},
       {"rolled-back result survives cleanup and cannot cross owner or candidate",
        [] {
          QTemporaryDir tmp;auto c=candidate();Slot slot(tmp.path(),"install-a","stable");

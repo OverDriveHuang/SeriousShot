@@ -1,3 +1,4 @@
+#include "platform/macos/macos_magnifier_card_presenter.hpp"
 #include "platform/qt/update/qt_update_runtime.hpp"
 #include "application/export_completion_coordinator.hpp"
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
@@ -455,10 +456,14 @@ class MacApplicationShell final {
           input_platform_, input_recovery);
       host->windowHandle()->setScreen(qt_screen);
       host->setGeometry(qt_screen->geometry());
-      host->prepare_hidden_native_surface();
+      const auto prepared = host->prepare_hidden_native_surface();
+      if (!prepared) {
+        record_capture_event(session_id, operation_id, "surface_prepare", "failure", &prepared.error());
+        host->deleteLater(); finish_capture(); return;
+      }
       host->set_diagnostics(diagnostics_);
       host->set_text_rasterizer(text_rasterizer_, text_editor_font_family_);
-      host->set_clean_composition(export_pixel_processor_);
+      host->set_background_clean_composition(export_executor_, export_pixel_processor_);
       host->set_finished([this, session_id] { finish_capture(session_id); });
       host->set_interaction_allowed(
           [this, session_id](const hdrshot::DisplayId activated) {
@@ -517,6 +522,19 @@ class MacApplicationShell final {
               {"requestedSpace", "ExtendedLinearDisplayP3"}, {"requestedFormat", "RGBA16Float"},
               {"currentEDR", std::to_string(screen.maximumExtendedDynamicRangeColorComponentValue)},
               {"potentialEDR", std::to_string(screen.maximumPotentialExtendedDynamicRangeColorComponentValue)}});
+      auto card_created = hdrshot::MacMetalEdrPresenter::create();
+      if (!card_created) {
+        record_capture_event(session_id, operation_id, "card_create", "failure", &card_created.error());
+        host->deleteLater(); finish_capture(); return;
+      }
+      auto card_presenter = std::shared_ptr<hdrshot::MacMetalEdrPresenter>(std::move(card_created.value()));
+      auto card_configured = card_presenter->configure_target_layer(host->native_magnifier_surface(), surface_range);
+      if (!card_configured) {
+        record_capture_event(session_id, operation_id, "card_configure", "failure", &card_configured.error());
+        host->deleteLater(); finish_capture(); return;
+      }
+      host->set_magnifier_card(std::make_shared<hdrshot::MacMagnifierCardPresenter>(
+          std::move(card_presenter),host->native_magnifier_surface(),surface_range));
       auto preview = std::make_shared<hdrshot::MacPreviewPresenterPort>(
           native_presenter,
           host->native_surface(),

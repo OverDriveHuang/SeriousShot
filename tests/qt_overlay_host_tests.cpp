@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <QImage>
+#include <QStyle>
 #include <fstream>
 #include <condition_variable>
 #include <chrono>
@@ -19,7 +20,11 @@ using namespace hdrshot;
 namespace {
 class Window final : public QtOverlayWindowPort {
  public:
-  int prepares{}, fronts{}, dialogs{}, resizes{}, recoveries{};
+  int prepares{}, fronts{}, dialogs{}, resizes{}, recoveries{}, card_moves{}, card_shows{}, card_hides{};
+  QRect card_rect;
+  void move_magnifier(QWidget&,const QRect& r) override {++card_moves;card_rect=r;}
+  void show_magnifier() override {++card_shows;}
+  void hide_magnifier() override {++card_hides;}
   std::function<void()> interrupted;
   void prepare(QWidget&) override { ++prepares; }
   void configure(QWidget&, bool) override { ++fronts; }
@@ -175,9 +180,191 @@ void magnifier_all_groups_keep_complete_headings_and_scalar_lines() {
     }
   }
 }
-FrozenDesktopRef magnifier_source(const std::shared_ptr<GatedPixelSource>& pixel,double scale=1) {
+FrozenDesktopRef magnifier_source(const std::shared_ptr<LinearSource>& pixel,double scale=1) {
   auto frozen=std::make_shared<FrozenDesktop>();frozen->frame_id={31};frozen->display_generation=9;
   CanonicalFrameSegment s;s.display_id={7};s.desktop_frame_points={-800,-400,1000/scale,600/scale};s.point_pixel_scale=scale;s.size_px={1000,600};s.pixel_format=PixelFormat::rgba32_float;s.encoding={ColorPrimaries::display_p3,TransferFunction::linear,AlphaMode::opaque,0};s.linear_source=pixel;frozen->canonical_segments.push_back(std::move(s));return frozen;
+}
+// Every read waits for its own permit. Only tests control latency/failure;
+// production sampling and its latest-pending queue remain unchanged.
+class SteppedPixelSource final : public LinearSource {
+ public:
+  PixelSize size_px() const override { return {1000,600}; }
+  std::size_t byte_count() const override { return 1000*600*16; }
+  Result<bool,Error> wait_until_ready() const override { return Result<bool,Error>::success(true); }
+  Result<LinearFloatPixels,Error> read_region(PixelRect rect) const override {
+    std::unique_lock lock(mutex_);
+    const auto index = ++entered_;
+    changed_.notify_all();
+    changed_.wait(lock,[&]{return open_ || permits_.size() >= index;});
+    if (!open_ && !permits_[index-1])
+      return Result<LinearFloatPixels,Error>::failure({ErrorCode::presenter_failed,"gated readback",Retryability::same_input,{}});
+    return Result<LinearFloatPixels,Error>::success({float(rect.x)/1000.F,float(rect.y)/1000.F,.4F,1.F});
+  }
+  bool await_read(std::size_t count) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock,std::chrono::seconds(2),[&]{return entered_ >= count;});
+  }
+  void permit(bool success=true) {
+    std::lock_guard lock(mutex_);permits_.push_back(success);changed_.notify_all();
+  }
+  void unblock_all() {
+    std::lock_guard lock(mutex_);open_=true;changed_.notify_all();
+  }
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable changed_;
+  mutable std::size_t entered_{};
+  std::vector<bool> permits_;
+  bool open_{};
+};
+void host_pending_readings_have_one_bounded_grace(bool use_card) {
+  struct Card final : MagnifierCardPresenterPort {
+    std::optional<MagnifierCardFrame> last;
+    void present_card(MagnifierCardFrame frame,Completion done) override {
+      const auto revision=frame.revision;last=std::move(frame);
+      done(Result<std::uint64_t,Error>::success(revision));
+    }
+    void invalidate_card(std::uint64_t) override {}
+  };
+  test::TestInputPlatformAdapter input;
+  const auto pixels=std::make_shared<SteppedPixelSource>();
+  struct ReleaseOnExit {
+    std::shared_ptr<SteppedPixelSource> pixels;
+    ~ReleaseOnExit(){pixels->unblock_all();}
+  } release{pixels};
+  auto native=std::make_unique<Window>();auto* window=native.get();
+  QtOverlayHost host(std::move(native),{7},{1,{}},input);host.resize(1000,600);
+  auto card=std::make_shared<Card>();
+  if(use_card)host.set_magnifier_card(card);
+  auto presenter=std::make_shared<Presenter>();
+  SettingsSnapshot settings;
+  settings.analysis_defaults.magnifier.selected.fill(false);
+  settings.analysis_defaults.magnifier.selected[0]=true;
+  host.set_export_requested({},settings);
+  host.activate_capture({magnifier_source(pixels),{{1},{1},{31},9,1,0}},presenter,
+      std::make_shared<std::atomic<std::uint64_t>>(2));
+  auto* editor=host.findChild<QWidget*>("overlayEditor");HDRSHOT_CHECK(editor);
+  auto* panel=host.findChild<QWidget*>("captureMagnifierPanel");HDRSHOT_CHECK(panel);
+  const auto move=[&](PixelPoint point) {
+    const QPointF at(point.x,point.y);
+    QMouseEvent event(QEvent::MouseMove,at,at,QPointF(editor->mapToGlobal(at.toPoint())),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(editor,&event);
+  };
+  const auto values=[&] {
+    QStringList result;
+    for(const auto* label:panel->findChildren<QLabel*>("magnifierScalarValue"))result << label->text();
+    return result;
+  };
+  const auto expected=[&](PixelPoint point) {
+    const auto readout=magnifier_readout({float(point.x)/1000.F,float(point.y)/1000.F,.4F},203,false);
+    QStringList result;
+    for(const auto& row:magnifier_scalar_rows(readout,settings.analysis_defaults.magnifier))
+      if(!row.heading)result << row.value;
+    return result;
+  };
+  const auto blank=[&] {
+    const auto text=values();return !text.empty() && std::all_of(text.begin(),text.end(),[](const auto& v){return v=="--";});
+  };
+  const auto spin=[&](auto predicate) {
+    QElapsedTimer timer;timer.start();
+    while(!predicate() && timer.elapsed()<2000){QApplication::processEvents();QThread::msleep(1);}
+    return predicate();
+  };
+  const auto process_for=[&](int ms) {
+    QElapsedTimer timer;timer.start();
+    while(timer.elapsed()<ms){QApplication::processEvents();QThread::msleep(1);}
+  };
+  const auto at=[&](PixelPoint point) {
+    HDRSHOT_CHECK(host.magnifier_preview().visible && host.magnifier_preview().center==point);
+    bool coordinates=false;
+    for(const auto* label:panel->findChildren<QLabel*>())
+      coordinates |= label->text()==QString("%1, %2").arg(point.x).arg(point.y);
+    HDRSHOT_CHECK(coordinates);
+    if(use_card) {
+      HDRSHOT_CHECK(card->last && card->last->image.center==point);
+      HDRSHOT_CHECK(card->last->revision==host.magnifier_preview().revision);
+      HDRSHOT_CHECK(window->card_rect==panel->geometry());
+    } else HDRSHOT_CHECK(presenter->last->model.magnifier.center==point);
+  };
+  move({123,87});HDRSHOT_CHECK(pixels->await_read(1));HDRSHOT_CHECK(blank());at({123,87});
+  pixels->permit();HDRSHOT_CHECK(spin([&]{return values()==expected({123,87});}));
+  const auto first=values();
+  move({200,100});HDRSHOT_CHECK(pixels->await_read(2));
+  HDRSHOT_CHECK(values()==first);at({200,100});
+  process_for(15);HDRSHOT_CHECK(values()==first);
+  pixels->permit();HDRSHOT_CHECK(spin([&]{return values()==expected({200,100});}));
+  process_for(110);HDRSHOT_CHECK(values()==expected({200,100})); // replacement cancels expiry
+
+  move({300,100});HDRSHOT_CHECK(pixels->await_read(3));
+  HDRSHOT_CHECK(values()==expected({200,100}));
+  // Requests keep arriving faster than the grace interval. A restarted timer
+  // would leave old digits visible here indefinitely.
+  QElapsedTimer motion;motion.start();PixelPoint latest{300,100};
+  int moves=0;
+  while(motion.elapsed()<130) {
+    latest={310+moves++,120};move(latest);process_for(5);
+  }
+  HDRSHOT_CHECK(moves>2 && blank());at(latest);
+  const auto expired_position=panel->geometry();
+  process_for(20);HDRSHOT_CHECK(blank() && panel->geometry()==expired_position);at(latest);
+  pixels->permit();HDRSHOT_CHECK(pixels->await_read(4)); // obsolete third request is discarded
+  process_for(5);HDRSHOT_CHECK(blank());at(latest);
+  pixels->permit();
+  HDRSHOT_CHECK(spin([&]{return host.magnifier_counters().in_flight==0;}));
+  process_for(5);HDRSHOT_CHECK(blank()); // current success alone cannot unlatch moving digits
+  std::size_t read=4;
+  for(int i=0;i<6;++i) {
+    latest={400+i*3,140};move(latest);HDRSHOT_CHECK(pixels->await_read(++read));
+    const auto delivered=host.magnifier_counters().delivered;
+    pixels->permit();
+    HDRSHOT_CHECK(spin([&]{return host.magnifier_counters().delivered>delivered;}));
+    process_for(5);HDRSHOT_CHECK(blank());at(latest);
+  }
+  // Only the last point's cached result may return after 50ms stationary.
+  HDRSHOT_CHECK(spin([&]{return values()==expected(latest);}));at(latest);
+  process_for(100);HDRSHOT_CHECK(values()==expected(latest));
+
+  move({500,100});HDRSHOT_CHECK(pixels->await_read(++read));
+  HDRSHOT_CHECK(values()==expected(latest));
+  pixels->permit(false);HDRSHOT_CHECK(spin(blank));at({500,100});
+  move({550,100});HDRSHOT_CHECK(pixels->await_read(++read));HDRSHOT_CHECK(blank());
+  pixels->permit();HDRSHOT_CHECK(spin([&]{return values()==expected({550,100});}));
+
+  move({570,100});HDRSHOT_CHECK(pixels->await_read(++read));
+  process_for(110);HDRSHOT_CHECK(blank()); // already stationary >50ms, but no current result
+  const auto delivered=host.magnifier_counters().delivered;
+  pixels->permit();
+  HDRSHOT_CHECK(spin([&]{return host.magnifier_counters().delivered>delivered;}));
+  process_for(5);HDRSHOT_CHECK(values()==expected({570,100})); // no additional settling delay
+
+  move({600,100});HDRSHOT_CHECK(pixels->await_read(++read));HDRSHOT_CHECK(!blank());
+  host.set_system_dialog_active(true);HDRSHOT_CHECK(!host.magnifier_preview().visible);
+  const auto hidden_shows=window->card_shows;
+  process_for(110);HDRSHOT_CHECK(!host.magnifier_preview().visible && window->card_shows==hidden_shows);
+  host.set_system_dialog_active(false);
+  move({700,100});HDRSHOT_CHECK(blank());at({700,100});
+  pixels->permit();HDRSHOT_CHECK(pixels->await_read(++read));
+  process_for(5);HDRSHOT_CHECK(blank()); // late hidden request cannot seed the reopened panel
+  pixels->permit();HDRSHOT_CHECK(spin([&]{return values()==expected({700,100});}));
+  process_for(110);HDRSHOT_CHECK(values()==expected({700,100}));at({700,100});
+
+  move({750,100});HDRSHOT_CHECK(pixels->await_read(++read));HDRSHOT_CHECK(!blank());
+  // Re-activation invalidates both queued sampling and old initial callbacks.
+  // Two activations before the event loop also leave an obsolete initial timer.
+  for(std::uint64_t session : {2U,3U})
+    host.activate_capture({magnifier_source(pixels),{{session},{1},{31},9,1,0}},presenter,
+        std::make_shared<std::atomic<std::uint64_t>>(2));
+  editor=host.findChildren<QWidget*>("overlayEditor").back();
+  panel=host.findChildren<QWidget*>("captureMagnifierPanel").back();
+  move({780,120});HDRSHOT_CHECK(blank());at({780,120});
+  pixels->permit();HDRSHOT_CHECK(pixels->await_read(++read));
+  process_for(5);HDRSHOT_CHECK(blank());
+  pixels->permit();HDRSHOT_CHECK(spin([&]{return values()==expected({780,120});}));
+  process_for(110);HDRSHOT_CHECK(values()==expected({780,120}));at({780,120});
+
+  move({800,100});HDRSHOT_CHECK(pixels->await_read(++read));
+  QKeyEvent escape(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);QApplication::sendEvent(&host,&escape);
+  pixels->permit();process_for(110);HDRSHOT_CHECK(!host.magnifier_preview().visible && !host.isVisible());
 }
 void tiny_sampler_coalesces_stale_results_and_releases_cancelled_owners() {
   auto pixels=std::make_shared<GatedPixelSource>();auto frozen=magnifier_source(pixels);
@@ -724,7 +911,117 @@ class CountingText final : public TextRasterizerPort {
         std::vector<std::uint8_t>(static_cast<std::size_t>(r.mask_size_px.width*r.mask_size_px.height),128),"fixture"});
   }
 };
-void pending_text_exports_final_clean_revision_without_present_completion(bool analyze = false) {
+struct CleanTasks final : ExportTaskExecutorPort {
+  std::vector<std::function<void()>> builds,callbacks;
+  void background(std::function<void()> f) override{builds.push_back(std::move(f));}
+  void main_thread(std::function<void()> f) override{callbacks.push_back(std::move(f));}
+  void drain() {
+    while(!builds.empty() || !callbacks.empty()) {
+      auto work=std::move(builds);builds.clear();for(auto& f:work)f();
+      auto done=std::move(callbacks);callbacks.clear();
+      std::reverse(done.begin(),done.end());for(auto& f:done)f();
+    }
+  }
+};
+void background_publication_ignores_old_document_and_closed_host() {
+  test::TestInputPlatformAdapter input;CleanTasks tasks;
+  QtOverlayHost host(std::make_unique<Window>(),{7},{1,{0,0,500,300}},input);host.resize(500,300);
+  auto source=std::make_shared<FrozenDesktop>();source->frame_id={3};source->display_generation=9;
+  CanonicalFrameSegment segment;segment.display_id={7};segment.size_px={500,300};
+  segment.encoding={ColorPrimaries::display_p3,TransferFunction::linear,AlphaMode::opaque,0};
+  segment.rgba_float.assign(500*300*4,.5F);source->canonical_segments.push_back(std::move(segment));
+  auto presenter=std::make_shared<Presenter>();
+  host.set_background_clean_composition(tasks,std::make_shared<CpuCleanComposition>());
+  host.activate_capture({source,{{1},{1},{3},9,1,0}},presenter,std::make_shared<std::atomic<std::uint64_t>>(2));
+  QApplication::processEvents();tasks.drain();
+  auto* editor=dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));HDRSHOT_CHECK(editor);
+  const auto draw=[&] {
+    host.findChild<QToolButton*>("toolRectangle")->click();
+    QMouseEvent press(QEvent::MouseButtonPress,QPointF(80,80),QPointF(80,80),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease,QPointF(200,180),QPointF(200,180),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(editor,&press);QApplication::sendEvent(editor,&release);
+  };
+  const auto build_only=[&] {auto builds=std::move(tasks.builds);tasks.builds.clear();for(auto& task:builds)task();};
+  draw();HDRSHOT_CHECK(editor->annotations().objects.size()==1);build_only();
+  HDRSHOT_CHECK(!tasks.callbacks.empty()); // Old nonempty composition ready, unpublished.
+  host.findChild<QToolButton*>("actionUndo")->click();
+  const auto revision=editor->annotations().revision;HDRSHOT_CHECK(editor->annotations().objects.empty());
+  build_only();tasks.drain(); // Publish newest first, then the old success.
+  HDRSHOT_CHECK(presenter->last->model.annotation_document.revision==revision);
+  HDRSHOT_CHECK(presenter->last->model.clean_content && presenter->last->model.clean_content->owned.empty());
+  draw();build_only();const auto before=presenter->frames;
+  QKeyEvent cancel(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);QApplication::sendEvent(&host,&cancel);
+  tasks.drain();HDRSHOT_CHECK(!host.isVisible() && presenter->frames==before);
+}
+void card_geometry_content_and_late_callbacks_are_separate() {
+  struct Card final : MagnifierCardPresenterPort {
+    std::vector<MagnifierCardFrame> frames;
+    std::vector<Completion> callbacks;
+    void present_card(MagnifierCardFrame f,Completion c) override {frames.push_back(std::move(f));callbacks.push_back(std::move(c));}
+    void invalidate_card(std::uint64_t) override {}
+  };
+  test::TestInputPlatformAdapter input;
+  auto native=std::make_unique<Window>();auto* window=native.get();
+  QtOverlayHost host(std::move(native),{7},{1,{}},input);host.resize(1000,600);
+  auto card=std::make_shared<Card>();auto preview=std::make_shared<Presenter>();host.set_magnifier_card(card);
+  auto pixels=std::make_shared<GatedPixelSource>();pixels->block_first=false;
+  host.activate_capture({magnifier_source(pixels),{{1},{1},{31},9,1,0}},preview,std::make_shared<std::atomic<std::uint64_t>>(2));
+  QApplication::processEvents();
+  auto* editor=host.findChild<QWidget*>("overlayEditor");HDRSHOT_CHECK(editor);
+  const auto move=[&](int x,int y) {
+    const QPointF at(x,y);QMouseEvent event(QEvent::MouseMove,at,at,QPointF(editor->mapToGlobal(at.toPoint())),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(editor,&event);
+  };
+  move(123,87);QApplication::processEvents();
+  const int backgrounds=preview->frames;const int moves=window->card_moves;
+  for(int i=0;i<30;++i)move(130+i,90+i);
+  HDRSHOT_CHECK(window->card_moves==moves+30 && window->card_shows==0);
+  HDRSHOT_CHECK(preview->frames==backgrounds && !preview->last->model.magnifier.visible);
+  auto* panel=host.findChild<QWidget*>("captureMagnifierPanel");HDRSHOT_CHECK(panel && !panel->isVisible());
+  const auto geometry=window->card_rect;
+  const auto& frame=card->frames.back();
+  HDRSHOT_CHECK(frame.image.center==(PixelPoint{159,119}));
+  HDRSHOT_CHECK(frame.ui_rgba.size()==std::size_t(frame.size_px.width)*frame.size_px.height*4);
+  HDRSHOT_CHECK(frame.image.viewport.x==0 && frame.image.viewport.y>0);
+  const auto center=(std::size_t(frame.image.viewport.y+frame.image.viewport.height/2)*
+      std::size_t(frame.size_px.width)+std::size_t(frame.image.viewport.width/2))*4;
+  HDRSHOT_CHECK(frame.ui_rgba[center+3]==0); // Native HDR image must remain uncovered.
+  bool rgba_border=false;
+  for(std::size_t i=0;i<frame.ui_rgba.size();i+=4)
+    rgba_border |= frame.ui_rgba[i]==0xbb && frame.ui_rgba[i+1]==0xc2 &&
+        frame.ui_rgba[i+2]==0xcc && frame.ui_rgba[i+3]==255;
+  HDRSHOT_CHECK(rgba_border); // ARGB painting must still upload straight RGBA bytes.
+  auto local=frame.image;local.center={0,0};HDRSHOT_CHECK(valid_magnifier_preview(local,frame.size_px));
+  // An older complete frame can show at the latest geometry, without moving it.
+  card->callbacks.front()(Result<std::uint64_t,Error>::success(card->frames.front().revision));
+  QApplication::processEvents();HDRSHOT_CHECK(window->card_rect==geometry && window->card_shows>0);
+  host.set_system_dialog_active(true);const auto shows=window->card_shows;
+  card->callbacks.back()(Result<std::uint64_t,Error>::success(frame.revision));
+  QApplication::processEvents();HDRSHOT_CHECK(window->card_shows==shows && !host.magnifier_preview().visible);
+}
+void panel_reuses_controls_and_invalidates_layout_and_theme() {
+  QWidget parent;CaptureMagnifierPanel panel(&parent);MagnifierReadings fields;
+  panel.resize(216,700);panel.show_sample({1,2},{},fields,216,8,false);
+  const auto values=panel.findChildren<QLabel*>("magnifierScalarValue");HDRSHOT_CHECK(!values.empty());
+  QPointer<QLabel> first=values.front();
+  panel.show_sample({2,3},magnifier_readout({.5,.5,.5},203,false),fields,216,8,false);
+  HDRSHOT_CHECK(panel.findChildren<QLabel*>("magnifierScalarValue")==values);
+  HDRSHOT_CHECK(values.front()->text()!="--");
+  fields.selected.fill(true);panel.show_sample({2,3},{},fields,216,8,false);
+  HDRSHOT_CHECK(!first);const auto headings=panel.findChildren<QLabel*>("magnifierGroupHeading");
+  HDRSHOT_CHECK(!headings.empty());
+  panel.resize(180,900);auto font=panel.font();font.setPointSize(17);panel.setFont(font);
+  auto palette=panel.palette();palette.setColor(QPalette::Window,QColor("#101010"));panel.setPalette(palette);
+  panel.show_sample({4,5},{},fields,180,16,false);
+  HDRSHOT_CHECK(panel.findChildren<QLabel*>("magnifierGroupHeading")==headings);
+  HDRSHOT_CHECK(headings.front()->height()>=19 && headings.front()->font().pointSizeF()>=16);
+  QImage image(panel.size(),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);panel.render(&image);
+  HDRSHOT_CHECK(image.pixelColor(1,1)==QColor("#25282d"));
+  palette.setColor(QPalette::Window,QColor("#eeeeee"));panel.setPalette(palette);
+  panel.show_sample({4,5},{},fields,180,16,false);panel.render(&image);
+  HDRSHOT_CHECK(image.pixelColor(1,1)==QColor("#fafafa"));
+}
+void pending_text_exports_final_clean_revision_without_present_completion(bool analyze = false, bool background = false) {
   test::TestInputPlatformAdapter input;
   QtOverlayHost host(std::make_unique<Window>(),{7},{1,{0,0,500,300}},input);
   host.resize(500,300);
@@ -733,7 +1030,10 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
   segment.encoding={ColorPrimaries::display_p3,TransferFunction::linear,AlphaMode::opaque,0};
   segment.rgba_float.assign(500*300*4,2.0F);source->canonical_segments.push_back(std::move(segment));
   auto text=std::make_shared<CountingText>();auto presenter=std::make_shared<DeferredPresenter>();
-  host.set_text_rasterizer(text,"fixture");host.set_clean_composition(std::make_shared<CpuCleanComposition>());
+  CleanTasks tasks;
+  host.set_text_rasterizer(text,"fixture");
+  if(background) host.set_background_clean_composition(tasks,std::make_shared<CpuCleanComposition>());
+  else host.set_clean_composition(std::make_shared<CpuCleanComposition>());
   std::optional<ExportSnapshot> accepted; int export_count=0;
   host.set_export_requested([&](UiCommand,ExportSnapshot snapshot,auto done) {
     accepted=std::move(snapshot);++export_count;
@@ -757,12 +1057,14 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
   field->setText("final text");
   HDRSHOT_CHECK(text->calls==0);
   host.findChild<QToolButton*>(analyze ? "actionAnalyze" : "actionCopy")->click();
+  if(background) {HDRSHOT_CHECK(!accepted && !editor->isEnabled());tasks.drain();}
   HDRSHOT_CHECK(accepted.has_value() && text->calls==1);
   HDRSHOT_CHECK(accepted->annotations.objects.size()==1 && accepted->clean_content!=nullptr);
   HDRSHOT_CHECK(accepted->clean_document_revision==accepted->annotations.revision);
   HDRSHOT_CHECK(!accepted->clean_content->owned.empty());
   const auto content=accepted->clean_content;
   host.findChild<QToolButton*>(analyze ? "actionAnalyze" : "actionCopy")->click();
+  if(background) tasks.drain();
   HDRSHOT_CHECK(accepted->clean_content==content && text->calls==1 && export_count==2);
   // Every screen refresh is still pending; export nevertheless owns final content.
   HDRSHOT_CHECK(!presenter->completions.empty());
@@ -774,6 +1076,7 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
     host.set_analysis_requested([&](ExportSnapshot,auto callback) { done=std::move(callback); });
     host.findChild<QToolButton*>("actionAnalyze")->click();
     HDRSHOT_CHECK(finished==0 && !editor->isEnabled());
+    if(background) tasks.drain();
     done(Result<bool,Error>::success(true));
     HDRSHOT_CHECK(finished==1 && !host.isVisible());
   }
@@ -782,6 +1085,29 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
 }
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+#ifdef Q_OS_MACOS
+  if(app.arguments().contains("--magnifier-native-raster")) {
+    if(QApplication::platformName()!="cocoa" ||
+        QByteArray(app.style()->metaObject()->className())!="QMacStyle") {
+      std::fprintf(stderr,"Native raster regression requires cocoa and QMacStyle\n");
+      return 1;
+    }
+    static int context_warnings=0;
+    const auto previous=qInstallMessageHandler([](QtMsgType type,const QMessageLogContext& context,const QString& message) {
+      if(QByteArray(context.category)=="qt.widgets.styles.macos" &&
+          message.contains("invalid (nullptr) graphics context")) ++context_warnings;
+      std::fprintf(stderr,"%s: %s\n",context.category,qPrintable(message));
+      if(type==QtFatalMsg) std::abort();
+    });
+    const auto result=hdrshot::test::run({
+      {"native QMacStyle card raster and straight RGBA payload",card_geometry_content_and_late_callbacks_are_separate},
+      {"native QMacStyle labels, separator and theme refresh",panel_reuses_controls_and_invalidates_layout_and_theme}});
+    qInstallMessageHandler(previous);
+    std::printf("platform=cocoa style=QMacStyle dpr=%.2f invalid_context_warnings=%d\n",
+        app.devicePixelRatio(),context_warnings);
+    return result || context_warnings ? 1 : 0;
+  }
+#endif
   const auto screenshot=qEnvironmentVariable("HDRSHOT_MAGNIFIER_SCREENSHOT");
   if(!screenshot.isEmpty()){
     if(qEnvironmentVariableIsSet("HDRSHOT_MAGNIFIER_DARK")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#25282d"));pal.setColor(QPalette::WindowText,Qt::white);app.setPalette(pal);}
@@ -801,6 +1127,13 @@ int main(int argc, char** argv) {
     HDRSHOT_CHECK(pixels.save(screenshot));return 0;
   }
   return hdrshot::test::run({
+      {"pending readings retain briefly, expire through motion, replace/fail/hide safely (panel)",[]{host_pending_readings_have_one_bounded_grace(false);}},
+      {"pending readings retain briefly, expire through motion, replace/fail/hide safely (card)",[]{host_pending_readings_have_one_bounded_grace(true);}},
+      {"background old document/closed host publication is ignored",background_publication_ignores_old_document_and_closed_host},
+      {"single card geometry, isolated background and stale completion",card_geometry_content_and_late_callbacks_are_separate},
+      {"magnifier control reuse with layout and theme invalidation",panel_reuses_controls_and_invalidates_layout_and_theme},
+      {"background exact text export retains requested document",[]{pending_text_exports_final_clean_revision_without_present_completion(false,true);}},
+      {"background exact analysis retains requested document",[]{pending_text_exports_final_clean_revision_without_present_completion(true,true);}},
       {"frozen SDR capture sampler keeps SDR scalar rows with strict ordinary/HDR inputs", sampler_frozen_sdr_provenance_reaches_scalar_rows},
       {"all magnifier groups retain complete wrapped headings and one scalar per line", magnifier_all_groups_keep_complete_headings_and_scalar_lines},
       {"host DPR mapping and paired native viewport, same-pixel dedup, off zero work", host_magnifier_pairs_physical_coordinates_and_off_does_no_work},

@@ -1,5 +1,6 @@
 #include "platform/macos/macos_preview_presenter_port.hpp"
 #include "test_support.hpp"
+#include "platform/macos/macos_magnifier_card_presenter.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -251,10 +252,70 @@ void candidate_uses_frozen_pixels_without_committing_selection() {
   HDRSHOT_CHECK(initial.model.selection.desktop_rect.empty());
 }
 
+void card_late_refresh_coalesces_and_invalidates() {
+  std::mutex mutex;std::condition_variable changed;
+  bool entered=false,release=false;int calls=0,callbacks=0,cancellations=0;
+  std::vector<std::uint64_t> successes,drawn;
+  MacMagnifierCardPresenter port([&](void*,MacMetalCardRequest card,MacMetalEdrPresenter::RefreshCard refresh) {
+    {std::unique_lock lock(mutex);++calls;entered=true;changed.notify_all();
+      changed.wait_for(lock,std::chrono::seconds(2),[&]{return release;});}
+    if(!refresh(card)) return Result<MacMetalPresentReceipt,Error>::failure(
+        {ErrorCode::operation_cancelled,"fake",Retryability::never,{}});
+    {std::lock_guard lock(mutex);drawn.push_back(card.source.magnifier.revision);}
+    return Result<MacMetalPresentReceipt,Error>::success({});
+  },reinterpret_cast<void*>(1),MacMetalSurfaceRange::edr);
+  const auto frame=frozen_frame();
+  auto make=[&](std::uint64_t revision,std::uint64_t generation=1) {
+    return MagnifierCardFrame{SessionId{1},frame,DisplayId{9},frame->display_generation,
+        generation,revision,{12,24},{true,{1,1},{0,4,12,12},4,revision},std::vector<std::uint8_t>(12*24*4)};
+  };
+  auto done=[&](Result<std::uint64_t,Error> result) {
+    std::lock_guard lock(mutex);++callbacks;
+    if(result)successes.push_back(result.value());else ++cancellations;changed.notify_all();
+  };
+  port.present_card(make(1),done);
+  {std::unique_lock lock(mutex);HDRSHOT_CHECK(changed.wait_for(lock,std::chrono::seconds(2),[&]{return entered;}));}
+  for(std::uint64_t i=2;i<=50;++i)port.present_card(make(i),done);
+  {std::lock_guard lock(mutex);release=true;}changed.notify_all();
+  {std::unique_lock lock(mutex);HDRSHOT_CHECK(changed.wait_for(lock,std::chrono::seconds(2),[&]{return callbacks==50;}));
+    HDRSHOT_CHECK(calls==1 && cancellations==49 && successes==std::vector<std::uint64_t>{50});
+    HDRSHOT_CHECK(drawn==std::vector<std::uint64_t>{50});entered=false;release=false;}
+  port.present_card(make(51),done);
+  {std::unique_lock lock(mutex);HDRSHOT_CHECK(changed.wait_for(lock,std::chrono::seconds(2),[&]{return entered;}));}
+  port.invalidate_card(2);port.present_card(make(52),done);
+  {std::lock_guard lock(mutex);release=true;}changed.notify_all();
+  {std::unique_lock lock(mutex);HDRSHOT_CHECK(changed.wait_for(lock,std::chrono::seconds(2),[&]{return callbacks==52;}));
+    HDRSHOT_CHECK(cancellations==51 && drawn.size()==1);}
+  port.present_card(make(53,2),done);
+  {std::unique_lock lock(mutex);HDRSHOT_CHECK(changed.wait_for(lock,std::chrono::seconds(2),[&]{return callbacks==53;}));
+    HDRSHOT_CHECK(successes.back()==53);}
+}
+void card_close_cancels_inflight_and_pending() {
+  std::mutex mutex;std::condition_variable changed;bool entered=false;int callbacks=0,successes=0;
+  auto frame=frozen_frame();
+  {
+    MacMagnifierCardPresenter port([&](void*,MacMetalCardRequest card,MacMetalEdrPresenter::RefreshCard refresh) {
+      {std::lock_guard lock(mutex);entered=true;changed.notify_all();}
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      if(!refresh(card))return Result<MacMetalPresentReceipt,Error>::failure({ErrorCode::operation_cancelled,"fake",Retryability::never,{}});
+      return Result<MacMetalPresentReceipt,Error>::success({});
+    },reinterpret_cast<void*>(1),MacMetalSurfaceRange::edr);
+    auto done=[&](auto result){std::lock_guard lock(mutex);++callbacks;if(result)++successes;};
+    MagnifierCardFrame card{SessionId{1},frame,DisplayId{9},frame->display_generation,1,1,{12,24},
+        {true,{1,1},{0,4,12,12},4,1},std::vector<std::uint8_t>(12*24*4)};
+    port.present_card(card,done);
+    {std::unique_lock lock(mutex);HDRSHOT_CHECK(changed.wait_for(lock,std::chrono::seconds(2),[&]{return entered;}));}
+    port.present_card(card,done);
+  }
+  HDRSHOT_CHECK(callbacks==2 && successes==0);
+}
+
 }  // namespace
 
 int main() {
   return hdrshot::test::run({
+      {"Card late input and invalidation",card_late_refresh_coalesces_and_invalidates},
+      {"Card close cancels work",card_close_cancels_inflight_and_pending},
       {"P3 latest-only scheduling", single_inflight_keeps_only_latest_pending_revision},
       {"P3 selects explicit display segment", explicit_display_id_selects_the_matching_segment},
       {"P3 forwards an empty initial selection", empty_selection_reaches_the_platform_presenter},

@@ -967,6 +967,14 @@ void magnifier_native_source_nearest_neighbor_edges_and_overlay_separation() {
     request.magnifier={true,center,{0,0,7*zoom,5*zoom},zoom,1};
     const auto actual=display->render_offscreen(request);
     HDRSHOT_CHECK(actual.has_value());
+    auto card_source=request;card_source.clean_content.reset();
+    MacMetalCardRequest card{card_source,{7*zoom,5*zoom},
+        std::vector<std::uint8_t>(std::size_t(7*zoom*5*zoom*4))};
+    const auto local=display->render_card_offscreen(card);
+    HDRSHOT_CHECK(local.has_value());
+    for(int y=0;y<5*zoom;++y)for(int x=0;x<7*zoom;++x)for(int c=0;c<4;++c)
+      HDRSHOT_CHECK(local.value().rgba_linear_display_p3[std::size_t((y*7*zoom+x)*4+c)]==
+          actual.value().rgba_linear_display_p3[std::size_t((y*size.width+x)*4+c)]);
     HDRSHOT_CHECK(macos_source_texture(source)==texture);
     HDRSHOT_CHECK(std::all_of(actual.value().rgba_linear_display_p3.begin(),actual.value().rgba_linear_display_p3.end(),[](float v){return std::isfinite(v);}));
     for(int row=0;row<5;++row) for(int col=0;col<7;++col) {

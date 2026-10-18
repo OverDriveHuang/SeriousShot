@@ -1,15 +1,26 @@
 #include "platform/macos/macos_qt_overlay_window.hpp"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #include <iostream>
 #include <QApplication>
 #include <QPointer>
 #include <QTimer>
 #include <QVariant>
+// A passive card must never become an input target or create a fullscreen Space.
+@interface SeriousShotMagnifierWindow : NSWindow
+@end
+@implementation SeriousShotMagnifierWindow
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
 namespace hdrshot {
 struct MacQtOverlayWindow::Impl : std::enable_shared_from_this<Impl> {
   NSScreen* native_screen_{nil};
   CAMetalLayer* layer_{nil};
+  NSWindow* card_window_{nil};
+  CAMetalLayer* card_layer_{nil};
+  std::optional<Error> preparation_error_;
   QPointer<QWidget> host_;
   __weak NSWindow* watched_window_{nil};
   id inactive_observer_{nil};
@@ -17,7 +28,12 @@ struct MacQtOverlayWindow::Impl : std::enable_shared_from_this<Impl> {
   bool presented_{false}, system_dialog_active_{false};
   std::function<void()> input_interrupted_;
 
-  ~Impl() { disconnect(); }
+  ~Impl() {
+    disconnect();
+    [card_window_ orderOut:nil];
+    [card_window_.parentWindow removeChildWindow:card_window_];
+    [card_window_ close];
+  }
   void disconnect() {
     if (inactive_observer_) [[NSNotificationCenter defaultCenter] removeObserver:inactive_observer_];
     if (key_observer_) [[NSNotificationCenter defaultCenter] removeObserver:key_observer_];
@@ -120,6 +136,31 @@ struct MacQtOverlayWindow::Impl : std::enable_shared_from_this<Impl> {
     const auto backing = [native_view convertRectToBacking:native_view.bounds];
     layer_.drawableSize = backing.size;
     [native_view.layer addSublayer:layer_];
+    card_window_ = [[SeriousShotMagnifierWindow alloc]
+        initWithContentRect:NSMakeRect(0,0,1,1) styleMask:NSWindowStyleMaskBorderless
+        backing:NSBackingStoreBuffered defer:NO screen:native_screen_];
+    card_window_.releasedWhenClosed = NO;
+    card_window_.ignoresMouseEvents = YES;
+    card_window_.hasShadow = NO;
+    card_window_.opaque = YES;
+    card_window_.hidesOnDeactivate = NO;
+    card_window_.movable = NO;
+    card_window_.level = NSScreenSaverWindowLevel;
+    card_window_.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+        NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorFullScreenAuxiliary |
+        NSWindowCollectionBehaviorIgnoresCycle;
+    card_layer_ = [CAMetalLayer layer];
+    card_layer_.maximumDrawableCount = 2;
+    card_layer_.allowsNextDrawableTimeout = YES;
+    card_layer_.actions = @{@"position":[NSNull null], @"bounds":[NSNull null],
+        @"contents":[NSNull null], @"drawableSize":[NSNull null]};
+    card_layer_.contentsScale = native_screen_.backingScaleFactor;
+    card_layer_.drawableSize = CGSizeMake(1,1);
+    card_window_.contentView.wantsLayer = YES;
+    card_window_.contentView.layer = card_layer_;
+    if (!layer_ || !card_layer_ || !card_window_)
+      preparation_error_ = Error{ErrorCode::presenter_failed,"MacQtOverlayWindow",
+          Retryability::after_recreate,{{"reason","native_surface_creation_failed"}}};
   }
 
 
@@ -149,6 +190,34 @@ void MacQtOverlayWindow::restore_input_focus(QWidget& host) {
   host.setFocus(Qt::MouseFocusReason);
 }
 void* MacQtOverlayWindow::native_surface() const { return (__bridge void*)impl_->layer_; }
+std::optional<Error> MacQtOverlayWindow::preparation_error() const { return impl_->preparation_error_; }
+void* MacQtOverlayWindow::magnifier_surface() const { return (__bridge void*)impl_->card_layer_; }
+void MacQtOverlayWindow::move_magnifier(QWidget& host, const QRect& rect) {
+  NSView* view = (__bridge NSView*)reinterpret_cast<void*>(host.winId());
+  // Qt rect is local top-left logical coordinates. Convert via the actual host
+  // window, preserving negative origins and AppKit's bottom-left convention.
+  const auto parent = view.window.frame;
+  const NSRect frame = NSMakeRect(NSMinX(parent)+rect.x(),NSMaxY(parent)-rect.y()-rect.height(),
+      rect.width(),rect.height());
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  [impl_->card_window_ setFrame:frame display:NO animate:NO];
+  impl_->card_layer_.frame = impl_->card_window_.contentView.bounds;
+  impl_->card_layer_.contentsScale = host.devicePixelRatioF();
+  impl_->card_layer_.drawableSize = CGSizeMake(qRound(rect.width()*host.devicePixelRatioF()),
+      qRound(rect.height()*host.devicePixelRatioF()));
+  [CATransaction commit];
+}
+void MacQtOverlayWindow::show_magnifier() {
+  if (!impl_->host_ || !impl_->host_->isVisible() || impl_->system_dialog_active_) return;
+  NSView* view = (__bridge NSView*)reinterpret_cast<void*>(impl_->host_->winId());
+  if (impl_->card_window_.parentWindow != view.window)
+    [view.window addChildWindow:impl_->card_window_ ordered:NSWindowAbove];
+  [impl_->card_window_ orderFront:nil];
+}
+void MacQtOverlayWindow::hide_magnifier() {
+  [impl_->card_window_ orderOut:nil];
+  [impl_->card_window_.parentWindow removeChildWindow:impl_->card_window_];
+}
 void MacQtOverlayWindow::resize(QWidget& host) {
   if (impl_->layer_ == nil) return;
   NSView* view = (__bridge NSView*)reinterpret_cast<void*>(host.winId());

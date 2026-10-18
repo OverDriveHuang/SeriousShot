@@ -1,6 +1,6 @@
 # 软件更新协议
 
-最后更新：2026-10-13 22:45:00 CST
+最后更新：2026-10-19 00:19:00 CST
 
 客户端通过 GitHub 托管的签名清单选择本平台的新版本，安装包保存在 Release 附件。正式源为：
 
@@ -14,13 +14,15 @@ https://raw.githubusercontent.com/OverDriveHuang/SeriousShot/main/updates/stable
 
 ## 版本与发行状态
 
+Mac 0.1.7 开始采用下述签名清单复核策略。Windows 0.1.6 及更早的已发行客户端仍保留原有 Release API 校验行为。
+
 版本格式为三个以点分隔的非负整数，不允许前导零、溢出或预发布后缀。按主版本、次版本、修订号依次比较数值。只接受 GitHub Release 的 `draft=false`、`prerelease=false`；Latest 标记不替代这两个条件。Mac与Windows可以指向不同的正式Release。
 
 清单使用 `schema_version=1` 的 envelope，字段为 `key_id`、`payload_base64`、`signature_base64`。Ed25519签名覆盖固定前缀 `SeriousShot.UpdateCatalog.v1` 加解码后的payload原字节。客户端先验签再解析，不能在签名后手工改版本或链接。
 
 payload 包含 `product=SeriousShot`、`channel`、递增的目录 `revision` 和 `targets`。每条目标包含平台、架构、三段版本、最低系统、Release tag/ID、附件 ID/名称/永久直链、大小、SHA-256、正式发布状态和安装协议版本。目录revision用于阻止旧目录回放，与软件三段版本号分别维护。
 
-客户端下载前还核对GitHub Release的实际状态及附件身份；下载完成后核对大小和SHA-256。更新清单签名在Windows和Mac共用，不能代替Apple代码签名、公证或Windows Authenticode，也不会绕过系统安全判断。
+新版客户端以本次成功读取并验签的清单作为更新授权依据，检查、下载前和安装前不再强制请求 GitHub Release REST API。发布工具仍核对正式 Release 状态、资产身份和摘要；下载完成后客户端核对大小和 SHA-256。安装前重新读取并验签清单，重新选择完整候选；候选撤回、变更、不再兼容或读取失败时保留当前程序并提示重试或手动下载。有效 304 必须绑定已验签缓存；低 revision、同 revision 异内容及坏签名均拒绝。撤回以本次读取结果为边界，不能保证 CDN 缓存或读取之后并发变化的瞬时生效。更新清单签名在Windows和Mac共用，不能代替Apple代码签名、公证或Windows Authenticode，也不会绕过系统安全判断。
 
 ## 构建和签名工具
 
@@ -38,3 +40,5 @@ hdrshot_update_catalog_tool verify ENVELOPE PUBLIC_HEX_FILE KEY_ID CHANNEL
 测试构建使用独立的更新数据目录。Windows 测试构建还将设置、日志和默认截图目录放在应用数据目录的 `testing` 子目录下；测试版本之间沿用同一目录，升级会保留测试配置。带 `testing` 的 ZIP 仅供测试渠道使用，不是正式 Windows 版本。
 
 Mac默认使用DMG安装路径。Windows自动覆盖必须在原生事务验收后显式开启 `HDRSHOT_WINDOWS_UPDATE_NATIVE_VALIDATED`；默认关闭。首次部署可信源和平台验证应在宣告更新可用之前完成。
+
+兼容旧客户端继续保留 schema_version=1、stable URL、原正式 key ID／公钥、全部 Release／asset 身份字段及 installer_protocol=1。旧 0.1.5／0.1.6 无需逐版本安装，可在平台、最低系统及协议兼容时直接选择更高版本；旧二进制原有 Release API 调用和限流约束仍存在。撤回不使已安装版本自动降级，通常通过更高版本修复。

@@ -251,7 +251,7 @@ QImage desktop_pixels(const RECT& monitor) {
 }
 
 void actual_screen_magnifier_readings(bool native_control = false,
-                                     bool gamut = false) {
+                                     bool gamut = false, bool gpu_card = false) {
   CursorRestore restore_cursor(false);
   auto* screen = QGuiApplication::primaryScreen();
   HDRSHOT_CHECK(screen);
@@ -295,7 +295,7 @@ void actual_screen_magnifier_readings(bool native_control = false,
   MagnifierReadings fields;
   // A shorter image area keeps all four new groups visible together, including
   // wrapped Windows headings; production geometry is not changed by this test.
-  const int image_height = gamut ? 32 : 216;
+  const int image_height = gamut ? (gpu_card ? 40 : 32) : 216;
   if (gamut) {
     fields.selected.fill(false);
     for (int id : {9, 10, 11, 12}) fields.selected[id] = true;
@@ -309,6 +309,43 @@ void actual_screen_magnifier_readings(bool native_control = false,
   HDRSHOT_CHECK(SetWindowDisplayAffinity(reinterpret_cast<HWND>(host.winId()), WDA_NONE));
   HDRSHOT_CHECK(SetWindowDisplayAffinity(static_cast<HWND>(host.native_surface()), WDA_NONE));
 
+  std::shared_ptr<WindowsD3DPreviewPresenter> card_presenter;
+  FrozenDesktopRef card_source;
+  QImage last_ui;
+  std::uint64_t card_revision=0;
+  if(gpu_card) {
+    display.source_white={false,80};display.advanced_color_mode=1;
+    auto created=WindowsD3DPreviewPresenter::create(host.native_surface(),display,{},host.native_magnifier_surface());
+    HDRSHOT_CHECK(created.has_value());card_presenter=std::move(created.value());card_presenter->invalidate_card(1);
+    auto frozen=std::make_shared<FrozenDesktop>();frozen->frame_id={91};frozen->display_generation=1;
+    CanonicalFrameSegment segment;segment.display_id=display.snapshot.id;
+    segment.size_px=display.snapshot.capture_size_px;segment.encoding=WindowsColor::linear_p3_encoding();
+    segment.rgba_half.assign(std::size_t(segment.size_px.width)*segment.size_px.height*4,0x3800);
+    for(std::size_t i=3;i<segment.rgba_half.size();i+=4)segment.rgba_half[i]=0x3c00;
+    frozen->canonical_segments.push_back(std::move(segment));card_source=std::move(frozen);
+    HDRSHOT_CHECK(SetWindowDisplayAffinity(static_cast<HWND>(host.native_magnifier_surface()),WDA_NONE));
+  }
+  const auto display_sample=[&](PixelPoint point,const MagnifierReadout& reading,const MagnifierReadings& selected,int image,int zoom) {
+    panel.show_sample(point,reading,selected,image,zoom,!gpu_card);
+    if(!gpu_card)return;
+    window->move_magnifier(host,panel.geometry());
+    last_ui=QImage(qRound(panel.width()*scale),qRound(panel.height()*scale),QImage::Format_RGBA8888);
+    last_ui.setDevicePixelRatio(scale);last_ui.fill(Qt::transparent);
+    panel.render(&last_ui); // Production UI-texture stimulus; never in observer.
+    last_ui=last_ui.convertToFormat(QImage::Format_RGBA8888);
+    MagnifierCardFrame frame{{1},card_source,display.snapshot.id,1,1,++card_revision,
+        {last_ui.width(),last_ui.height()},
+        {true,point,{0,qRound(panel.header_height()*scale),
+         magnifier_odd_pixels(last_ui.width(),zoom)*zoom,
+         magnifier_odd_pixels(qRound(image*scale),zoom)*zoom},zoom,card_revision},{}};
+    frame.ui_rgba.resize(std::size_t(last_ui.width())*last_ui.height()*4);
+    for(int row=0;row<last_ui.height();++row)std::copy_n(last_ui.constScanLine(row),std::size_t(last_ui.width())*4,
+        frame.ui_rgba.data()+std::size_t(row)*last_ui.width()*4);
+    auto complete=std::make_shared<std::atomic<bool>>(false),failed=std::make_shared<std::atomic<bool>>(false);
+    card_presenter->present_card(std::move(frame),[complete,failed](auto result){*failed=!result;*complete=true;});
+    HDRSHOT_CHECK(wait_until([&]{return complete->load();}));HDRSHOT_CHECK(!*failed);
+    window->show_magnifier();
+  };
   const QString output = qEnvironmentVariable("HDRSHOT_MAGNIFIER_SCREEN_OUTPUT");
   if (!output.isEmpty()) HDRSHOT_CHECK(QDir().mkpath(output));
   std::cerr << "screen fixture gamut=" << gamut << " nativeControl=" << native_control
@@ -338,29 +375,30 @@ void actual_screen_magnifier_readings(bool native_control = false,
         labels.push_back(headings[i]);
       }
     }
-    auto* store = panel.backingStore();
-    HDRSHOT_CHECK(store);
-    const auto* image = dynamic_cast<const QImage*>(store->paintDevice());
-    HDRSHOT_CHECK(image && !image->isNull());
-    // Read only. QWidget::grab/render/repaint would flush the stale native
-    // child surface and hide this regression. Save only owned label crops.
-    std::vector<QImage> backing;
-    for (qsizetype i = 0; i < labels.size(); ++i) {
-      const QPoint offset = labels[i]->mapTo(&host, QPoint{});
-      const QRect roi(qRound(offset.x() * scale), qRound(offset.y() * scale),
-                      qRound(labels[i]->width() * scale), qRound(labels[i]->height() * scale));
-      HDRSHOT_CHECK(image->rect().contains(roi));
-      backing.push_back(image->copy(roi));
+    const QImage* image=nullptr;
+    if(gpu_card) image=&last_ui;
+    else {
+      auto* store=panel.backingStore();HDRSHOT_CHECK(store);
+      image=dynamic_cast<const QImage*>(store->paintDevice());
     }
-    const QImage desktop = gamut ? desktop_pixels(monitor.rcMonitor)
+    HDRSHOT_CHECK(image && !image->isNull());
+    // Both references are read-only. The GPU case uses the texture submitted
+    // by the stimulus, never an observation-time widget render/repaint.
+    std::vector<QImage> backing;
+    for(qsizetype i=0;i<labels.size();++i) {
+      const QPoint offset=labels[i]->mapTo(gpu_card?static_cast<QWidget*>(&panel):static_cast<QWidget*>(&host),QPoint{});
+      const QRect roi(qRound(offset.x()*scale),qRound(offset.y()*scale),qRound(labels[i]->width()*scale),qRound(labels[i]->height()*scale));
+      HDRSHOT_CHECK(image->rect().contains(roi));backing.push_back(image->copy(roi));
+    }
+    const QImage desktop = (gamut || gpu_card) ? desktop_pixels(monitor.rcMonitor)
                                 : screen->grabWindow(0).toImage();
     HDRSHOT_CHECK(!desktop.isNull());
     HDRSHOT_CHECK(desktop.width() == monitor.rcMonitor.right - monitor.rcMonitor.left);
     HDRSHOT_CHECK(desktop.height() == monitor.rcMonitor.bottom - monitor.rcMonitor.top);
     POINT host_origin{};
-    HDRSHOT_CHECK(ClientToScreen(reinterpret_cast<HWND>(host.winId()), &host_origin));
+    HDRSHOT_CHECK(ClientToScreen(gpu_card?static_cast<HWND>(host.native_magnifier_surface()):reinterpret_cast<HWND>(host.winId()), &host_origin));
     if (gamut) {
-      const QPoint origin = panel.mapTo(&host, QPoint{});
+      const QPoint origin = gpu_card?QPoint{}:panel.mapTo(&host, QPoint{});
       const QRect panel_roi(host_origin.x - monitor.rcMonitor.left + qRound(origin.x() * scale),
                             host_origin.y - monitor.rcMonitor.top + qRound(origin.y() * scale),
                             qRound(panel.width() * scale), qRound(panel.height() * scale));
@@ -370,7 +408,7 @@ void actual_screen_magnifier_readings(bool native_control = false,
         HDRSHOT_CHECK(desktop.copy(panel_roi).save(QDir(output).filePath(stage + "-panel-screen.png")));
     }
     for (qsizetype i = 0; i < labels.size(); ++i) {
-      const QPoint offset = labels[i]->mapTo(&host, QPoint{});
+      const QPoint offset = labels[i]->mapTo(gpu_card?static_cast<QWidget*>(&panel):static_cast<QWidget*>(&host), QPoint{});
       const QRect roi(host_origin.x - monitor.rcMonitor.left + qRound(offset.x() * scale),
                       host_origin.y - monitor.rcMonitor.top + qRound(offset.y() * scale),
                       backing[std::size_t(i)].width(), backing[std::size_t(i)].height());
@@ -415,7 +453,7 @@ void actual_screen_magnifier_readings(bool native_control = false,
         std::vector<QString> expected;
         for (const auto& row : magnifier_scalar_rows(samples[stage], fields))
           if (!row.heading) expected.push_back(row.value);
-        panel.show_sample({100,100},samples[stage],fields,image_height,8);
+        display_sample({100,100},samples[stage],fields,image_height,8);
         verify(selection + '-' + stages[stage], expected);
       }
     };
@@ -438,12 +476,12 @@ void actual_screen_magnifier_readings(bool native_control = false,
   };
   // The GPU/sampler path is covered separately by the two-host tests. This
   // case isolates delivery to the real Windows desktop, without mouse input.
-  panel.show_sample({100, 100}, {}, fields, image_height, 8);
+  display_sample({100, 100}, {}, fields, image_height, 8);
   verify_default("placeholder", "--", "--");
-  panel.show_sample({100, 100}, magnifier_readout({.5, .5, .5}, 203, false),
+  display_sample({100, 100}, magnifier_readout({.5, .5, .5}, 203, false),
                     fields, image_height, 8);
   verify_default("half", "0.5000", "101.50");
-  panel.show_sample({100, 100}, magnifier_readout({.75, .75, .75}, 203, false),
+  display_sample({100, 100}, magnifier_readout({.75, .75, .75}, 203, false),
                     fields, image_height, 8);
   verify_default("three-quarters", "0.7500", "152.25");
   if (!native_control) {
@@ -670,9 +708,10 @@ void two_top_level_native_overlay_session(bool drag_selection,
           return false; // No clipboard or filesystem writes.
         },
         SettingsSnapshot{});
-    auto actual = WindowsD3DPreviewPresenter::create(underlays[index], display);
+    auto actual = WindowsD3DPreviewPresenter::create(underlays[index], display, {}, host->native_magnifier_surface());
     HDRSHOT_CHECK(actual.has_value());
     presenters[index] = std::make_shared<Presenter>(actual.value());
+    host->set_magnifier_card(actual.value());
     hosts[index] = std::move(host);
   }
 
@@ -952,7 +991,8 @@ int main(int argc, char **argv) {
   const bool gamut_only = argc > 1 &&
       (std::string(argv[1]) == "--visual-gamut-readings" ||
        std::string(argv[1]) == "--visual-gamut-readings-native-control");
-  const bool visual_readings = native_control || gamut_only ||
+  const bool gpu_card=argc>1 && std::string(argv[1])=="--visual-card-readings";
+  const bool visual_readings = gpu_card || native_control || gamut_only ||
       (argc > 1 && std::string(argv[1]) == "--visual-readings");
   if (!QGuiApplication::primaryScreen() ||
       (!message_replay && !interactive_input_desktop()) ||
@@ -977,6 +1017,19 @@ int main(int argc, char **argv) {
       return 77;
     }
     std::vector<hdrshot::test::TestCase> cases;
+    if(gpu_card) {
+      for(bool dark:{false,true}) {
+        auto palette=app.palette();palette.setColor(QPalette::Window,dark?QColor("#25282d"):QColor("#fafafa"));
+        palette.setColor(QPalette::WindowText,dark?QColor("#e8edf2"):QColor("#20252c"));
+        app.setPalette(palette);
+        const int result=hdrshot::test::run({
+          {dark?"GPU card dark: natural scalar refresh":"GPU card light: natural scalar refresh",[]{actual_screen_magnifier_readings(false,false,true);}},
+          {dark?"GPU card dark: gamut fields and SDR/HDR refresh":"GPU card light: gamut fields and SDR/HDR refresh",[]{actual_screen_magnifier_readings(false,true,true);}}
+        });
+        if(result)return result;
+      }
+      return 0;
+    }
     if (!gamut_only)
       cases.emplace_back("actual Windows screen: placeholder then stationary scalar refresh",
                          [=] { actual_screen_magnifier_readings(native_control); });

@@ -37,12 +37,17 @@ class WindowsQtOverlayWindow final : public QObject, public QtOverlayWindowPort 
   explicit WindowsQtOverlayWindow(WindowsDisplayInfo display);
   ~WindowsQtOverlayWindow() override;
   void prepare(QWidget& host) override;
+  std::optional<Error> preparation_error() const override { return preparation_error_; }
   void configure(QWidget& host,bool order_front) override;
   void resize(QWidget& host) override;
   void set_system_dialog_active(QWidget& host,bool active,bool restore_focus) override;
   void set_input_interrupted(std::function<void()> callback) override;
   void restore_input_focus(QWidget& host) override;
   void* native_surface() const override { return surface_; }
+  void* magnifier_surface() const override { return magnifier_; }
+  void move_magnifier(QWidget& host, const QRect& rect) override;
+  void show_magnifier() override;
+  void hide_magnifier() override;
  protected:
   bool eventFilter(QObject* object,QEvent* event) override;
  private:
@@ -50,6 +55,9 @@ class WindowsQtOverlayWindow final : public QObject, public QtOverlayWindowPort 
   std::unique_ptr<NativeInput> input_;
   WindowsDisplayInfo display_;
   void* surface_{};
+  void* magnifier_{};
+  QRect magnifier_rect_;
+  std::optional<Error> preparation_error_;
   void* host_handle_{};
   bool presented_{}, system_dialog_active_{};
   std::function<void()> input_interrupted_;

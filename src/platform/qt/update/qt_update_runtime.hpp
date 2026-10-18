@@ -49,6 +49,8 @@ private:
   friend class RuntimeTestAccess;
   void get(const QUrl &, const QByteArray &,
            std::function<void(Result<QByteArray, Error>, QByteArray)>, int redirects = 0);
+  struct FetchedCatalog { Checked checked; QByteArray envelope; };
+  void fetch_catalog(const Identity &, std::function<void(Result<FetchedCatalog, Error>)>);
   void check_worker(const Identity &, std::function<void(Result<Checked, Error>)>);
   void download_worker(Candidate, std::function<void(std::uint64_t, std::uint64_t)>,
                        std::function<void(Result<Receipt, Error>)>);
@@ -81,6 +83,7 @@ private:
   std::atomic_bool stopped_{false};
   QDeadlineTimer metadata_deadline_;
   QDeadlineTimer download_deadline_;
+  int metadata_timeout_ms_{30000};
   int download_timeout_ms_{2 * 60 * 60 * 1000};
   bool barrier_{};
   bool manual_opening_{};

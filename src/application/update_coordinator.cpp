@@ -57,6 +57,8 @@ void Coordinator::attempt() {
       return;
     }
     view_.last_success = view_.last_check;
+    if (view_.error && view_.error->safe_context.contains("recheck_required"))
+      view_.error.reset();
     const auto c = checked.value().candidate;
     if (!c || c->version <= identity_.version) {
       active_ = false;
@@ -233,7 +235,9 @@ void Coordinator::install() {
     }
     if (!r) {
       view_.error = r.error();
-      view_.phase = Phase::deferred;
+      const bool recheck = r.error().safe_context.contains("recheck_required");
+      view_.phase = recheck ? Phase::check_failed : Phase::deferred;
+      if (recheck) receipt_.reset();
       const auto reason = r.error().safe_context.find("reason");
       view_.detail =
           reason == r.error().safe_context.end() ? to_string(r.error().code) : reason->second;

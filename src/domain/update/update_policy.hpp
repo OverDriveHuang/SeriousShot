@@ -21,6 +21,7 @@ struct Candidate {
   std::uint64_t asset_size{}, release_id{}, asset_id{};
   bool draft{}, prerelease{};
   int installer_protocol{1};
+  bool operator==(const Candidate &) const = default;
   std::string key() const;
 };
 struct Identity {

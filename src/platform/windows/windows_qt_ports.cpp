@@ -345,10 +345,34 @@ void WindowsQtOverlayWindow::prepare(QWidget& host) {
       klass.lpszClassName,L"SeriousShot HDR surface",WS_POPUP,display_.physical_x,display_.physical_y,
       display_.snapshot.capture_size_px.width,display_.snapshot.capture_size_px.height,
       nullptr,nullptr,GetModuleHandleW(nullptr),input_.get());
-  if(!surface_) return;
+  if(!surface_) {
+    const auto code=GetLastError();
+    preparation_error_=Error{ErrorCode::presenter_failed,"WindowsQtOverlayWindow",Retryability::after_recreate,
+        {{"api","CreateWindowExW"},{"reason","underlay_window"},{"win32",std::to_string(code)}}};
+    return;
+  }
   SetWindowLongPtrW(static_cast<HWND>(host_handle_),GWLP_HWNDPARENT,reinterpret_cast<LONG_PTR>(surface_));
   SetWindowDisplayAffinity(static_cast<HWND>(surface_),WDA_EXCLUDEFROMCAPTURE);
   SetWindowDisplayAffinity(static_cast<HWND>(host_handle_),WDA_EXCLUDEFROMCAPTURE);
+  WNDCLASSW card{};card.hInstance=GetModuleHandleW(nullptr);
+  card.lpszClassName=L"SeriousShotMagnifierCard";
+  card.lpfnWndProc=[](HWND hwnd,UINT message,WPARAM w,LPARAM l)->LRESULT {
+    if(message==WM_NCHITTEST) return HTTRANSPARENT;
+    if(message==WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcW(hwnd,message,w,l);
+  };
+  RegisterClassW(&card);
+  magnifier_=CreateWindowExW(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST|
+      WS_EX_NOREDIRECTIONBITMAP|WS_EX_TRANSPARENT,card.lpszClassName,L"SeriousShot magnifier",
+      WS_POPUP,display_.physical_x,display_.physical_y,1,1,
+      static_cast<HWND>(host_handle_),nullptr,GetModuleHandleW(nullptr),nullptr);
+  if(!magnifier_) {
+    const auto code=GetLastError();
+    preparation_error_=Error{ErrorCode::presenter_failed,"WindowsQtOverlayWindow",Retryability::after_recreate,
+        {{"api","CreateWindowExW"},{"reason","magnifier_window"},{"win32",std::to_string(code)}}};
+    return;
+  }
+  SetWindowDisplayAffinity(static_cast<HWND>(magnifier_),WDA_EXCLUDEFROMCAPTURE);
   host.installEventFilter(this);
   configure(host,false);
 }
@@ -366,9 +390,34 @@ void WindowsQtOverlayWindow::configure(QWidget& host,bool order_front) {
   }
 }
 void WindowsQtOverlayWindow::resize(QWidget&) {}
-WindowsQtOverlayWindow::~WindowsQtOverlayWindow() { if(surface_) DestroyWindow(static_cast<HWND>(surface_)); }
+WindowsQtOverlayWindow::~WindowsQtOverlayWindow() {
+  if(magnifier_) DestroyWindow(static_cast<HWND>(magnifier_));
+  if(surface_) DestroyWindow(static_cast<HWND>(surface_));
+}
+void WindowsQtOverlayWindow::move_magnifier(QWidget& host,const QRect& rect) {
+  if(!magnifier_) return;
+  const auto scale=host.devicePixelRatioF();
+  const QRect physical(display_.physical_x+qRound(rect.x()*scale),display_.physical_y+qRound(rect.y()*scale),
+      qRound(rect.width()*scale),qRound(rect.height()*scale));
+  if(physical==magnifier_rect_) return;
+  magnifier_rect_=physical;
+  SetWindowPos(static_cast<HWND>(magnifier_),HWND_TOPMOST,
+      physical.x(),physical.y(),physical.width(),physical.height(),SWP_NOACTIVATE);
+}
+void WindowsQtOverlayWindow::show_magnifier() {
+  if(magnifier_ && input_->host && input_->host->isVisible() && !system_dialog_active_ &&
+      !IsWindowVisible(static_cast<HWND>(magnifier_)))
+    SetWindowPos(static_cast<HWND>(magnifier_),HWND_TOPMOST,0,0,0,0,
+        SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+}
+void WindowsQtOverlayWindow::hide_magnifier() {
+  if(magnifier_) ShowWindow(static_cast<HWND>(magnifier_),SW_HIDE);
+}
 bool WindowsQtOverlayWindow::eventFilter(QObject*,QEvent* event) {
-  if(surface_ && event->type()==QEvent::Hide) ShowWindow(static_cast<HWND>(surface_),SW_HIDE);
+  if(event->type()==QEvent::Hide) {
+    hide_magnifier();
+    if(surface_) ShowWindow(static_cast<HWND>(surface_),SW_HIDE);
+  }
   if(event->type()==QEvent::WindowDeactivate && presented_ && !system_dialog_active_) {
     const QPointer<WindowsQtOverlayWindow> guard(this);
     QTimer::singleShot(0,input_->host,[guard] {
@@ -385,6 +434,7 @@ bool WindowsQtOverlayWindow::eventFilter(QObject*,QEvent* event) {
 void WindowsQtOverlayWindow::set_system_dialog_active(QWidget& host,bool active,bool restore_focus) {
   if(!surface_) return;
   system_dialog_active_=active;
+  if(active) hide_magnifier();
   SetWindowPos(static_cast<HWND>(surface_),active?HWND_NOTOPMOST:HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
   SetWindowPos(static_cast<HWND>(host_handle_),active?HWND_NOTOPMOST:HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
   if(restore_focus) { host.raise(); host.activateWindow(); SetForegroundWindow(static_cast<HWND>(host_handle_)); }

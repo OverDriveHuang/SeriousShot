@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-16T00:03:23+08:00",
+  "timestamp": "2026-10-19T00:18:28+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "d06e2c7d3153b20edd0899cf6e79e44b5c3e9d1776971877da1d13772703094f",
+      "sha256": "45cde4c0b5e0132c4cec31a8ba20f9c533ec4c1cee72831676ecba625280e1db",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "79fe987e41f1b58cf16c4582cd557001e02da9ea88c39516ce35fac629d18034",
+      "sha256": "a093d860e2200ce2a495d1f017ca319754d05e97516693f81110a2dfcb2bf652",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -99,7 +99,7 @@
       "mode": 420
     },
     "cmake/windows.cmake": {
-      "sha256": "59296c482d8881203c5318d09847cb6c0e60109e46b0c0cc49d8f99dbd9bbe3e",
+      "sha256": "b64ac90f094bed85b91f4737bedd12f486395d019056f4b3ec200f86ff63dbeb",
       "mode": 420
     },
     "cmake/windows_analysis.cmake": {
@@ -115,7 +115,7 @@
       "mode": 420
     },
     "docs/UPDATES.md": {
-      "sha256": "efc61412a4c6f20706bb46d4b0cfcb05c661514c9f8003e9c06a18359acf1d1d",
+      "sha256": "fa3e31ab5bc8bd5a9543951ec1e6ba0db531b5df1cf21552a3d878248f44e914",
       "mode": 420
     },
     "docs/images/analyzer-2026-09-20.png": {
@@ -212,6 +212,14 @@
     },
     "src/application/analysis_workflow.hpp": {
       "sha256": "7a09d45759f1d7825b763d20c0449ef346dc04dc591343060e27ae47e10d8c08",
+      "mode": 420
+    },
+    "src/application/async_clean_content_cache.cpp": {
+      "sha256": "c040e83503bc0da992dd3c6cfdf49b8ba8c08df4be3a878947081850da3be4f4",
+      "mode": 420
+    },
+    "src/application/async_clean_content_cache.hpp": {
+      "sha256": "7c053720a96f20c42ccc32c4611fbf4158edc4e5849956384f4f9e6497cf1278",
       "mode": 420
     },
     "src/application/capture_interaction_session.hpp": {
@@ -311,7 +319,7 @@
       "mode": 420
     },
     "src/application/update_coordinator.cpp": {
-      "sha256": "88a5559097aa5536e2b24e8827862be34f93c9b1c80d1d456bf61ac4729fbbd4",
+      "sha256": "376eaad11e7b5bd63d3726ed712b8bc2bd3320cd09d6b3a872817acdafd8ac69",
       "mode": 420
     },
     "src/application/update_coordinator.hpp": {
@@ -611,11 +619,11 @@
       "mode": 420
     },
     "src/domain/update/update_policy.cpp": {
-      "sha256": "a3d2cd3052187a172014be5a7d5c5b1f77e24a1e698a90b418c0023639c6f618",
+      "sha256": "9c721a0bd52e55621670956e631008bd993d4cdab931181ffb401c901833a788",
       "mode": 420
     },
     "src/domain/update/update_policy.hpp": {
-      "sha256": "b192dcf29cb18d4c7bd7c94754cee19c6a3bfbe47b3a0b317ef86a8e7d6c7686",
+      "sha256": "226ac95ddd72e5d46150158d8709adf2a3b6cda5a04d4ee9dd231ff545c2ac71",
       "mode": 420
     },
     "src/platform/cpu/cpu_analysis_port.cpp": {
@@ -690,6 +698,14 @@
       "sha256": "719cec2d286fdfd2edaa2d5211d91942b802d3066b090045f28d6bf83715b9e7",
       "mode": 420
     },
+    "src/platform/macos/macos_magnifier_card_presenter.cpp": {
+      "sha256": "0e7b9ac8ab9508272553a11f2f058edfd25778cbfb2bc2bc8c7cff489d9fe557",
+      "mode": 420
+    },
+    "src/platform/macos/macos_magnifier_card_presenter.hpp": {
+      "sha256": "e99ebdd15cebca05edfd1fce8929a62b08ac2f302487019719b0cc43a9ce5c39",
+      "mode": 420
+    },
     "src/platform/macos/macos_metal_export_pixel_processor.hpp": {
       "sha256": "308e532483a638b2dba6c5d1088e6505c7d218cfe97ffdad438f1420091d37c9",
       "mode": 420
@@ -723,11 +739,11 @@
       "mode": 420
     },
     "src/platform/macos/macos_qt_overlay_window.hpp": {
-      "sha256": "e6d9a2c66038435c29a4f7ea59ee5f6d11a3cffc8ed60c03d82dfa71a7c5d13b",
+      "sha256": "18d51a4ce80755bfb3ece39739b0e126f2c106eff30e217bcc4cebc2f257bdfb",
       "mode": 420
     },
     "src/platform/macos/macos_qt_overlay_window.mm": {
-      "sha256": "25a15c3ea5d9bb89f3d294717f11c32c5aff6fa01b5ad6b6696056c993a35af3",
+      "sha256": "9fa4bb392129e9f1b6f2484a938179fc73c4c8d2fa49a75f2722052c89391dcd",
       "mode": 420
     },
     "src/platform/macos/macos_qt_window_activation.hpp": {
@@ -751,11 +767,11 @@
       "mode": 420
     },
     "src/platform/macos/metal_edr_presenter.hpp": {
-      "sha256": "0981bf2ff5135ae5c5cff8db8e5bd6793d0130e1c8f38b3abdc29c2123902212",
+      "sha256": "0494f5586ac4e391c32d6c4490cd0e69b15cd93d082c14a64ce59d18f1e35323",
       "mode": 420
     },
     "src/platform/macos/metal_edr_presenter.mm": {
-      "sha256": "266abe668aa16af985029012399b9b25d03e37c5839f17dd60f519a17882bad0",
+      "sha256": "1e560332b6b161af2e5623afb7a15a9928fcf6839bd44ee4052a6d1a2859336d",
       "mode": 420
     },
     "src/platform/macos/screen_capture_kit_adapter.hpp": {
@@ -815,11 +831,11 @@
       "mode": 420
     },
     "src/platform/qt/update/qt_update_runtime.cpp": {
-      "sha256": "e47f7cf56b5255549bcad7b3bd16d42933f09cdcc852aec8366b18b3edfc6929",
+      "sha256": "6df70e8c0259cfde4ec6a1f8fc756a51c88c42e998b2f8062008109395735ff3",
       "mode": 420
     },
     "src/platform/qt/update/qt_update_runtime.hpp": {
-      "sha256": "df8463d6b3f63e7cd2abcac7ad90d8e56d6d9434ae92df48f349ecd77c417423",
+      "sha256": "57f377b2825a3d76543b45cff0c4183abb194a09d7d9976d8c51afc88aa2d66e",
       "mode": 420
     },
     "src/platform/qt/update/update_catalog.cpp": {
@@ -923,11 +939,11 @@
       "mode": 420
     },
     "src/platform/windows/windows_d3d_presenter.cpp": {
-      "sha256": "94ea3c4a652aba6860de45984eb1ca032b4b22435961d13019c081bc5dd6dad2",
+      "sha256": "94245fce310d1c6c6871a7b49ca6fd89d9a6576baa1130f47c39ec21acf3e93b",
       "mode": 420
     },
     "src/platform/windows/windows_d3d_presenter.hpp": {
-      "sha256": "6124e5266a046d51e13fa977158aa50e08bb7f4b36e0fed05252c8a83214c11a",
+      "sha256": "e2489885cab0c66a52d325df953a7d4af6cb147e8bb89aa9a5ae2ff2cc0403ce",
       "mode": 420
     },
     "src/platform/windows/windows_display_mode.cpp": {
@@ -971,11 +987,11 @@
       "mode": 420
     },
     "src/platform/windows/windows_qt_ports.cpp": {
-      "sha256": "c80549ce35d8f7115a05ec64bcfcdd0aa16afb830a382701ce501fd4b6108b18",
+      "sha256": "ef5ca6d6353bdcfd64d466ce5578d8c692e6e6257c165132086fb24ce7b379a0",
       "mode": 420
     },
     "src/platform/windows/windows_qt_ports.hpp": {
-      "sha256": "daabc6048b72376f4a1c4c6062980ab84a0a418dffb1448d47d0cc904d2c554e",
+      "sha256": "05fe5e68c9837565073d4704c95d806db79a63dbf423f0edb22266f396515d82",
       "mode": 420
     },
     "src/platform/windows/windows_window_catalog.cpp": {
@@ -1020,6 +1036,10 @@
     },
     "src/ports/linear_storage_port.hpp": {
       "sha256": "310b9570c192378d75ffb06466094ac236645f74d018bd4f6df3356748a1aa90",
+      "mode": 420
+    },
+    "src/ports/magnifier_card_port.hpp": {
+      "sha256": "6d521fffa89eb0a9082e26c7000dddbceb89c4134a2d19bcc47b686b0cc3c767",
       "mode": 420
     },
     "src/ports/source_range_probe_port.hpp": {
@@ -1103,7 +1123,7 @@
       "mode": 420
     },
     "src/ui/qt/capture_magnifier_panel.hpp": {
-      "sha256": "01fac3ad39b6f8d44896641bea5230818256abd286d1ea3b88b63e6bc26a5198",
+      "sha256": "971cae7bd3150e2a5d538c249f5dd92a9fafba94141a1288fd1a0ff66beb9dc8",
       "mode": 420
     },
     "src/ui/qt/overlay_editor_widget.cpp": {
@@ -1119,11 +1139,11 @@
       "mode": 420
     },
     "src/ui/qt/qt_overlay_host.hpp": {
-      "sha256": "c3afbbd8e246dab33890c186b0a4348a9d9b9c28f7f3daf6bfc6fb084e19f0c3",
+      "sha256": "cb04d7b9b0b7e433d5d62f590e275c06374600f42eb2aa0abf55da794a26401a",
       "mode": 420
     },
     "src/ui/qt/qt_overlay_window_port.hpp": {
-      "sha256": "6c194ff9877dfce01059cc16ddd2c799b0ea47796ba313b91cc39fa8ff818d01",
+      "sha256": "0fc68671eb94225cbacbe059896aa6898c97729be69e50c29feff78070048bcd",
       "mode": 420
     },
     "src/ui/qt/qt_window_activation_port.hpp": {
@@ -1143,11 +1163,11 @@
       "mode": 420
     },
     "src/ui/qt/update_window.cpp": {
-      "sha256": "b40558b977b0972df27513620ff4d561ab7b1e5804cc2e507a1148e8e519bf30",
+      "sha256": "db458d37da46859a2eb8cb76d8aff4c590615042c5e2853a6d824730da1810ae",
       "mode": 420
     },
     "src/ui/qt/update_window.hpp": {
-      "sha256": "673caf19adbb8a6f9f154002c3076f16582f0ed68a956510daf2871a1fabcb14",
+      "sha256": "7b0027256fdd94ce8027f061f7b5dbf6e7ceca12e5ec672a8e37eb8cd9f8bf48",
       "mode": 420
     },
     "tests/analysis_application_tests.cpp": {
@@ -1188,6 +1208,10 @@
     },
     "tests/annotation_renderer_tests.cpp": {
       "sha256": "2e768c5b86d27921c587cbe615e4e278a7d71f06adb249aba3efc48bd67d4d96",
+      "mode": 420
+    },
+    "tests/async_clean_content_tests.cpp": {
+      "sha256": "a219d6b8b76b99fcb7753beffa2082d38c70af50fd37af67dde31d30176a23db",
       "mode": 420
     },
     "tests/capture_edr_boundary_tests.cpp": {
@@ -1271,7 +1295,7 @@
       "mode": 420
     },
     "tests/macos_gpu_source_tests.mm": {
-      "sha256": "85dbb231cc55d6856afa8f3c42de7144cd541b8e38ac0ecad386dc7e1b16ea92",
+      "sha256": "04eece8db2272792f0572df81827f5dfb2faf479189b3cbba68214536bfb0c5a",
       "mode": 420
     },
     "tests/macos_icc_profile_tests.mm": {
@@ -1283,11 +1307,11 @@
       "mode": 420
     },
     "tests/macos_metal_presenter_tests.cpp": {
-      "sha256": "92554db1cc5b90bc76aae0f6c77cbffb562163113b44150453416dda90a2c365",
+      "sha256": "baeb378ad7682a9217456f4324bedfc0b022b8caec60aab5beb6415cc5fe1b1c",
       "mode": 420
     },
     "tests/macos_preview_presenter_port_tests.cpp": {
-      "sha256": "8d67bf560fa6a01cdd66c83df5580ae0efbb878a735e8e9d9dd211d3c44fd739",
+      "sha256": "157566ad19ff518c931e0bd47e2a9ce6129ed2aa0d75449a2f72864b98b10281",
       "mode": 420
     },
     "tests/macos_qt_input_platform_adapter_tests.cpp": {
@@ -1295,7 +1319,7 @@
       "mode": 420
     },
     "tests/macos_qt_overlay_window_tests.mm": {
-      "sha256": "6a8bb39fb31b0772085957dbd1cc9aaf7b516c2b1ddfe11c91f192d0c9180af1",
+      "sha256": "ba8dc7ed7b5c9c057c6ad33708db4584b69bdc8a8f4cdf36ff6327773605967a",
       "mode": 420
     },
     "tests/macos_ultra_hdr_fixture_tests.mm": {
@@ -1347,7 +1371,7 @@
       "mode": 420
     },
     "tests/qt_overlay_host_tests.cpp": {
-      "sha256": "270851f47d834771bbc9f874ef5bf792dd676b697383c51a4772e85512e6803c",
+      "sha256": "b5d6dd98dc194fc58942ae7b58a916ab202f826c642dd79ed5852d8bf0837fdd",
       "mode": 420
     },
     "tests/qt_session_diagnostics_port_tests.cpp": {
@@ -1423,11 +1447,11 @@
       "mode": 420
     },
     "tests/update/update_runtime_tests.cpp": {
-      "sha256": "1b5c1e060e2a273c9270039173962ae06b11f20e4ea320f3c1fccc11bc483d54",
+      "sha256": "eca8d73e07216c4255553fa25f618ed75a14fbb0586ee600c56f00fc7f5b64d3",
       "mode": 420
     },
     "tests/update/update_tests.cpp": {
-      "sha256": "e71e6b0e63d2a76c093201f23e955bb45b8b958d43fc67eaa7ca60e56e34706c",
+      "sha256": "5079ffdc5e82b9511fa7c1b8c1ca34245f4c717a07725eeb508b477de1949e3e",
       "mode": 420
     },
     "tests/update/windows_update_integration.cpp": {
@@ -1471,7 +1495,7 @@
       "mode": 420
     },
     "tests/windows_d3d_presenter_tests.cpp": {
-      "sha256": "5fe57a9934a08ae004a188ca77c1ab160da9e7f6e6b085a841721cc7c052653e",
+      "sha256": "639ed7fe92fc026b37ecc130b7823826d03c5d2c78b41b7b6067603c6b787157",
       "mode": 420
     },
     "tests/windows_display_mode_tests.cpp": {
@@ -1495,7 +1519,7 @@
       "mode": 420
     },
     "tests/windows_overlay_session_tests.cpp": {
-      "sha256": "85c0d0a37b2670a49f206b9d52f27b143508c69ab378d83a842fb5429d6ffcfd",
+      "sha256": "2ff3d0782b73fc074565690c820ffb3bee8ea529206e25d494c15d7cb2909a6f",
       "mode": 420
     },
     "tests/windows_qt_ports_tests.cpp": {
@@ -1562,12 +1586,16 @@
       "sha256": "c29591c70fd513906074af6366d44ffce77d1f5cb332ed32cd267be09c785680",
       "mode": 420
     },
+    "tools/macos_magnifier_benchmark.cpp": {
+      "sha256": "2318f11582b82a8c4814bc03e082707e0954dd0ee04d048d1a4ebc2832f74e55",
+      "mode": 420
+    },
     "tools/macos_metal_overlay_poc.mm": {
       "sha256": "075ac3483a63a010d82e4d89978bd00388e61ae91cbbb26f12a2e8c9b9ce649f",
       "mode": 420
     },
     "tools/macos_qt_overlay_poc.mm": {
-      "sha256": "5f49b7e6adf1022b7fbdd5257b7eb10992b1baabd18ff1205674f41d8a6ce8b5",
+      "sha256": "d03f368f1e22af6c92a6ef166713f33faa6bb85e79bd62678a38166b811797c6",
       "mode": 420
     },
     "tools/macos_window_catalog_probe.mm": {
@@ -1615,7 +1643,7 @@
       "mode": 420
     },
     "tools/windows_app.cpp": {
-      "sha256": "27e78207be9fd967606c2722646126c3f40e789f5aedffb16f2c315dae09dbdc",
+      "sha256": "30698168ad48dd2ee52bf95e90a5e1f6e37b276d0472ac46689e71c69d8baee1",
       "mode": 420
     },
     "tools/windows_capture_probe.cpp": {
