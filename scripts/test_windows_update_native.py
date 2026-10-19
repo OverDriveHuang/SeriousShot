@@ -12,6 +12,7 @@ p.add_argument('--helper',type=pathlib.Path,help='newly rebuilt helper for a dia
 p.add_argument('--only-normal',action='store_true',help='explicit diagnostic subset, not the native acceptance matrix')
 p.add_argument('--only-forward',type=int,help='explicit single forward crash diagnostic subset')
 p.add_argument('--only-startup',action='store_true',help='explicit startup recovery diagnostic subset')
+p.add_argument('--only-checkpoints',action='store_true',help='checkpoint count and actual mutation interruption subset')
 p.add_argument('--only-long',action='store_true',help='single full-deployment long-path transaction')
 p.add_argument('--full-deployment',action='store_true',help='retain all deployed assets/licenses in managed fixtures')
 p.add_argument('--locked-library',type=pathlib.Path,required=True)
@@ -124,7 +125,7 @@ results=[]; owned_processes=[]; owned_handles=[]; active_case='setup'
 def verify(root,m):
     for f in m['files']: assert (root/f['path']).is_file() and digest(root/f['path'])==f['sha256'], f['path']
     assert read(root/'package_manifest.json')==m
-def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,loaded=False,recover_fail=None,terminal_fail=None,crash_terminal=False,startup=False,startup_refuse=False):
+def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,loaded=False,recover_fail=None,terminal_fail=None,crash_terminal=False,startup=False,startup_refuse=False,mutation_fail=None,recover_mutation_fail=None,legacy_journal=False,checkpoint_fail=None):
     global active_case
     active_case=name
     root=a.workspace/name; install=root/'中文 安装'
@@ -135,9 +136,12 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
     (install/'user-file.txt').write_text('untouched',encoding='utf8')
     slot=root/'slot'; cwd=root/'different cwd';cwd.mkdir()
     childenv=env.copy()
+    childenv['SERIOUSSHOT_UPDATE_TRACE']='1'
     if fail: childenv['SERIOUSSHOT_UPDATE_FAIL_AFTER']=str(fail)
+    if mutation_fail: childenv['SERIOUSSHOT_UPDATE_FAIL_MUTATION']=str(mutation_fail)
     if no_receipt: childenv['SERIOUSSHOT_TEST_NO_RECEIPT']='1'
     if terminal_fail: childenv['SERIOUSSHOT_UPDATE_FAIL_TERMINAL']=terminal_fail
+    if checkpoint_fail: childenv['SERIOUSSHOT_UPDATE_FAIL_CHECKPOINT']=checkpoint_fail
     if crash_terminal: childenv['SERIOUSSHOT_UPDATE_CRASH_AFTER_TERMINAL']='1'
     holder=None;handle=None
     if hold:
@@ -229,13 +233,21 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
         assert final['phase']==('empty' if committed else 'ready')
         assert not final.get('transaction') and not final.get('nonce')
         assert (not (slot/'payload.zip').exists()) if committed else (slot/'payload.zip').exists()
-    elif fail:
+    elif fail or mutation_fail:
+        assert helper_exit in (None,91), 'mutation/operation failpoint was not reached'
         assert read(journal).get('intent') is not None
+        if legacy_journal:
+            # Protocol-1 helpers formerly persisted an operation intent before
+            # each move. Recovery must ignore even a stale operation label.
+            write(journal,dict(read(journal),intent='publish_file',file='changed.txt'))
         # Wait for actual injected helper exit, not simply its last intent.
         st=read(slot/'slot.json'); pid=int(st['helper_pid'])
         recoveryenv=env.copy()
-        if recover_fail:
-            interrupted=recoveryenv.copy(); interrupted['SERIOUSSHOT_UPDATE_FAIL_AFTER']=str(recover_fail)
+        recoveryenv['SERIOUSSHOT_UPDATE_TRACE']='1'
+        if recover_fail or recover_mutation_fail:
+            interrupted=recoveryenv.copy()
+            if recover_fail: interrupted['SERIOUSSHOT_UPDATE_FAIL_AFTER']=str(recover_fail)
+            if recover_mutation_fail: interrupted['SERIOUSSHOT_UPDATE_FAIL_MUTATION']=str(recover_mutation_fail)
             interrupted_result=subprocess.run([str(journal.parent/'SeriousShotUpdater.exe'),'--recover',str(journal)],cwd=cwd,env=interrupted,timeout=60)
             assert interrupted_result.returncode==91, 'recovery failpoint was not reached'
         for repeat in range(2):
@@ -251,12 +263,18 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
         # Windows can allow renaming a mapped image. This real LoadLibrary
         # case records the native outcome; deny-delete handles above exercise
         # the required locked-file rollback deterministically.
-        rolled=bool(lock or no_receipt or (loaded and read(journal)['phase']=='rolled_back'))
+        rolled=bool(lock or no_receipt or checkpoint_fail or (loaded and read(journal)['phase']=='rolled_back'))
         if lock:
             failure=read(journal)
             assert failure.get('failure_reason')=='replace_move' and failure.get('failure_file')==locked_file, 'unrelated failure masked as deny-delete lock'
+            assert failure.get('failure_context',{}).get('move_attempt')=='3', 'locked move did not exhaust its bounded retry budget'
         if no_receipt:
             assert read(journal).get('failure_reason')=='startup_receipt_timeout'
+        if checkpoint_fail:
+            failure=read(journal)
+            assert failure.get('failure_reason')=='injected_checkpoint'
+            assert failure.get('failure_intent')==('withdraw_exe' if checkpoint_fail=='replacing' else 'launch')
+            assert not (journal.parent/'started.json').exists(), 'candidate launched after failed checkpoint'
         if loaded and rolled:
             failure=read(journal)
             assert failure.get('failure_reason')=='replace_move' and failure.get('failure_file')=='LockedDependency.dll', 'unrelated failure masked as mapped DLL behavior'
@@ -270,7 +288,16 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
             assert receipt['version']=='0.1.5'
             wait_exit(receipt['pid'],receipt['creation'])
     assert (install/'user-file.txt').read_text(encoding='utf8')=='untouched'
-    results.append(dict(case=name,passed=True,phase=read(journal)['phase'],intent=read(journal).get('intent'),helper_exit_observed=helper_exit))
+    runs=[part.strip().splitlines() for part in (journal.parent/'test-boundaries.txt').read_text().split('run\n')[1:]]
+    checkpoints=[event.split()[1] for event in runs[0] if event.startswith('checkpoint ')]
+    if not (fail or mutation_fail or reject or terminal_fail or crash_terminal or startup):
+        expected_checkpoints=[] if checkpoint_fail=='replacing' else ['replacing']
+        if no_receipt or not rolled: expected_checkpoints.append('awaiting_receipt')
+        expected_checkpoints.append('rolled_back' if rolled else 'complete')
+        assert checkpoints==expected_checkpoints, checkpoints
+        if checkpoint_fail=='replacing':
+            assert not any(event.startswith('mutation ') for event in runs[0]), 'application files moved before durable descriptor'
+    results.append(dict(case=name,passed=True,phase=read(journal)['phase'],intent=read(journal).get('intent'),helper_exit_observed=helper_exit,helper_journal_checkpoints=checkpoints,mutation_runs=runs,managed_files=len(newm['files'])))
     write(a.output/name/'final-state.json',dict(journal=read(journal),slot=read(slot/'slot.json')))
     state=read(slot/'slot.json')
     if state.get('helper_pid'): wait_exit(state['helper_pid'],state['helper_creation'])
@@ -281,6 +308,53 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
     results[-1]['managed_runtime_cleaned']=True
     write(a.output/'results.json',results)
     print(name,'PASS',flush=True)
+    return results[-1]
+def mutation_cases(boundaries,normal):
+    # Select actual native operations from a successful run, independently of
+    # the legacy diagnostic-operation failpoint numbering.
+    def representatives(events):
+        selected={}
+        for event in events:
+            fields=event.split()
+            if fields[0]=='mutation':
+                key=(fields[2],fields[3])
+                # Prefer the dependency whose old/new hashes differ, so a
+                # repeated rollback proves restored old bytes are retained.
+                if key not in selected or fields[4:]==['changed.txt']: selected[key]=int(fields[1])
+        return selected
+    for (operation,action),number in representatives(normal['mutation_runs'][0]).items():
+        run_case(f'mutation-{action}-{operation}',mutation_fail=number)
+    rollback=run_case('mutation-rollback-baseline',fail=boundaries,legacy_journal=True)
+    for (operation,action),number in representatives(rollback['mutation_runs'][1]).items():
+        run_case(f'mutation-{action}-{operation}',fail=boundaries,recover_mutation_fail=number)
+def file_count_case(normal):
+    global oldm,newm,archive,envelope
+    # Add real managed files, rebuild/sign the fixture, and exercise the same
+    # helper. Journal write count must stay constant as payload count grows.
+    for n in range(24):
+        relative=pathlib.Path('checkpoint-count')/f'file-{n:02}.txt'
+        for seed in (old,new):
+            (seed/relative).parent.mkdir(exist_ok=True)
+            (seed/relative).write_text(f'fixture {n}',encoding='utf8')
+    oldm=manifest(old,'0.1.4');newm=manifest(new,'0.1.5')
+    archive=a.output/'fixture-more-files.zip'
+    with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(new.rglob('*')):
+            if f.is_file(): z.write(f,f.relative_to(new).as_posix())
+    larger_target=dict(target,sha256=digest(archive),asset_size=archive.stat().st_size)
+    larger_payload=a.output/'payload-more-files.json';envelope=a.output/'envelope-more-files.json'
+    write(larger_payload,dict(product='SeriousShot',channel='testing',revision=1,published_at='2026-10-13T00:00:00Z',targets=[larger_target]))
+    subprocess.run([str(a.catalog_tool.resolve()),'sign',str(larger_payload),str(a.secret_key.resolve()),a.key_id,str(envelope)],check=True)
+    larger=run_case('normal-more-files')
+    assert larger['managed_files']==normal['managed_files']+24
+    assert larger['helper_journal_checkpoints']==normal['helper_journal_checkpoints']
+def checkpoint_failure_cases():
+    run_case('checkpoint-replacing-write-fails',checkpoint_fail='replacing')
+    run_case('checkpoint-awaiting-receipt-write-fails',checkpoint_fail='awaiting_receipt')
+    run_case('terminal-complete-write-fails',terminal_fail='complete')
+    run_case('terminal-rollback-write-fails',lock=True,terminal_fail='rolled_back')
+    run_case('terminal-complete-before-slot-crash',crash_terminal=True)
+    run_case('terminal-rollback-before-slot-crash',lock=True,crash_terminal=True)
 try:
     boundaries=1+len(oldm['files'])-1+1+len(newm['files'])-1+1+1+1
     if a.only_long:
@@ -298,9 +372,16 @@ try:
         run_case(f'crash-{a.only_forward:03}',fail=a.only_forward)
         print('explicit diagnostic subset: forward crash',a.only_forward,flush=True)
         raise SystemExit(0)
-    run_case('normal')
+    normal=run_case('normal')
     if a.only_normal:
         print('explicit diagnostic subset: normal only',flush=True)
+        raise SystemExit(0)
+    if a.only_checkpoints:
+        run_case('file-lock',lock=True)
+        checkpoint_failure_cases()
+        mutation_cases(boundaries,normal)
+        file_count_case(normal)
+        print('explicit diagnostic subset: phase checkpoints and actual mutations',flush=True)
         raise SystemExit(0)
     run_case('quit-refused',reject=True)
     run_case('other-instance',hold=True)
@@ -308,22 +389,21 @@ try:
     run_case('dll-file-lock',lock='dll')
     run_case('mapped-dll-other-path-process',loaded=True)
     run_case('missing-startup-receipt',no_receipt=True)
-    run_case('terminal-complete-write-fails',terminal_fail='complete')
-    run_case('terminal-rollback-write-fails',lock=True,terminal_fail='rolled_back')
-    run_case('terminal-complete-before-slot-crash',crash_terminal=True)
-    run_case('terminal-rollback-before-slot-crash',lock=True,crash_terminal=True)
+    checkpoint_failure_cases()
     run_case('startup-rollback',fail=boundaries,startup=True)
     run_case('startup-refused-then-retry',fail=boundaries,startup=True,startup_refuse=True)
     run_case('startup-committed-terminal',crash_terminal=True,startup=True)
     run_case('startup-rolled-terminal',lock=True,crash_terminal=True,startup=True)
-    # Every persist boundary of the production forward transaction (including
+    # Every legacy operation boundary of the forward transaction (including
     # final EXE publication and launch). Recovery must be idempotent.
     boundaries=1+len(oldm['files'])-1+1+len(newm['files'])-1+1+1+1
     for n in range(1,boundaries+1): run_case(f'crash-{n:03}',fail=n)
     # Start rollback with the new EXE already published, then crash every
-    # rollback persist boundary, including quarantine and old EXE republish.
+    # rollback operation boundary, including quarantine and old EXE republish.
     for n in range(1,len(oldm['files'])+3):
         run_case(f'recovery-crash-{n:03}',fail=boundaries,recover_fail=n)
+    mutation_cases(boundaries,normal)
+    file_count_case(normal)
     print('native cases:',len(results),'forward boundaries:',boundaries)
 except Exception as error:
     write(a.output/'failure.json',dict(case=active_case,error=str(error),completed_cases=len(results)))

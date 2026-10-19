@@ -44,6 +44,24 @@ if(WIN32)
   target_compile_definitions(hdrshot_qt_update PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_definitions(hdrshot_windows_update_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   if(BUILD_TESTING)
+    add_executable(hdrshot_update_storage_retry_tests
+      tests/update/update_storage_retry_tests.cpp
+      src/platform/qt/update/update_storage.cpp)
+    target_link_libraries(hdrshot_update_storage_retry_tests PRIVATE hdrshot_qt_update)
+    target_include_directories(hdrshot_update_storage_retry_tests PRIVATE tests)
+    target_compile_definitions(hdrshot_update_storage_retry_tests PRIVATE
+      HDRSHOT_UPDATE_STORAGE_TESTING NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME hdrshot_update_storage_retry_tests COMMAND hdrshot_update_storage_retry_tests)
+    set_tests_properties(hdrshot_update_storage_retry_tests PROPERTIES TIMEOUT 30)
+    add_executable(hdrshot_windows_update_move_retry_tests
+      tests/update/windows_update_move_retry_tests.cpp
+      src/platform/windows/update/windows_update_backend.cpp)
+    target_link_libraries(hdrshot_windows_update_move_retry_tests PRIVATE hdrshot_qt_update)
+    target_include_directories(hdrshot_windows_update_move_retry_tests PRIVATE tests)
+    target_compile_definitions(hdrshot_windows_update_move_retry_tests PRIVATE
+      HDRSHOT_UPDATE_MOVE_TESTING NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME hdrshot_windows_update_move_retry_tests COMMAND hdrshot_windows_update_move_retry_tests)
+    set_tests_properties(hdrshot_windows_update_move_retry_tests PROPERTIES TIMEOUT 30)
     add_executable(hdrshot_windows_update_integration tests/update/windows_update_integration.cpp)
     target_link_libraries(hdrshot_windows_update_integration PRIVATE hdrshot_qt_update)
     target_compile_definitions(hdrshot_windows_update_integration PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

@@ -13,31 +13,79 @@ using namespace hdrshot;
 using namespace hdrshot::update;
 namespace {
 unsigned boundary{};
+QString current_action;
+QString current_file;
+void test_trace(const QString &event) {
+#if HDRSHOT_UPDATE_TESTING
+  if (qEnvironmentVariableIsSet("SERIOUSSHOT_UPDATE_TRACE")) {
+    QFile trace(QCoreApplication::applicationDirPath() + "/test-boundaries.txt");
+    if (trace.open(QIODevice::Append))
+      trace.write((event + "\n").toUtf8());
+  }
+#else
+  Q_UNUSED(event);
+#endif
+}
+void mutation_boundary(const char *operation) {
+#if HDRSHOT_UPDATE_TESTING
+  static unsigned mutation{};
+  ++mutation;
+  test_trace(QString("mutation %1 %2 %3 %4").arg(mutation).arg(QString::fromLatin1(operation), current_action, current_file));
+  bool ok = false;
+  const auto fail = qEnvironmentVariable("SERIOUSSHOT_UPDATE_FAIL_MUTATION").toUInt(&ok);
+  if (ok && mutation == fail)
+    ExitProcess(91);
+#else
+  Q_UNUSED(operation);
+#endif
+}
+Result<bool, Error> checkpoint(const QString &path, const QJsonObject &j) {
+#if HDRSHOT_UPDATE_TESTING
+  if (qEnvironmentVariable("SERIOUSSHOT_UPDATE_FAIL_CHECKPOINT") == j["phase"].toString())
+    return Result<bool, Error>::failure(failure("injected_checkpoint"));
+#endif
+  auto result = save_json(path, j);
+  if (result)
+    test_trace("checkpoint " + j["phase"].toString());
+  return result;
+}
 Result<bool, Error> terminal_save(const QString &path, const QJsonObject &j) {
 #if HDRSHOT_UPDATE_TESTING
   if (qEnvironmentVariable("SERIOUSSHOT_UPDATE_FAIL_TERMINAL") == j["phase"].toString())
     return Result<bool, Error>::failure(failure("injected_terminal_commit"));
 #endif
-  return save_json(path,j);
+  return checkpoint(path,j);
 }
-Result<bool, Error> persist(const QString &path, QJsonObject &j, const QString &action,
+Result<bool, Error> track(QJsonObject &j, const QString &action,
                             const QString &file = {}) {
+  current_action = action;
+  current_file = file;
   j["intent"] = action;
   j["file"] = file;
-  auto result = save_json(path, j);
 #if HDRSHOT_UPDATE_TESTING
   bool ok = false;
   const auto fail = qEnvironmentVariable("SERIOUSSHOT_UPDATE_FAIL_AFTER").toUInt(&ok);
   if (ok && ++boundary == fail)
     ExitProcess(91);
 #endif
-  return result;
+  return Result<bool, Error>::success(true);
 }
 Result<bool, Error> move_checked(const QString &from, const QString &to) {
   if (QFileInfo(from).isSymLink() || QFileInfo(to).isSymLink() || QFileInfo::exists(to) ||
       !QDir().mkpath(QFileInfo(to).absolutePath()))
     return Result<bool, Error>::failure(failure("replace_move"));
-  return windows_move(from,to);
+  mutation_boundary("move_before");
+  auto result = windows_move(from,to);
+  if (result)
+    mutation_boundary("move_after");
+  return result;
+}
+bool remove_checked(const QString &path) {
+  mutation_boundary("remove_before");
+  const bool removed = QFile::remove(path);
+  if (removed)
+    mutation_boundary("remove_after");
+  return removed;
 }
 Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &old,
                             const Package &fresh) {
@@ -45,7 +93,9 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
              entry = old.entrypoint;
   if (!windows_install_quiet(target + "/" + entry, backup + "/" + entry))
     return Result<bool, Error>::failure(failure("rollback_requires_all_instances_exit"));
-  auto result = persist(path, j, "rollback_withdraw_exe", entry);
+  // Frozen manifests and the verified live/backup trees describe recovery.
+  // No per-file journal progress (including legacy intent/file) is required.
+  auto result = track(j, "rollback_withdraw_exe", entry);
   if (!result)
     return result;
   const auto live = target + "/" + entry;
@@ -65,22 +115,28 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
       continue;
     const auto livefile = target + "/" + f.path, previous = backup + "/" + f.path;
     if (QFileInfo::exists(previous)) {
-      result = persist(path, j, "rollback_file", f.path);
+      result = track(j, "rollback_file", f.path);
       if (!result)
         return result;
       if (QFileInfo::exists(livefile)) {
         auto hash = hash_file(livefile);
         if (!hash || hash.value() != f.sha256)
           return Result<bool, Error>::failure(failure("rollback_unowned_file"));
-        if (!QFile::remove(livefile))
+        if (!remove_checked(livefile))
           return Result<bool, Error>::failure(failure("rollback_remove"));
       }
       result = move_checked(previous, livefile);
       if (!result)
         return result;
     } else if (!old_names.contains(f.path) && QFileInfo::exists(livefile)) {
+      // This removal had no legacy diagnostic boundary; still identify its
+      // actual before/after mutation probes and any failure precisely.
+      current_action = "rollback_new_file";
+      current_file = f.path;
+      j["intent"] = current_action;
+      j["file"] = f.path;
       auto hash = hash_file(livefile);
-      if (!hash || hash.value() != f.sha256 || !QFile::remove(livefile))
+      if (!hash || hash.value() != f.sha256 || !remove_checked(livefile))
         return Result<bool, Error>::failure(failure("rollback_new_file"));
     }
   }
@@ -91,7 +147,7 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
       continue;
     const auto previous = backup + "/" + f.path;
     if (QFileInfo::exists(previous)) {
-      result = persist(path, j, "rollback_old_file", f.path);
+      result = track(j, "rollback_old_file", f.path);
       if (!result)
         return result;
       result = move_checked(previous, target + "/" + f.path);
@@ -100,11 +156,11 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
     }
   }
   if (QFileInfo::exists(backup + "/package_manifest.json")) {
-    result = persist(path, j, "rollback_manifest");
+    result = track(j, "rollback_manifest");
     if (!result)
       return result;
     if (QFileInfo::exists(target + "/package_manifest.json") &&
-        !QFile::remove(target + "/package_manifest.json"))
+        !remove_checked(target + "/package_manifest.json"))
       return Result<bool, Error>::failure(failure("rollback_manifest_remove"));
     result = move_checked(backup + "/package_manifest.json", target + "/package_manifest.json");
     if (!result)
@@ -120,7 +176,7 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
       return Result<bool, Error>::failure(failure("rollback_verify"));
   }
   if (QFileInfo::exists(backup + "/" + entry)) {
-    result = persist(path, j, "rollback_publish_exe");
+    result = track(j, "rollback_publish_exe");
     if (!result)
       return result;
     result = move_checked(backup + "/" + entry, live);
@@ -134,6 +190,7 @@ Result<bool, Error> restore(const QString &path, QJsonObject &j, const Package &
 } // namespace
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
+  test_trace("run");
   const auto args = app.arguments();
   if (args.size() != 3 || (args[1] != "--apply" && args[1] != "--recover" && args[1] != "--recover-after-exit")) {
     std::fprintf(stderr, "usage: SeriousShotUpdater --apply|--recover transaction.json\n");
@@ -316,6 +373,8 @@ int main(int argc, char **argv) {
     // A terminal journal can precede slot finalization. Verify its committed
     // tree and finish the still-owned reservation without rolling it back.
     result=verify_tree(target,j["phase"]=="complete"?fresh.value():old.value());
+    if (result)
+      result=confirm_json_durability(journal);
     terminal_durable=bool(result);
   } else if (recovery || j["phase"] != "prepared")
     { result = restore(journal, j, old.value(), fresh.value()); terminal_durable=bool(result); }
@@ -329,7 +388,12 @@ int main(int argc, char **argv) {
       result = Result<bool, Error>::failure(failure("other_install_instance"));
     if (result) {
       j["phase"] = "replacing";
-      result = persist(journal, j, "withdraw_exe", old.value().entrypoint);
+      j["intent"] = "withdraw_exe";
+      j["file"] = old.value().entrypoint;
+      // The frozen descriptor must be durable before the first mutation.
+      result = checkpoint(journal, j);
+      if (result)
+        result = track(j, "withdraw_exe", old.value().entrypoint);
     }
     if (result)
       result = move_checked(exe, backup + "/" + old.value().entrypoint);
@@ -344,24 +408,24 @@ int main(int argc, char **argv) {
     for (const auto &f : old.value().files) {
       if (!result || f.path == old.value().entrypoint)
         continue;
-      result = persist(journal, j, "backup_file", f.path);
+      result = track(j, "backup_file", f.path);
       if (result)
         result = move_checked(target + "/" + f.path, backup + "/" + f.path);
     }
     if (result) {
-      result = persist(journal, j, "backup_manifest");
+      result = track(j, "backup_manifest");
       if (result)
         result = move_checked(target + "/package_manifest.json", backup + "/package_manifest.json");
     }
     for (const auto &f : fresh.value().files) {
       if (!result || f.path == fresh.value().entrypoint)
         continue;
-      result = persist(journal, j, "publish_file", f.path);
+      result = track(j, "publish_file", f.path);
       if (result)
         result = move_checked(staging + "/" + f.path, target + "/" + f.path);
     }
     if (result) {
-      result = persist(journal, j, "publish_manifest");
+      result = track(j, "publish_manifest");
       if (result)
         result =
             move_checked(staging + "/package_manifest.json", target + "/package_manifest.json");
@@ -377,14 +441,18 @@ int main(int argc, char **argv) {
       }
     }
     if (result) {
-      result = persist(journal, j, "publish_exe");
+      result = track(j, "publish_exe");
       if (result)
         result = move_checked(staging + "/" + fresh.value().entrypoint, exe);
     }
     qint64 launched = 0;
     if (result) {
       j["phase"] = "awaiting_receipt";
-      result = persist(journal, j, "launch");
+      j["intent"] = "launch";
+      j["file"] = QString{};
+      result = checkpoint(journal, j);
+      if (result)
+        result = track(j, "launch");
       QProcess process;
       process.setProgram(exe);
       process.setWorkingDirectory(target);
@@ -427,8 +495,13 @@ int main(int argc, char **argv) {
       j["failure_context"]=context;
       const auto restored = restore(journal, j, old.value(), fresh.value());
       terminal_durable=bool(restored);
-      if (!restored)
-        result = restored;
+      if (!restored) {
+        // Preserve the original failure when cleanup also fails.
+        auto original = result.error();
+        for (const auto &[key, value] : restored.error().safe_context)
+          original.safe_context["rollback_" + key] = value;
+        result = Result<bool, Error>::failure(std::move(original));
+      }
     }
   }
 #if HDRSHOT_UPDATE_TESTING
@@ -446,8 +519,15 @@ int main(int argc, char **argv) {
       const auto found=result.error().safe_context.find(key);
       return found==result.error().safe_context.end()?std::string{}:found->second;
     };
-    std::fprintf(stderr,"native recovery remains pending: reason=%s qt=%s native=%s\n",
-                 value("reason").c_str(),value("qt_file_error").c_str(),value("native_error").c_str());
+    std::fprintf(stderr,"native recovery remains pending: reason=%s qt=%s native=%s stage=%s attempt=%s committed=%s qt_text=%s move_attempt=%s rollback_reason=%s rollback_qt=%s rollback_native=%s rollback_stage=%s rollback_attempt=%s rollback_committed=%s rollback_qt_text=%s rollback_move_attempt=%s\n",
+                 value("reason").c_str(),value("qt_file_error").c_str(),value("native_error").c_str(),
+                 value("save_stage").c_str(),value("save_attempt").c_str(),
+                 value("state_committed").c_str(),value("qt_error_string").c_str(),
+                 value("move_attempt").c_str(),
+                 value("rollback_reason").c_str(),value("rollback_qt_file_error").c_str(),
+                 value("rollback_native_error").c_str(),value("rollback_save_stage").c_str(),
+                 value("rollback_save_attempt").c_str(),value("rollback_state_committed").c_str(),
+                 value("rollback_qt_error_string").c_str(),value("rollback_move_attempt").c_str());
   }
   if (complete) {
     slot.record["phase"] = "ready";

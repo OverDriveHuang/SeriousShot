@@ -5,11 +5,29 @@
 #include <QLockFile>
 #include <QString>
 #include <memory>
+#if defined(Q_OS_WIN) && defined(HDRSHOT_UPDATE_STORAGE_TESTING)
+#include <functional>
+#endif
 namespace hdrshot::update {
 Error failure(const char *reason, ErrorCode code = ErrorCode::state_inconsistent,
               Retryability retry = Retryability::never);
 Result<QJsonObject, Error> read_json(const QString &);
 Result<bool, Error> save_json(const QString &, const QJsonObject &);
+#ifdef Q_OS_WIN
+// Confirm an already committed record without installing another snapshot.
+Result<bool, Error> confirm_json_durability(const QString &);
+#ifdef HDRSHOT_UPDATE_STORAGE_TESTING
+namespace storage_test {
+struct Hooks {
+  std::function<void(unsigned, bool)> before_attempt;
+  std::function<void(unsigned)> before_retry;
+  std::function<void()> after_commit;
+  std::function<std::optional<unsigned long>()> flush_error;
+};
+void set_hooks(Hooks *);
+} // namespace storage_test
+#endif
+#endif
 Result<QByteArray, Error> hash_file(const QString &);
 QString process_identity(qint64 pid);
 bool process_alive(qint64 pid, const QString &creation);

@@ -1,10 +1,22 @@
 #pragma once
 #include "platform/qt/update/update_package.hpp"
+#ifdef HDRSHOT_UPDATE_MOVE_TESTING
+#include <functional>
+#endif
 namespace hdrshot::update {
 QString windows_executable();
 bool windows_install_quiet(const QString &target, const QString &backup = {});
 QString windows_extended_path(const QString &path);
 Result<bool, Error> windows_move(const QString &from, const QString &to);
+#ifdef HDRSHOT_UPDATE_MOVE_TESTING
+namespace move_test {
+struct Hooks {
+  std::function<void(unsigned)> before_attempt;
+  std::function<void(unsigned)> before_retry;
+};
+void set_hooks(Hooks *);
+} // namespace move_test
+#endif
 Result<bool, Error> windows_replace_transaction(const QString &journal, bool recover = false);
 void windows_write_start_receipt();
 // True means the startup caller must return normally before initializing its

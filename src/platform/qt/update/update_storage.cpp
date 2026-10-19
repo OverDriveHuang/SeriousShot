@@ -7,6 +7,8 @@
 #include <QSaveFile>
 #include <limits>
 #ifdef Q_OS_WIN
+#include <QThread>
+#include <io.h>
 #include <qt_windows.h>
 #endif
 namespace hdrshot::update {
@@ -25,9 +27,139 @@ Result<QJsonObject, Error> read_json(const QString &path) {
     return Result<QJsonObject, Error>::failure(failure("state_corrupt"));
   return Result<QJsonObject, Error>::success(doc.object());
 }
+#ifdef Q_OS_WIN
+#ifdef HDRSHOT_UPDATE_STORAGE_TESTING
+namespace storage_test {
+namespace { thread_local Hooks *hooks = nullptr; }
+void set_hooks(Hooks *value) { hooks = value; }
+} // namespace storage_test
+#endif
+namespace {
+struct SaveFailure {
+  Error error;
+  bool transient;
+};
+Error save_error(const char *reason, const char *stage, unsigned attempt, bool committed) {
+  auto error = failure(reason);
+  error.safe_context["save_stage"] = stage;
+  error.safe_context["save_attempt"] = std::to_string(attempt);
+  error.safe_context["state_committed"] = committed ? "true" : "false";
+  return error;
+}
+SaveFailure qt_save_failure(const char *reason, const char *stage, const QFileDevice &file,
+                            unsigned attempt, bool committed, bool may_retry) {
+  auto error = save_error(reason, stage, attempt, committed);
+  const auto code = file.error();
+  error.safe_context["qt_file_error"] = std::to_string(static_cast<int>(code));
+  error.safe_context["qt_error_string"] = file.errorString().toStdString();
+  // Qt does not expose the native rename error. These are the bounded classes
+  // that can describe a sharing/access race; do not infer GetLastError after
+  // Qt has already closed/removed its temporary file.
+  const bool transient = may_retry &&
+      (code == QFileDevice::OpenError || code == QFileDevice::PermissionsError ||
+       code == QFileDevice::RenameError);
+  return {std::move(error), transient};
+}
+bool transient_flush_error(DWORD code) {
+  return code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION ||
+         code == ERROR_ACCESS_DENIED || code == ERROR_BUSY || code == ERROR_RETRY;
+}
+std::optional<SaveFailure> confirm_once(const QString &path, unsigned attempt) {
+  QFile committed(path);
+  if (!committed.open(QIODevice::ReadWrite))
+    return qt_save_failure("state_durability", "reopen", committed, attempt, true, true);
+  if (!committed.flush())
+    return qt_save_failure("state_durability", "flush", committed, attempt, true, false);
+  DWORD native_error = ERROR_SUCCESS;
+#ifdef HDRSHOT_UPDATE_STORAGE_TESTING
+  const auto injected = storage_test::hooks && storage_test::hooks->flush_error
+      ? storage_test::hooks->flush_error() : std::nullopt;
+  if (injected) native_error = *injected;
+  else
+#endif
+  {
+    const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(committed.handle()));
+    if (!FlushFileBuffers(handle)) native_error = GetLastError();
+  }
+  if (native_error != ERROR_SUCCESS) {
+    auto error = save_error("state_durability", "FlushFileBuffers", attempt, true);
+    error.safe_context["native_error"] = std::to_string(native_error);
+    return SaveFailure{std::move(error), transient_flush_error(native_error)};
+  }
+  if (!durable_directory(QFileInfo(path).absolutePath()))
+    return SaveFailure{save_error("state_durability", "directory", attempt, true), false};
+  return {};
+}
+void begin_attempt(unsigned attempt, bool committed) {
+  if (attempt > 1) {
+    const unsigned delay = attempt == 2 ? 200 : 800;
+#ifdef HDRSHOT_UPDATE_STORAGE_TESTING
+    if (storage_test::hooks && storage_test::hooks->before_retry)
+      storage_test::hooks->before_retry(delay);
+#endif
+    QThread::msleep(delay);
+  }
+#ifdef HDRSHOT_UPDATE_STORAGE_TESTING
+  if (storage_test::hooks && storage_test::hooks->before_attempt)
+    storage_test::hooks->before_attempt(attempt, committed);
+#else
+  (void)committed;
+#endif
+}
+} // namespace
+Result<bool, Error> confirm_json_durability(const QString &path) {
+  for (unsigned attempt = 1; attempt <= 3; ++attempt) {
+    begin_attempt(attempt, true);
+    auto failed = confirm_once(path, attempt);
+    if (!failed) return Result<bool, Error>::success(true);
+    if (!failed->transient || attempt == 3)
+      return Result<bool, Error>::failure(std::move(failed->error));
+  }
+  Q_UNREACHABLE();
+}
+#endif
 Result<bool, Error> save_json(const QString &path, const QJsonObject &object) {
   if (!QDir().mkpath(QFileInfo(path).absolutePath()))
     return Result<bool, Error>::failure(failure("state_directory"));
+#ifdef Q_OS_WIN
+  const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
+  bool committed = false;
+  for (unsigned attempt = 1; attempt <= 3; ++attempt) {
+    begin_attempt(attempt, committed);
+    if (!committed) {
+      // commit failure disposes Qt's temporary file; every attempt needs a new
+      // QSaveFile. Direct-write fallback would destroy atomic snapshot safety.
+      QSaveFile file(path);
+      file.setDirectWriteFallback(false);
+      std::optional<SaveFailure> failed;
+      if (!file.open(QIODevice::WriteOnly))
+        failed = qt_save_failure("state_write", "open", file, attempt, false, true);
+      else if (file.write(bytes) != bytes.size())
+        failed = qt_save_failure("state_write", "write", file, attempt, false, false);
+      else if (!file.flush())
+        failed = qt_save_failure("state_write", "flush_temporary", file, attempt, false, false);
+      else if (!file.commit())
+        failed = qt_save_failure("state_commit", "commit", file, attempt, false, true);
+      if (failed) {
+        if (!failed->transient || attempt == 3)
+          return Result<bool, Error>::failure(std::move(failed->error));
+        continue;
+      }
+      committed = true;
+#ifdef HDRSHOT_UPDATE_STORAGE_TESTING
+      if (storage_test::hooks && storage_test::hooks->after_commit)
+        storage_test::hooks->after_commit();
+#endif
+    }
+    // Once the rename succeeds, retry durability alone. The visible snapshot
+    // is already current even if reopening/flushing it fails.
+    auto failed = confirm_once(path, attempt);
+    if (!failed) return Result<bool, Error>::success(true);
+    if (!failed->transient || attempt == 3)
+      return Result<bool, Error>::failure(std::move(failed->error));
+  }
+  Q_UNREACHABLE();
+#else
   QSaveFile f(path);
   f.setDirectWriteFallback(false);
   const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
@@ -36,14 +168,8 @@ Result<bool, Error> save_json(const QString &path, const QJsonObject &object) {
   // QSaveFile's commit closes and atomically renames; flush the committed inode
   // and parent directory.
   if (!f.commit()) {
-#ifdef Q_OS_WIN
-    const auto native_error=GetLastError();
-#endif
     auto error=failure("state_commit");
     error.safe_context["qt_file_error"]=std::to_string(static_cast<int>(f.error()));
-#ifdef Q_OS_WIN
-    error.safe_context["native_error"]=std::to_string(native_error);
-#endif
     return Result<bool, Error>::failure(std::move(error));
   }
   QFile committed(path);
@@ -51,6 +177,7 @@ Result<bool, Error> save_json(const QString &path, const QJsonObject &object) {
       !durable_directory(QFileInfo(path).absolutePath()))
     return Result<bool, Error>::failure(failure("state_durability"));
   return Result<bool, Error>::success(true);
+#endif
 }
 Result<QByteArray, Error> hash_file(const QString &path) {
   QFile f(path);
@@ -82,6 +209,11 @@ std::optional<Error> install_result_error(const QJsonObject &result,const QStrin
   auto error=failure("install_rolled_back",ErrorCode::path_not_writable,Retryability::after_user_action);
   error.safe_context["reason"]=(QStringLiteral("更新失败，已恢复 %1。%2").arg(version,reason)).toStdString();
   if(!native.isEmpty())error.safe_context["native_error"]=native.toStdString();
+  for (const auto *field : {"qt_file_error", "qt_error_string", "save_stage", "save_attempt",
+                            "state_committed", "move_attempt"}) {
+    if (result[field].isString())
+      error.safe_context[field] = result[field].toString().toStdString();
+  }
   return error;
 }
 Result<bool, Error> Slot::finish_install_result(const QJsonObject &j) {
@@ -90,10 +222,17 @@ Result<bool, Error> Slot::finish_install_result(const QJsonObject &j) {
   const auto path=install_result_path(root,owner,channel);
   if(j["phase"]=="rolled_back") {
     const auto context=j["failure_context"].toObject();
-    return save_json(path,{{"owner",owner},{"channel",channel},{"candidate",j["candidate"]},
+    QJsonObject result{{"owner",owner},{"channel",channel},{"candidate",j["candidate"]},
       {"phase","rolled_back"},{"restored_version",j["old_manifest"].toObject()["version"]},
       {"reason",j["failure_reason"]},{"native_error",context["native_error"]},
-      {"file",j["failure_file"]}});
+      {"file",j["failure_file"]}};
+    // The transaction journal can be cleaned after rollback. Keep the bounded
+    // storage diagnostics in its surviving install-result receipt.
+    for (const auto *field : {"qt_file_error", "qt_error_string", "save_stage", "save_attempt",
+                              "state_committed", "move_attempt"}) {
+      if (context[field].isString()) result[field] = context[field];
+    }
+    return save_json(path, result);
   }
   if(j["phase"]=="complete" && QFileInfo::exists(path)) {
     const auto prior=read_json(path);

@@ -73,15 +73,43 @@ QString windows_extended_path(const QString &path) {
     return QStringLiteral("\\\\?\\UNC\\")+native.mid(2);
   return QStringLiteral("\\\\?\\")+native;
 }
+#ifdef HDRSHOT_UPDATE_MOVE_TESTING
+namespace move_test {
+namespace { thread_local Hooks *hooks = nullptr; }
+void set_hooks(Hooks *value) { hooks = value; }
+} // namespace move_test
+#endif
 Result<bool, Error> windows_move(const QString &from, const QString &to) {
   const auto source=windows_extended_path(from),destination=windows_extended_path(to);
-  if(MoveFileExW(reinterpret_cast<LPCWSTR>(source.utf16()),
-                 reinterpret_cast<LPCWSTR>(destination.utf16()),MOVEFILE_WRITE_THROUGH))
-    return Result<bool,Error>::success(true);
-  const auto native_error=GetLastError();
-  auto error=failure("replace_move",ErrorCode::path_not_writable,Retryability::after_user_action);
-  error.safe_context["native_error"]=std::to_string(native_error);
-  return Result<bool,Error>::failure(std::move(error));
+  for (unsigned attempt = 1; attempt <= 3; ++attempt) {
+    if (attempt > 1) {
+      const unsigned delay = attempt == 2 ? 200 : 800;
+#ifdef HDRSHOT_UPDATE_MOVE_TESTING
+      if (move_test::hooks && move_test::hooks->before_retry)
+        move_test::hooks->before_retry(delay);
+#endif
+      QThread::msleep(delay);
+    }
+#ifdef HDRSHOT_UPDATE_MOVE_TESTING
+    if (move_test::hooks && move_test::hooks->before_attempt)
+      move_test::hooks->before_attempt(attempt);
+#endif
+    // Preserve non-overwriting moves for backup, publication and rollback.
+    if (MoveFileExW(reinterpret_cast<LPCWSTR>(source.utf16()),
+                    reinterpret_cast<LPCWSTR>(destination.utf16()), MOVEFILE_WRITE_THROUGH))
+      return Result<bool, Error>::success(true);
+    const auto native_error = GetLastError();
+    const bool transient = native_error == ERROR_SHARING_VIOLATION ||
+        native_error == ERROR_LOCK_VIOLATION || native_error == ERROR_ACCESS_DENIED ||
+        native_error == ERROR_BUSY || native_error == ERROR_RETRY;
+    if (transient && attempt < 3) continue;
+    auto error = failure("replace_move", ErrorCode::path_not_writable,
+                         Retryability::after_user_action);
+    error.safe_context["native_error"] = std::to_string(native_error);
+    error.safe_context["move_attempt"] = std::to_string(attempt);
+    return Result<bool, Error>::failure(std::move(error));
+  }
+  Q_UNREACHABLE();
 }
 bool windows_install_quiet(const QString &target, const QString &backup) {
   DWORD ids[16384], bytes = 0;

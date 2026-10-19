@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-19T00:18:28+08:00",
+  "timestamp": "2026-10-20T00:01:35+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -67,7 +67,7 @@
       "mode": 420
     },
     "cmake/SourceIdentityPaths.txt": {
-      "sha256": "63e1ba069860680de4d5c24b73645d6eea2aa0fc6e74f0a18526aa3a1e2e445f",
+      "sha256": "ce773122de4ed89b3885a4b6ff4978440b2caf92c31c048ab38f1a54e348ba6e",
       "mode": 420
     },
     "cmake/display_p3_icc_profile.cpp.in": {
@@ -95,7 +95,7 @@
       "mode": 420
     },
     "cmake/update_targets.cmake": {
-      "sha256": "fe2e9abd4ec90757814a3592c66bb6e671d21bf340d2830321027bf16f317d9f",
+      "sha256": "8de3ab8c069198a331ecef465f1cb33925fab3492877524e11765454cf84385e",
       "mode": 420
     },
     "cmake/windows.cmake": {
@@ -175,7 +175,7 @@
       "mode": 493
     },
     "scripts/test_windows_update_native.py": {
-      "sha256": "4f11433446e6c932c52050856f25e6220797e5e5d6fd9a4f8818797b088b68e9",
+      "sha256": "ace8c550da91e972cefe81cb367e22351a48eb7ae39250d8cce90f5dd0784947",
       "mode": 420
     },
     "scripts/verify_macos_deployment_target.sh": {
@@ -855,19 +855,19 @@
       "mode": 420
     },
     "src/platform/qt/update/update_storage.cpp": {
-      "sha256": "8b0f97a65f5658f9102088676a7ecb00baf08f2652db03b73f53c77c58e8fba0",
+      "sha256": "1b803836338a86b84de8fb61af46af5fdebdea83f0338b55cdb9fc80ce2cb457",
       "mode": 420
     },
     "src/platform/qt/update/update_storage.hpp": {
-      "sha256": "3a4ffd57fc0935eb1ef488d9b21a7425941cfef7d1b50c88deacaa10d276163f",
+      "sha256": "bbca4f1e0b6b20f55554cfb1d2490dadaca6c106d5d87d8cdce19c310375e46c",
       "mode": 420
     },
     "src/platform/windows/update/windows_update_backend.cpp": {
-      "sha256": "088f66737e5683588f4b75e94dcd481c98634e8e074ce7334e00a799240e666c",
+      "sha256": "9a186593baccdcf52e91fe3fb0a0773438d9f262596856a56078343538b917e6",
       "mode": 420
     },
     "src/platform/windows/update/windows_update_native.hpp": {
-      "sha256": "91815ff69016b048cce224f433b860f3faf5b1d6972a854a73842574121e5ee5",
+      "sha256": "ba735266834e4a932cb013ccec81db82c16ed7bf41f00f01c3bfa3460e62e9ff",
       "mode": 420
     },
     "src/platform/windows/windows_analysis_backend.cpp": {
@@ -1450,6 +1450,10 @@
       "sha256": "eca8d73e07216c4255553fa25f618ed75a14fbb0586ee600c56f00fc7f5b64d3",
       "mode": 420
     },
+    "tests/update/update_storage_retry_tests.cpp": {
+      "sha256": "7201b2e8869877e02d23aed62891d03049140a4a6de33c8a1751dea84d7e8923",
+      "mode": 420
+    },
     "tests/update/update_tests.cpp": {
       "sha256": "5079ffdc5e82b9511fa7c1b8c1ca34245f4c717a07725eeb508b477de1949e3e",
       "mode": 420
@@ -1460,6 +1464,10 @@
     },
     "tests/update/windows_update_locked_library.cpp": {
       "sha256": "b6e158694079ffc3bd8284cba1c910b41724abd1d467aaf1ebb95907ecff2b09",
+      "mode": 420
+    },
+    "tests/update/windows_update_move_retry_tests.cpp": {
+      "sha256": "90142aa55cc0ba88823694a6873dce0a79b5674d6128c0e39181a78a144a6d5a",
       "mode": 420
     },
     "tests/window_selection_tests.cpp": {
@@ -1639,7 +1647,7 @@
       "mode": 420
     },
     "tools/update/windows_update_helper.cpp": {
-      "sha256": "01e922e21aff0a7cec4d09d37bab2343db785bbbdfc11f874c0f813f90894a66",
+      "sha256": "fb0f33d01f30f32775a75c539ac7cc00f64bbc95ab0c0458790ff9e3110c87ac",
       "mode": 420
     },
     "tools/windows_app.cpp": {

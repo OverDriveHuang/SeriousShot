@@ -10,3 +10,5 @@ tests/update/windows_update_integration.cpp
 tests/update/windows_update_locked_library.cpp
 tests/update/update_tests.cpp
 tests/update/update_runtime_tests.cpp
+tests/update/update_storage_retry_tests.cpp
+tests/update/windows_update_move_retry_tests.cpp
