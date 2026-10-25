@@ -1,5 +1,8 @@
+#include "ui/qt/toolbar_style.hpp"
+#include "ui/qt/status_message_style.hpp"
 #include "ui/qt/overlay_editor_widget.hpp"
 #include "ports/annotation_font_contract.hpp"
+#include "ui/qt/toolbar_symbol_button.hpp"
 
 #include <QComboBox>
 #include <QCursor>
@@ -34,8 +37,6 @@ constexpr std::array<std::uint32_t, 7> kColors{
     0xFF4D67, 0xFFC83D, 0xFF8A34, 0x25C06D, 0x36A3FF, 0xFFFFFF, 0x111111};
 constexpr std::array<std::uint16_t, 5> kLineWidths{2, 4, 6, 8, 12};
 constexpr std::array<std::uint16_t, 6> kFontSizes{12, 16, 20, 24, 32, 48};
-constexpr double kPressedSymbolScale = 0.85;
-constexpr double kPressedSymbolOffsetPx = 2.0;
 
 QCursor rotation_cursor() {
   // Shared vector symbol, black stroke with white surround on either theme.
@@ -59,205 +60,6 @@ QCursor rotation_cursor() {
   }();
   return cursor;
 }
-
-enum class ToolbarSymbol : std::uint8_t {
-  select,
-  rectangle,
-  ellipse,
-  arrow,
-  text,
-  undo,
-  redo,
-  save,
-  save_as,
-  copy,
-  cancel,
-  analyze,
-};
-
-const char* toolbar_symbol_name(const ToolbarSymbol symbol) {
-  switch (symbol) {
-    case ToolbarSymbol::select: return "select";
-    case ToolbarSymbol::rectangle: return "rectangle";
-    case ToolbarSymbol::ellipse: return "ellipse";
-    case ToolbarSymbol::arrow: return "arrow";
-    case ToolbarSymbol::text: return "text";
-    case ToolbarSymbol::undo: return "undo";
-    case ToolbarSymbol::redo: return "redo";
-    case ToolbarSymbol::save: return "save";
-    case ToolbarSymbol::save_as: return "save_as";
-    case ToolbarSymbol::copy: return "copy";
-    case ToolbarSymbol::cancel: return "cancel";
-    case ToolbarSymbol::analyze: return "analyze";
-  }
-  return "unknown";
-}
-
-class ToolbarSymbolButton final : public QToolButton {
- public:
-  ToolbarSymbolButton(
-      const ToolbarSymbol symbol,
-      const bool action_press_feedback,
-      QWidget* const parent)
-      : QToolButton(parent),
-        symbol_(symbol),
-        action_press_feedback_(action_press_feedback) {
-    setProperty("toolbarSymbol", toolbar_symbol_name(symbol_));
-    setProperty("actionPressFeedback", action_press_feedback_);
-    setProperty("pressedSymbolScalePercent", 85);
-    setProperty("pressedSymbolOffsetPx", 2);
-  }
-
- protected:
-  void paintEvent(QPaintEvent* event) override {
-    QToolButton::paintEvent(event);
-
-    const bool dark = property("darkTheme").toBool();
-    QColor color;
-    if (property("cancelAction").toBool()) {
-      color = QColor(dark ? "#FF6B6B" : "#D43D3D");
-    } else if (property("primary").toBool() || property("analysisAction").toBool()) {
-      color = QColor("#FFFFFF");
-    } else if (isChecked()) {
-      color = QColor(dark ? "#20252C" : "#FFFFFF");
-    } else {
-      color = QColor(dark ? "#E7E9EC" : "#343940");
-    }
-    if (!isEnabled()) {
-      color.setAlphaF(0.42F);
-    }
-
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.translate(width() / 2.0, height() / 2.0);
-    if (action_press_feedback_ && isDown()) {
-      painter.translate(kPressedSymbolOffsetPx, kPressedSymbolOffsetPx);
-      painter.scale(kPressedSymbolScale, kPressedSymbolScale);
-    }
-    painter.translate(-12.0, -12.0);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    draw_symbol(painter);
-  }
-
- private:
-  void draw_symbol(QPainter& painter) const {
-    QPainterPath path;
-    switch (symbol_) {
-      case ToolbarSymbol::analyze:
-        painter.drawLine(QPointF(4, 20), QPointF(20, 20));
-        painter.drawLine(QPointF(5, 17), QPointF(5, 11));
-        painter.drawLine(QPointF(10, 17), QPointF(10, 5));
-        painter.drawLine(QPointF(15, 17), QPointF(15, 9));
-        painter.drawLine(QPointF(20, 17), QPointF(20, 3));
-        break;
-      case ToolbarSymbol::select:
-        path.moveTo(5.0, 3.8);
-        path.lineTo(18.2, 15.0);
-        path.lineTo(11.9, 15.8);
-        path.lineTo(8.4, 20.9);
-        path.closeSubpath();
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::rectangle:
-        painter.drawRoundedRect(QRectF(4.0, 5.0, 16.0, 14.0), 1.5, 1.5);
-        break;
-      case ToolbarSymbol::ellipse:
-        painter.drawEllipse(QPointF(12.0, 12.0), 8.5, 6.5);
-        break;
-      case ToolbarSymbol::arrow:
-        painter.drawLine(QPointF(4.5, 18.5), QPointF(19.0, 5.0));
-        path.moveTo(11.5, 5.0);
-        path.lineTo(19.0, 5.0);
-        path.lineTo(19.0, 12.5);
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::text:
-        painter.drawLine(QPointF(5.0, 5.5), QPointF(5.0, 4.0));
-        painter.drawLine(QPointF(5.0, 4.0), QPointF(19.0, 4.0));
-        painter.drawLine(QPointF(19.0, 4.0), QPointF(19.0, 5.5));
-        painter.drawLine(QPointF(12.0, 4.0), QPointF(12.0, 20.0));
-        painter.drawLine(QPointF(9.0, 20.0), QPointF(15.0, 20.0));
-        break;
-      case ToolbarSymbol::undo:
-        path.moveTo(8.0, 7.0);
-        path.lineTo(4.0, 11.0);
-        path.lineTo(8.0, 15.0);
-        path.moveTo(5.0, 11.0);
-        path.lineTo(12.5, 11.0);
-        path.cubicTo(16.0, 11.0, 18.5, 13.5, 18.5, 17.0);
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::redo:
-        path.moveTo(16.0, 7.0);
-        path.lineTo(20.0, 11.0);
-        path.lineTo(16.0, 15.0);
-        path.moveTo(19.0, 11.0);
-        path.lineTo(11.5, 11.0);
-        path.cubicTo(8.0, 11.0, 5.5, 13.5, 5.5, 17.0);
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::save:
-        path.moveTo(5.0, 3.5);
-        path.lineTo(16.0, 3.5);
-        path.lineTo(19.0, 6.5);
-        path.lineTo(19.0, 20.0);
-        path.lineTo(5.0, 20.0);
-        path.closeSubpath();
-        path.moveTo(8.0, 3.5);
-        path.lineTo(8.0, 9.5);
-        path.lineTo(16.0, 9.5);
-        path.lineTo(16.0, 3.5);
-        path.moveTo(8.0, 20.0);
-        path.lineTo(8.0, 14.0);
-        path.lineTo(16.0, 14.0);
-        path.lineTo(16.0, 20.0);
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::save_as:
-        path.moveTo(4.5, 3.5);
-        path.lineTo(14.5, 3.5);
-        path.lineTo(17.5, 6.5);
-        path.lineTo(17.5, 11.7);
-        path.moveTo(4.5, 3.5);
-        path.lineTo(4.5, 19.5);
-        path.lineTo(10.5, 19.5);
-        path.moveTo(7.5, 3.5);
-        path.lineTo(7.5, 9.0);
-        path.lineTo(14.5, 9.0);
-        path.lineTo(14.5, 3.5);
-        path.moveTo(12.2, 18.7);
-        path.lineTo(12.7, 15.7);
-        path.lineTo(18.6, 9.8);
-        path.lineTo(20.7, 11.9);
-        path.lineTo(14.8, 17.8);
-        path.closeSubpath();
-        path.moveTo(17.5, 10.9);
-        path.lineTo(19.6, 13.0);
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::copy:
-        painter.drawRoundedRect(QRectF(8.0, 7.0, 11.0, 13.0), 1.8, 1.8);
-        path.moveTo(16.0, 7.0);
-        path.lineTo(16.0, 5.8);
-        path.cubicTo(16.0, 4.8, 15.2, 4.0, 14.2, 4.0);
-        path.lineTo(5.8, 4.0);
-        path.cubicTo(4.8, 4.0, 4.0, 4.8, 4.0, 5.8);
-        path.lineTo(4.0, 16.2);
-        path.cubicTo(4.0, 17.2, 4.8, 18.0, 5.8, 18.0);
-        path.lineTo(8.0, 18.0);
-        painter.drawPath(path);
-        break;
-      case ToolbarSymbol::cancel:
-        painter.drawLine(QPointF(6.0, 6.0), QPointF(18.0, 18.0));
-        painter.drawLine(QPointF(18.0, 6.0), QPointF(6.0, 18.0));
-        break;
-    }
-  }
-
-  ToolbarSymbol symbol_;
-  bool action_press_feedback_{};
-};
 
 QColor qcolor(const std::uint32_t rgb) {
   return QColor(
@@ -325,6 +127,12 @@ void OverlayEditorWidget::set_analysis_available(bool available) {
   layout_controls();
 }
 
+void OverlayEditorWidget::set_pin_available(bool available) {
+  toolbar_->findChild<QToolButton*>("actionPinScreenshot")->setVisible(available);
+  toolbar_->findChild<QFrame*>("separatorBeforePin")->setVisible(available);
+  layout_controls();
+}
+
 void OverlayEditorWidget::set_completion_bindings(const CompletionBindings bindings) {
   completion_bindings_ = bindings;
 }
@@ -334,6 +142,7 @@ void OverlayEditorWidget::set_interaction_started(InteractionStarted callback) {
 }
 
 void OverlayEditorWidget::set_interaction_locked(bool locked) {
+  if (locked) interrupt_pointer_gesture();
   interaction_locked_ = locked;
   update_pointer_cursor(mapFromGlobal(QCursor::pos()));
 }
@@ -374,6 +183,8 @@ void OverlayEditorWidget::clear_window_candidate() {
   if (previous != initial_highlight()) notify_preview_changed();
 }
 void OverlayEditorWidget::interrupt_pointer_gesture() {
+  pending_annotation_move_.reset();
+  ++annotation_preview_epoch_;
   clear_window_candidate();
   dragging_selection_ = false;
   dragging_annotation_ = false;
@@ -404,22 +215,13 @@ bool OverlayEditorWidget::event(QEvent* event) {
 }
 
 void OverlayEditorWidget::show_status(const QString& message, const bool is_error) {
-  const bool dark = palette().color(QPalette::Window).lightness() < 128;
-  const auto background = is_error
-      ? (dark ? "rgba(111,30,38,245)" : "rgba(255,225,228,248)")
-      : (dark ? "rgba(25,74,52,245)" : "rgba(221,246,232,248)");
-  const auto foreground = dark ? "#FFFFFF" : "#17202A";
-  const auto border = is_error ? "#FF7382" : "#3FC77A";
-  status_label_->setStyleSheet(QString(
-      "QLabel { color: %1; background: %2; border: 1px solid %3;"
-      " border-radius: 8px; padding: 8px 12px; font-weight: 600; }")
-      .arg(foreground, background, border));
+  status_label_->setStyleSheet(status_message_style(palette(), is_error));
   status_label_->setText(message);
   status_label_->setVisible(true);
   status_label_->adjustSize();
   layout_controls();
   status_label_->raise();
-  QTimer::singleShot(6000, status_label_, [label = status_label_] {
+  QTimer::singleShot(status_message_duration_ms, status_label_, [label = status_label_] {
     label->setVisible(false);
   });
 }
@@ -433,8 +235,8 @@ void OverlayEditorWidget::build_controls() {
   toolbar_->setAttribute(Qt::WA_NativeWindow);
 #endif
   toolbar_layout_ = new QHBoxLayout(toolbar_);
-  toolbar_layout_->setContentsMargins(8, 7, 8, 7);
-  toolbar_layout_->setSpacing(5);
+  toolbar_layout_->setContentsMargins(toolbar_style::horizontal_margin, toolbar_style::vertical_margin, toolbar_style::horizontal_margin, toolbar_style::vertical_margin);
+  toolbar_layout_->setSpacing(toolbar_style::spacing);
 
   constexpr std::array<const char*, 5> labels{"选择", "矩形", "圆形", "箭头", "文字"};
   constexpr std::array<const char*, 5> object_names{
@@ -452,7 +254,7 @@ void OverlayEditorWidget::build_controls() {
     separator->setProperty("toolbarSeparator", true);
     separator->setFrameShape(QFrame::VLine);
     separator->setFrameShadow(QFrame::Plain);
-    separator->setFixedSize(1, 26);
+    separator->setFixedSize(toolbar_style::separator_width, toolbar_style::separator_height);
     toolbar_layout_->addWidget(separator);
   };
   for (std::size_t index = 0; index < labels.size(); ++index) {
@@ -460,7 +262,7 @@ void OverlayEditorWidget::build_controls() {
     button->setObjectName(QString::fromLatin1(object_names[index]));
     button->setCheckable(true);
     button->setAutoExclusive(true);
-    button->setFixedSize(38, 38);
+    button->setFixedSize(toolbar_style::button_size, toolbar_style::button_size);
     button->setToolTip(QString::fromUtf8(labels[index]));
     button->setAccessibleName(QString::fromUtf8(labels[index]));
     const auto tool = static_cast<EditorTool>(index);
@@ -497,6 +299,9 @@ void OverlayEditorWidget::build_controls() {
       case UiCommand::copy_and_close:
         symbol = ToolbarSymbol::copy;
         break;
+      case UiCommand::pin_screenshot:
+        symbol = ToolbarSymbol::pin_create;
+        break;
       case UiCommand::cancel_capture:
         symbol = ToolbarSymbol::cancel;
         break;
@@ -512,18 +317,21 @@ void OverlayEditorWidget::build_controls() {
       case UiCommand::copy_and_close: button->setObjectName("actionCopy"); break;
       case UiCommand::cancel_capture: button->setObjectName("actionCancel"); break;
       case UiCommand::analyze: button->setObjectName("actionAnalyze"); break;
+      case UiCommand::pin_screenshot: button->setObjectName("actionPinScreenshot"); break;
       default: break;
     }
     button->setProperty("primary", primary);
     button->setProperty("cancelAction", command == UiCommand::cancel_capture);
     if (command == UiCommand::analyze) {
       button->setProperty("analysisAction", true);
-      button->setStyleSheet("QToolButton { background:#174D3B; border:1px solid #347B5E; border-radius:6px; } QToolButton:hover { background:#226448; } QToolButton:pressed { background:#123C2E; }");
       button->hide(); // only exposed when an actual analysis service is injected
+    }
+    if (command == UiCommand::pin_screenshot) {
+      button->hide(); // only exposed when an actual pin service is injected
     }
     button->setToolTip(QString::fromUtf8(label));
     button->setAccessibleName(QString::fromUtf8(label));
-    button->setFixedSize(38, 38);
+    button->setFixedSize(toolbar_style::button_size, toolbar_style::button_size);
     connect(button, &QToolButton::clicked, this, [this, command] {
       if (command == UiCommand::undo) {
         apply_document_command(UndoAnnotation{});
@@ -544,6 +352,9 @@ void OverlayEditorWidget::build_controls() {
   add_action("保存", UiCommand::save_default);
   add_action("另存为…", UiCommand::save_as);
   add_action("复制", UiCommand::copy_and_close, true);
+  add_separator("separatorBeforePin");
+  toolbar_->findChild<QFrame*>("separatorBeforePin")->hide();
+  add_action("新建贴图窗口", UiCommand::pin_screenshot);
   add_separator("separatorBeforeCancel");
   add_action("取消", UiCommand::cancel_capture);
 
@@ -610,32 +421,7 @@ void OverlayEditorWidget::build_controls() {
 
 void OverlayEditorWidget::apply_theme() {
   const bool dark = palette().color(QPalette::Window).lightness() < 128;
-  const auto surface = dark ? "#26292E" : "#F5F6F8";
-  const auto text = dark ? "#E7E9EC" : "#343940";
-  const auto border = dark ? "#44484F" : "#D5D8DD";
-  const auto hover = dark ? "#4D525A" : "#CBCED3";
-  const auto selected = dark ? "#D9D9D9" : "#3B4046";
-  const auto selected_icon = dark ? "#20252C" : "#FFFFFF";
-  const auto cancel = dark ? "#FF6B6B" : "#D43D3D";
-  const auto style = QString(
-      "QFrame#editorToolbar, QFrame#propertyBar { background: %1; border: 1px solid %3;"
-      " border-radius: 10px; }"
-      "QToolButton { color: %2; background: transparent; border: 1px solid transparent;"
-      " border-radius: 7px; padding: 0; font-weight: 600; }"
-      "QToolButton:hover { background: %4; }"
-      "QToolButton:pressed { background: %4; }"
-      "QToolButton:checked { background: %5; color: %6; border-color: %5; }"
-      "QToolButton:checked:hover, QToolButton:checked:pressed { background: %5; }"
-      "QToolButton[primary=\"true\"] { background: #1677D2; color: white; }"
-      "QToolButton[primary=\"true\"]:hover, QToolButton[primary=\"true\"]:pressed"
-      " { background: #1677D2; }"
-      "QToolButton[cancelAction=\"true\"] { color: %7; }"
-      "QFrame[toolbarSeparator=\"true\"] { background: %3; border: none; }"
-      "QComboBox { color: %2; background: %4; border: 1px solid %3; border-radius: 6px;"
-      " padding: 0 7px; }"
-      "QComboBox QAbstractItemView { color: %2; background: %1; selection-background-color: %5; }"
-      "QToolTip { color: %2; background: %1; border: 1px solid %3; }")
-      .arg(surface, text, border, hover, selected, selected_icon, cancel);
+  const auto style = toolbar_style::sheet(dark);
   for (auto* button : toolbar_->findChildren<QToolButton*>()) {
     button->setProperty("darkTheme", dark);
     button->update();
@@ -655,6 +441,8 @@ void OverlayEditorWidget::apply_theme() {
 }
 
 void OverlayEditorWidget::choose_tool(const EditorTool tool) {
+  if (tool != tool_ && (dragging_annotation_ || dragging_annotation_transform_))
+    interrupt_pointer_gesture();
   if (text_editor_ != nullptr && tool != EditorTool::text) {
     if (!finish_pending_text_edit()) return;
   }
@@ -739,6 +527,7 @@ void OverlayEditorWidget::choose_size(const std::uint16_t value) {
 }
 
 bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& command) {
+  flush_pending_annotation_move();
   auto result = AnnotationDocument::apply(document_, command);
   if (!result) {
     return false;
@@ -747,8 +536,9 @@ bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& comman
     const auto& next = result.value().snapshot();
     if (!annotation_render_plan_ ||
         annotation_render_plan_->source_selection_rect_px != selection_.desktop_rect) {
-      return AnnotationRenderPlanner::build(next, selection_.desktop_rect,
-          point_pixel_scale_, text_rasterizer_);
+      return AnnotationRenderPlanner::build(
+          next, selection_.desktop_rect, point_pixel_scale_, text_rasterizer_,
+          &annotation_coverage_cache_);
     }
     AnnotationRenderPlan reused{next.revision, annotation_render_plan_->output_size_px,
         {}, selection_.desktop_rect};
@@ -770,8 +560,9 @@ bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& comman
             ErrorCode::state_inconsistent, "OverlayEditorWidget", Retryability::never, {}});
       } else {
         auto single = next; single.objects = {object};
-        auto built = AnnotationRenderPlanner::build(single, selection_.desktop_rect,
-            point_pixel_scale_, text_rasterizer_);
+        auto built = AnnotationRenderPlanner::build(
+            single, selection_.desktop_rect, point_pixel_scale_,
+            text_rasterizer_, &annotation_coverage_cache_);
         if (!built) return built;
         reused.ordered_layers.insert(reused.ordered_layers.end(),
             built.value().ordered_layers.begin(), built.value().ordered_layers.end());
@@ -786,6 +577,7 @@ bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& comman
         true);
     return false;
   }
+  ++annotation_preview_epoch_;
   document_ = std::move(result.value());
   transient_annotation_render_plan_.reset();
   annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(
@@ -797,6 +589,10 @@ bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& comman
 }
 
 void OverlayEditorWidget::request_action(const UiCommand command) {
+  if (command == UiCommand::cancel_capture)
+    pending_annotation_move_.reset();
+  else
+    flush_pending_annotation_move();
   if (command != UiCommand::cancel_capture && selection_.desktop_rect.empty()) return;
   // Explicit completion, not focus loss: property controls must keep editing
   // the same pending text. Snapshot consumers only see committed model/plan.
@@ -822,10 +618,8 @@ bool OverlayEditorWidget::rebuild_render_plan() {
     return true;
   }
   auto plan = AnnotationRenderPlanner::build(
-      document_.snapshot(),
-      selection_.desktop_rect,
-      point_pixel_scale_,
-      text_rasterizer_);
+      document_.snapshot(), selection_.desktop_rect, point_pixel_scale_,
+      text_rasterizer_, &annotation_coverage_cache_);
   if (!plan) {
     show_status(
         QStringLiteral("标注渲染计划无效：%1")
@@ -868,8 +662,8 @@ bool OverlayEditorWidget::apply_selection_candidate(SelectionSnapshot candidate)
   }
   if (!next_plan.has_value()) {
     auto built = AnnotationRenderPlanner::build(
-        document_.snapshot(), candidate.desktop_rect,
-        point_pixel_scale_, text_rasterizer_);
+        document_.snapshot(), candidate.desktop_rect, point_pixel_scale_,
+        text_rasterizer_, &annotation_coverage_cache_);
     if (!built) {
       return false;
     }
@@ -1138,6 +932,8 @@ void OverlayEditorWidget::showEvent(QShowEvent* event) {
 }
 
 void OverlayEditorWidget::mousePressEvent(QMouseEvent* event) {
+  pending_annotation_move_.reset();
+  ++annotation_preview_epoch_;
   if (event->button() != Qt::LeftButton) {
     return;
   }
@@ -1245,7 +1041,34 @@ void OverlayEditorWidget::mousePressEvent(QMouseEvent* event) {
   event->accept();
 }
 
+void OverlayEditorWidget::flush_pending_annotation_move() {
+  if (!pending_annotation_move_) return;
+  const auto position = *pending_annotation_move_;
+  pending_annotation_move_.reset();
+  if (!isEnabled() || interaction_locked_) return;
+  QMouseEvent move(QEvent::MouseMove, position, mapToGlobal(position),
+                   Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+  processing_annotation_move_ = true;
+  mouseMoveEvent(&move);
+  processing_annotation_move_ = false;
+}
+
 void OverlayEditorWidget::mouseMoveEvent(QMouseEvent* event) {
+  // Rotation has path-dependent boundary latching; keep its event sequence.
+  if (coalesce_annotation_moves_ && !processing_annotation_move_ &&
+      !rotation_drag_ &&
+      (dragging_annotation_ || dragging_annotation_transform_)) {
+    pending_annotation_move_ = event->position();
+    if (!annotation_move_scheduled_) {
+      annotation_move_scheduled_ = true;
+      QTimer::singleShot(0, this, [this] {
+        annotation_move_scheduled_ = false;
+        flush_pending_annotation_move();
+      });
+    }
+    event->accept();
+    return;
+  }
   if (window_selection_ && selection_.desktop_rect.empty()) {
     refresh_window_candidate(event->position());
     event->accept();
@@ -1281,6 +1104,12 @@ void OverlayEditorWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void OverlayEditorWidget::mouseReleaseEvent(QMouseEvent* event) {
+  // Release uses its own final coordinate below; no need to build the queued
+  // move.
+  if (event->button() == Qt::LeftButton) {
+    pending_annotation_move_.reset();
+    ++annotation_preview_epoch_;
+  }
   if (event->button() != Qt::LeftButton) {
     return;
   }
@@ -1923,8 +1752,10 @@ void OverlayEditorWidget::update_new_annotation_preview(const PixelPoint current
   if (preview.kind == AnnotationKind::arrow) preview.arrow_geometry = ArrowGeometry{drag_anchor_, current};
   if (draft_annotation_ && *draft_annotation_ == preview) return;
   auto built = AnnotationRenderPlanner::build(
-      AnnotationDocumentSnapshot{document_.snapshot().revision, {preview}, std::nullopt, false, false},
-      selection_.desktop_rect, point_pixel_scale_);
+      AnnotationDocumentSnapshot{
+          document_.snapshot().revision, {preview}, std::nullopt, false, false},
+      selection_.desktop_rect, point_pixel_scale_, text_rasterizer_,
+      &annotation_coverage_cache_);
   if (!built || built.value().ordered_layers.empty()) return;
   auto next = *annotation_render_plan_;
   next.ordered_layers.push_back(std::move(built.value().ordered_layers.front()));
@@ -1956,8 +1787,8 @@ void OverlayEditorWidget::update_annotation_drag_preview(const PixelPoint curren
   auto preview_snapshot = snapshot;
   preview_snapshot.objects = {preview};
   auto preview_plan = AnnotationRenderPlanner::build(
-      preview_snapshot, selection_.desktop_rect,
-      point_pixel_scale_, text_rasterizer_);
+      preview_snapshot, selection_.desktop_rect, point_pixel_scale_,
+      text_rasterizer_, &annotation_coverage_cache_);
   if (!preview_plan || preview_plan.value().ordered_layers.size() != 1U) {
     return;
   }

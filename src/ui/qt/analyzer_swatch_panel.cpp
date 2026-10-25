@@ -68,9 +68,9 @@ QColor color_of(const std::optional<std::array<float, 3>> &value) {
                           float(std::clamp(double((*value)[2]), 0., 1.)));
 }
 
-class PairHandle final : public QToolButton {
+class PairHandle final : public analyzer_control_style::PressToolButton {
 public:
-  explicit PairHandle(std::uint64_t id, QWidget *parent) : QToolButton(parent), id_(id) {
+  explicit PairHandle(std::uint64_t id, QWidget *parent) : PressToolButton(parent), id_(id) {
     setProperty("swatchId", QVariant::fromValue<qulonglong>(id));
     QPixmap symbol(40, 40);
     symbol.setDevicePixelRatio(2);
@@ -91,6 +91,9 @@ public:
     setToolTip("Δ 配对：拖动或点击，再选择目标 Δ");
     setCursor(Qt::CrossCursor);
     setFocusPolicy(Qt::StrongFocus);
+    connect(this, &QToolButton::clicked, this, [this] {
+      if (clickedPair) clickedPair(id_);
+    });
   }
   std::function<void(std::uint64_t, QPoint)> dropped;
   std::function<void(std::uint64_t)> clickedPair;
@@ -99,12 +102,22 @@ public:
   std::function<void(std::uint64_t, QPoint)> dragMoved;
 
 protected:
+  bool event(QEvent *event) override {
+    if (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate ||
+        event->type() == QEvent::UngrabMouse ||
+        (event->type() == QEvent::EnabledChange && !isEnabled()) ||
+        (event->type() == QEvent::FocusOut &&
+         static_cast<QFocusEvent *>(event)->reason() != Qt::PopupFocusReason))
+      cancel_drag();
+    return PressToolButton::event(event);
+  }
   void mousePressEvent(QMouseEvent *event) override {
     if (event->button() != Qt::LeftButton)
       return QToolButton::mousePressEvent(event);
     pressed_ = event->position().toPoint();
     dragging_ = false;
     canceled_ = false;
+    setDown(true);
     if (pressStarted)
       pressStarted(this);
     event->accept();
@@ -124,11 +137,13 @@ protected:
     }
     if (dragging_ && dragMoved)
       dragMoved(id_, event->globalPosition().toPoint());
+    setDown(!dragging_ && rect().contains(event->position().toPoint()));
     event->accept();
   }
   void mouseReleaseEvent(QMouseEvent *event) override {
     if (event->button() != Qt::LeftButton)
       return;
+    setDown(false);
     if (canceled_) {
       canceled_ = false;
       event->accept();
@@ -139,13 +154,14 @@ protected:
     if (was_dragging) {
       if (dropped)
         dropped(id_, event->globalPosition().toPoint());
-    } else if (clickedPair) {
+    } else if (clickedPair && rect().contains(event->position().toPoint())) {
       clickedPair(id_);
     }
     event->accept();
   }
 public:
   void cancel_drag() {
+    setDown(false);
     dragging_ = false;
     canceled_ = true;
     if (QWidget::mouseGrabber() == this)
@@ -517,7 +533,7 @@ void AnalyzerSwatchPanel::rebuild() {
     title->setWordWrap(true);
     title->setStyleSheet("font-size:11px;");
     row->addWidget(title, 1);
-    auto *copy = new QToolButton(header);
+    auto *copy = new analyzer_control_style::PressToolButton(header);
     copy->setObjectName("analyzerCopySwatch" + QString::number(sample.id));
     copy->setIcon(copy_icon_);
     copy->setToolTip("复制色样 #" + QString::number(sample.id) + " 的读数");
@@ -561,7 +577,7 @@ void AnalyzerSwatchPanel::rebuild() {
       update();
     };
     row->addWidget(handle, 0, Qt::AlignVCenter);
-    auto *remove = new QToolButton(header);
+    auto *remove = new analyzer_control_style::PressToolButton(header);
     remove->setObjectName("analyzerRemoveSwatch" + QString::number(sample.id));
     remove->setIcon(analyzer_control_style::danger_glyph(false));
     remove->setToolTip("删除色样 #" + QString::number(sample.id));

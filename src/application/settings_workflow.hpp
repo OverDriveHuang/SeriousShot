@@ -18,6 +18,8 @@ class SettingsWorkflow {
  public:
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_detailed_logging(
       bool enabled, SettingsStorePort& settings_store);
+  [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_pinned_screenshot_defaults(
+      PinnedScreenshotDefaults defaults, SettingsStorePort& settings_store);
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_default_folder(
       std::string folder,
       SettingsStorePort& settings_store);

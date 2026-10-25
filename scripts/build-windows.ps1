@@ -1,4 +1,4 @@
-param([switch]$Clean, [switch]$Package, [string]$PythonExecutable, [string[]]$ConfigureArguments = @(), [string]$PackageRoot)
+param([switch]$Clean, [switch]$Package, [switch]$ForceUpdateTests, [string]$PythonExecutable, [string[]]$ConfigureArguments = @(), [string]$PackageRoot)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
@@ -22,15 +22,18 @@ try {
     New-Item -ItemType Directory -Path $logs | Out-Null
     & $PythonExecutable scripts/build_update_dependencies.py *> "$logs/update-dependencies.log"
     if ($LASTEXITCODE -ne 0) { throw "Update dependencies failed: $logs/update-dependencies.log" }
-    cmake --preset windows-qt-release @ConfigureArguments *> "$logs/configure.log"
+    cmake --preset windows-qt-release "-DPython3_EXECUTABLE=$PythonExecutable" @ConfigureArguments *> "$logs/configure.log"
     if ($LASTEXITCODE -ne 0) { throw "Configure failed: $logs/configure.log" }
     $buildArgs = @('--build', '--preset', 'windows-qt-release', '-j', '6')
     if ($Clean) { $buildArgs += '--clean-first' }
     & cmake @buildArgs *> "$logs/build.log"
     if ($LASTEXITCODE -ne 0) { throw "Build failed: $logs/build.log" }
-    ctest --preset windows-qt-release *> "$logs/ctest.log"
-    Get-Content "$logs/ctest.log" -Tail 5
-    if ($LASTEXITCODE -ne 0) { throw "Tests failed: $logs/ctest.log" }
+    $testArgs = @('scripts/test_execution_policy.py', '--build-dir', 'build-windows-qt', '--logs', $logs)
+    if ($Package -or $ForceUpdateTests) { $testArgs += '--force-updates' }
+    & $PythonExecutable @testArgs *> "$logs/test-summary.log"
+    $testExit = $LASTEXITCODE
+    Get-Content "$logs/test-summary.log" -Tail 12
+    if ($testExit -ne 0) { throw "Tests failed or incomplete (exit $testExit): $logs/summary.json" }
     if ($Package) {
         # Every development package is a new immutable directory.
         if (-not $PackageRoot) { $PackageRoot = Join-Path $project '.build-tools/packages' }

@@ -3,9 +3,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <vector>
 #include <bcrypt.h>
@@ -155,6 +155,25 @@ bool curve_valid(const WindowsIccProfile::Curve &c) {
 struct Tag {std::size_t offset=0,length=0;bool present=false;};
 } // namespace
 
+std::shared_ptr<const WindowsIccProfile> windows_srgb_icc_profile() {
+  static const auto profile = [] {
+    WindowsIccProfile::Curve curve;
+    curve.type = 3;
+    curve.parameters = {2.4f, 1.0f / 1.055f, 0.055f / 1.055f,
+                        1.0f / 12.92f, 0.04045f, 0.0f, 0.0f};
+    // Same D65 sRGB / Display P3 matrices as WindowsColor.
+    return std::make_shared<const WindowsIccProfile>("builtin_srgb_v1",
+        std::array<WindowsIccProfile::Curve, 3>{curve, curve, curve},
+        std::array<float, 9>{0.82246197f, 0.17753803f, 0.0f,
+                            0.03319420f, 0.96680580f, 0.0f,
+                            0.01708263f, 0.07239744f, 0.91051993f},
+        std::array<float, 9>{1.22494018f, -0.22494018f, 0.0f,
+                            -0.04205695f, 1.04205695f, 0.0f,
+                            -0.01963755f, -0.07863605f, 1.09827360f});
+  }();
+  return profile;
+}
+
 WindowsIccProfile::WindowsIccProfile(std::string hash,std::array<Curve,3> curves,
                                      std::array<float,9> forward,std::array<float,9> inverse)
     :sha256(std::move(hash)),decode_curves(curves),device_to_p3(forward),p3_to_device(inverse) {}
@@ -168,14 +187,37 @@ windows_load_icc_profile(const std::string &utf8_path) {
   std::wstring wide(length,L'\0');
   MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,utf8_path.data(),
                       static_cast<int>(utf8_path.size()),wide.data(),length);
-  std::ifstream stream(std::filesystem::path(wide),std::ios::binary|std::ios::ate);
-  if(!stream) return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("open_failed"));
-  const auto end=stream.tellg();
-  if(end<132||end>16*1024*1024) return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("size_invalid"));
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
-  stream.seekg(0);
-  if(!stream.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size())))
-    return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("read_failed"));
+  const auto file_error=[](const char* api,DWORD code,
+      std::source_location origin=std::source_location::current()) {
+    auto error=icc_error("profile_read_failed",HRESULT_FROM_WIN32(code),origin);
+    error.safe_context["api"]=api; error.safe_context["nativeCode"]=std::to_string(code);
+    return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(std::move(error));
+  };
+  const HANDLE file=CreateFileW(wide.c_str(),GENERIC_READ,
+      FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL,nullptr);
+  if(file==INVALID_HANDLE_VALUE) return file_error("CreateFileW.ICC",GetLastError());
+  struct CloseFile { HANDLE file; ~CloseFile() { CloseHandle(file); } } close{file};
+  LARGE_INTEGER size{};
+  if(!GetFileSizeEx(file,&size)) return file_error("GetFileSizeEx.ICC",GetLastError());
+  if(size.QuadPart<132||size.QuadPart>16*1024*1024)
+    return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("size_invalid"));
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size.QuadPart));
+  DWORD received=0;
+  if(!ReadFile(file,bytes.data(),static_cast<DWORD>(bytes.size()),&received,nullptr))
+    return file_error("ReadFile.ICC",GetLastError());
+  if(received!=bytes.size())
+    return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("short_read"));
+  const auto hash=sha256(bytes);
+  if(hash.size()!=64)
+    return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("hash_failed"));
+  static std::mutex cache_mutex;
+  static std::map<std::string,std::weak_ptr<const WindowsIccProfile>> cache;
+  const std::scoped_lock cache_lock(cache_mutex);
+  std::erase_if(cache,[](const auto& item) { return item.second.expired(); });
+  if(const auto found=cache.find(hash); found!=cache.end())
+    if(auto shared=found->second.lock())
+      return Result<std::shared_ptr<const WindowsIccProfile>,Error>::success(std::move(shared));
   if(be32(bytes,0)!=bytes.size()||be32(bytes,36)!=signature("acsp")||
      (bytes[8]!=2&&bytes[8]!=4)||be32(bytes,12)!=signature("mntr")||
      be32(bytes,16)!=signature("RGB ")||
@@ -254,11 +296,50 @@ windows_load_icc_profile(const std::string &utf8_path) {
     return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("matrix_singular"));
   for(double v:forward) if(!std::isfinite(v)||std::abs(v)>16)
     return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("matrix_invalid"));
-  const auto hash=sha256(bytes);
-  if(hash.size()!=64)
-    return Result<std::shared_ptr<const WindowsIccProfile>,Error>::failure(icc_error("hash_failed"));
-  return Result<std::shared_ptr<const WindowsIccProfile>,Error>::success(
-      std::make_shared<const WindowsIccProfile>(hash,curves,to_float(forward),to_float(backward)));
+  auto shared=std::make_shared<const WindowsIccProfile>(hash,curves,to_float(forward),to_float(backward));
+  cache[hash]=shared;
+  return Result<std::shared_ptr<const WindowsIccProfile>,Error>::success(std::move(shared));
+}
+
+std::shared_ptr<const WindowsIccLutTables> windows_prepare_icc_tables(const WindowsIccProfile& profile) {
+  std::vector<std::uint8_t> key(profile.sha256.begin(),profile.sha256.end());
+  const auto append=[&](const void* data,std::size_t size) {
+    const auto* bytes=static_cast<const std::uint8_t*>(data);
+    key.insert(key.end(),bytes,bytes+size);
+  };
+  // Both directions, fixed [0,1], RGB R32F 256x256, linear interpolation;
+  // changing the preparation convention must change this key revision.
+  constexpr char specification[]="matrix-trc-v1;decode+encode;0..1;rgb-r32f;256x256;linear";
+  append(specification,sizeof(specification));
+  append(profile.device_to_p3.data(),sizeof(profile.device_to_p3));
+  append(profile.p3_to_device.data(),sizeof(profile.p3_to_device));
+  for(const auto& curve:profile.decode_curves) {
+    append(&curve.type,sizeof(curve.type));
+    append(curve.parameters.data(),sizeof(curve.parameters));
+    const auto count=curve.samples.size(); append(&count,sizeof(count));
+    if(count) append(curve.samples.data(),count*sizeof(float));
+  }
+  const auto identity=sha256(key);
+  static std::mutex mutex;
+  static std::map<std::string,std::weak_ptr<const WindowsIccLutTables>> cache;
+  const std::scoped_lock lock(mutex);
+  std::erase_if(cache,[](const auto& item) { return item.second.expired(); });
+  // A hash failure must not alias unrelated transforms under an empty key.
+  if(!identity.empty()) if(const auto found=cache.find(identity); found!=cache.end())
+    if(auto shared=found->second.lock()) return shared;
+  auto tables=std::make_shared<WindowsIccLutTables>(); tables->identity=identity;
+  if(std::any_of(profile.decode_curves.begin(),profile.decode_curves.end(),
+                [](const auto& curve) { return curve.type==5; })) {
+    constexpr std::size_t length=65536;
+    tables->decode.resize(length*3); tables->encode.resize(length*3);
+    for(int c=0;c<3;++c) for(std::size_t i=0;i<length;++i) {
+      const float x=static_cast<float>(i)/65535.0f;
+      tables->decode[c*length+i]=decode(profile.decode_curves[c],x);
+      tables->encode[c*length+i]=encode(profile.decode_curves[c],x);
+    }
+  }
+  if(!identity.empty()) cache[identity]=tables;
+  return tables;
 }
 
 std::array<float,3> windows_icc_device_to_p3_cpu(const WindowsIccProfile &p,std::array<float,3> encoded) {
@@ -280,10 +361,11 @@ struct alignas(16) GpuConstants {
 };
 }
 WindowsIccGpuTransform::WindowsIccGpuTransform(std::shared_ptr<const WindowsIccProfile> p,
+                                               std::shared_ptr<const WindowsIccLutTables> cpu_tables,
                                                winrt::com_ptr<ID3D11Buffer> constants,
                                                winrt::com_ptr<ID3D11ShaderResourceView> decode_table,
                                                winrt::com_ptr<ID3D11ShaderResourceView> encode_table)
-    :profile_(std::move(p)),constants_(std::move(constants)),
+    :profile_(std::move(p)),cpu_tables_(std::move(cpu_tables)),constants_(std::move(constants)),
      decode_table_(std::move(decode_table)),encode_table_(std::move(encode_table)) {}
 Result<std::shared_ptr<const WindowsIccGpuTransform>,Error>
 WindowsIccGpuTransform::create(ID3D11Device *device,std::shared_ptr<const WindowsIccProfile> profile) {
@@ -304,16 +386,9 @@ WindowsIccGpuTransform::create(ID3D11Device *device,std::shared_ptr<const Window
   const auto hr=device->CreateBuffer(&desc,&initial,buffer.put());
   if(FAILED(hr)) return Result<std::shared_ptr<const WindowsIccGpuTransform>,Error>::failure(icc_error("gpu_constants",hr));
   winrt::com_ptr<ID3D11ShaderResourceView> decode_view,encode_view;
-  const bool sampled=std::any_of(profile->decode_curves.begin(),profile->decode_curves.end(),
-                                 [](const auto &c){return c.type==5;});
-  if(sampled) {
+  auto tables=windows_prepare_icc_tables(*profile);
+  if(!tables->decode.empty()) {
     constexpr std::size_t length=65536;
-    std::vector<float> decode_data(length*3),encode_data(length*3);
-    for(int c=0;c<3;++c) for(std::size_t i=0;i<length;++i) {
-      const float x=static_cast<float>(i)/65535.0f;
-      decode_data[c*length+i]=decode(profile->decode_curves[c],x);
-      encode_data[c*length+i]=encode(profile->decode_curves[c],x);
-    }
     D3D11_TEXTURE2D_DESC texture_desc{};
     texture_desc.Width=256;texture_desc.Height=256;texture_desc.MipLevels=1;
     texture_desc.ArraySize=3;texture_desc.Format=DXGI_FORMAT_R32_FLOAT;
@@ -331,13 +406,13 @@ WindowsIccGpuTransform::create(ID3D11Device *device,std::shared_ptr<const Window
       if(SUCCEEDED(result)) result=device->CreateShaderResourceView(texture.get(),nullptr,view.put());
       return result;
     };
-    auto result=make_view(decode_data,decode_view);
-    if(SUCCEEDED(result)) result=make_view(encode_data,encode_view);
+    auto result=make_view(tables->decode,decode_view);
+    if(SUCCEEDED(result)) result=make_view(tables->encode,encode_view);
     if(FAILED(result)) return Result<std::shared_ptr<const WindowsIccGpuTransform>,Error>::failure(icc_error("gpu_curve_tables",result));
   }
   return Result<std::shared_ptr<const WindowsIccGpuTransform>,Error>::success(
       std::shared_ptr<const WindowsIccGpuTransform>(new WindowsIccGpuTransform(
-          std::move(profile),std::move(buffer),std::move(decode_view),std::move(encode_view))));
+          std::move(profile),std::move(tables),std::move(buffer),std::move(decode_view),std::move(encode_view))));
 }
 void WindowsIccGpuTransform::bind_cs(ID3D11DeviceContext *context) const {
   ID3D11Buffer *buffers[]={constants_.get()};context->CSSetConstantBuffers(2,1,buffers);

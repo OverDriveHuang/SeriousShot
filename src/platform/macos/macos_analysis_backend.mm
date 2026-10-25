@@ -675,11 +675,12 @@ class MacAnalysisPresenter final : public AnalysisPresenterPort {
   struct Delivery {
     std::mutex mutex;
     std::optional<Frame> pending;
-    bool running{}, closed{};
+    bool running{}, closed{}, recovery_pending{};
     std::uint64_t generation{};
     std::uint64_t submitted{}, completed{}, failed{}, dropped{},
         completed_generation{};
     std::function<void(Error)> on_error;
+    std::function<void(std::uint64_t)> on_recovery;
     std::shared_ptr<Runtime> gpu;
     std::shared_ptr<Shared> state;
     std::shared_ptr<const UiImage> marks_image;
@@ -696,6 +697,8 @@ class MacAnalysisPresenter final : public AnalysisPresenterPort {
       {
         std::lock_guard lock(delivery->mutex);
         ++delivery->failed;
+        if (std::strcmp(reason, "drawable_retry_exhausted") != 0)
+          delivery->recovery_pending = true;
         callback = delivery->on_error;
       }
       os_log_error(OS_LOG_DEFAULT,
@@ -706,8 +709,8 @@ class MacAnalysisPresenter final : public AnalysisPresenterPort {
     } catch (...) { /* Presentation failure reporting must not terminate GUI. */
     }
   }
-  // false means a newer pending state already exists: keep draining it now.
-  // true means this worker stops (closed, scheduled retry, or exhausted).
+  // false lets this worker recheck pending state and perform its own exit.
+  // true means this worker stops (closed or a scheduled retry takes over).
   static bool retry_acquire(const std::shared_ptr<Delivery> &delivery,
                             Frame frame, const char *reason) {
     bool retry = false;
@@ -725,7 +728,6 @@ class MacAnalysisPresenter final : public AnalysisPresenterPort {
         retry = true;
       } else {
         ++delivery->dropped;
-        delivery->running = false;
       }
     }
     if (retry) {
@@ -737,9 +739,12 @@ class MacAnalysisPresenter final : public AnalysisPresenterPort {
                      ^{
                        drain(retained_delivery);
                      });
-    } else
-      failed(delivery, reason);
-    return true;
+      return true;
+    }
+    // Keep ownership of the worker through failure publication. A request
+    // queued by its callback must not start a new worker and overtake it.
+    failed(delivery, reason);
+    return false;
   }
   static void drain(const std::shared_ptr<Delivery> &delivery) noexcept {
     try {
@@ -836,9 +841,19 @@ class MacAnalysisPresenter final : public AnalysisPresenterPort {
           [command commit];
           [command waitUntilCompleted]; // bounded worker only; never GUI
           if (command.status == MTLCommandBufferStatusCompleted) {
-            std::lock_guard lock(delivery->mutex);
-            ++delivery->completed;
-            delivery->completed_generation = frame.generation;
+            std::function<void(std::uint64_t)> callback;
+            {
+              std::lock_guard lock(delivery->mutex);
+              ++delivery->completed;
+              delivery->completed_generation = frame.generation;
+              if (!delivery->closed && delivery->recovery_pending &&
+                  frame.generation == delivery->generation)
+                callback = delivery->on_recovery;
+            }
+            // The GUI acknowledges after checking its weak lifetime and this
+            // generation. Do not consume recovery here: a newer failure may
+            // make an already queued notification stale before GUI delivery.
+            try { if (callback) callback(frame.generation); } catch (...) {}
           } else
             failed(delivery, "present_gpu_execution_failed");
         }
@@ -875,21 +890,44 @@ public:
     std::lock_guard lock(delivery_->mutex);
     delivery_->on_error = std::move(callback);
   }
+  void set_recovery_callback(std::function<void(std::uint64_t)> callback) {
+    std::lock_guard lock(delivery_->mutex);
+    delivery_->on_recovery = std::move(callback);
+  }
+  bool acknowledge_recovery(std::uint64_t generation) {
+    std::lock_guard lock(delivery_->mutex);
+    if (delivery_->closed || !delivery_->recovery_pending ||
+        generation != delivery_->generation ||
+        generation != delivery_->completed_generation)
+      return false;
+    delivery_->recovery_pending = false;
+    return true;
+  }
   Result<bool, Error> present(const Input &input, const SourceView &view,
                               std::uintptr_t surface) override {
     @autoreleasepool {
+      std::uint64_t generation;
+      {
+        std::lock_guard lock(delivery_->mutex);
+        generation = ++delivery_->generation;
+      }
+      const auto failure = [&](Error error) {
+        std::lock_guard lock(delivery_->mutex);
+        delivery_->recovery_pending = true;
+        return Result<bool, Error>::failure(std::move(error));
+      };
       auto &r = *state_->gpu;
       if (r.failure)
-        return Result<bool, Error>::failure(*r.failure);
+        return failure(*r.failure);
       if (!surface || !input.source || !valid_source_view(view))
-        return Result<bool, Error>::failure(
+        return failure(
             analysis_error("invalid_native_surface"));
       if (![NSThread isMainThread])
-        return Result<bool, Error>::failure(
+        return failure(
             native_error("analysis_surface_requires_main_thread"));
       auto src = macos_source_texture(input.source);
       if (!src)
-        return Result<bool, Error>::failure(
+        return failure(
             analysis_error("unsupported_source_binding"));
       if (view.false_color) {
         std::lock_guard lock(state_->mutex);
@@ -930,7 +968,7 @@ public:
         [native.layer addSublayer:layer];
       }
       if (!layer.superlayer)
-        return Result<bool, Error>::failure(
+        return failure(
             native_error("analysis_layer_binding_failed"));
       layer.frame = native.bounds;
       layer.drawableSize =
@@ -943,7 +981,7 @@ public:
       {
         std::lock_guard lock(delivery_->mutex);
         delivery_->pending =
-            Frame{input, view, src, nil, layer, ++delivery_->generation};
+            Frame{input, view, src, nil, layer, generation};
         start = !delivery_->running;
         delivery_->running = true;
       }
@@ -1560,6 +1598,18 @@ void set_macos_analysis_presenter_error_callback(
     AnalysisPresenterPort &presenter, std::function<void(Error)> callback) {
   if (auto *native = dynamic_cast<MacAnalysisPresenter *>(&presenter))
     native->set_error_callback(std::move(callback));
+}
+void set_macos_analysis_presenter_recovery_callback(
+    AnalysisPresenterPort &presenter,
+    std::function<void(std::uint64_t)> callback) {
+  if (auto *native = dynamic_cast<MacAnalysisPresenter *>(&presenter))
+    native->set_recovery_callback(std::move(callback));
+}
+bool acknowledge_macos_analysis_presenter_recovery(
+    AnalysisPresenterPort &presenter, std::uint64_t generation) {
+  if (auto *native = dynamic_cast<MacAnalysisPresenter *>(&presenter))
+    return native->acknowledge_recovery(generation);
+  return false;
 }
 Result<MacAnalysisBackend, Error> make_macos_analysis_backend() try {
   auto state = std::make_shared<Shared>();

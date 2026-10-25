@@ -4,6 +4,7 @@
 #include "platform/windows/windows_display_mode.hpp"
 #include "ports/capture_preview_ports.hpp"
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -30,7 +31,11 @@ struct WindowsDisplayInfo {
   std::int32_t target_adapter_high{};
   float min_nits{}, max_nits{}, max_full_frame_nits{};
   WindowsSourceWhite source_white;
+  // Original DISPLAYCONFIG_SDR_WHITE_LEVEL value; display notifications compare
+  // this integer rather than a rounded luminance conversion.
+  std::uint32_t sdr_white_level{};
   std::shared_ptr<const WindowsIccProfile> icc_profile;
+  bool icc_profile_assumed_srgb{};
 };
 struct WindowsRawCapture {
   DisplayId display_id;
@@ -47,6 +52,22 @@ Result<WindowsCaptureCapabilityPlan, Error> windows_check_capture_runtime_capabi
 // synchronously. Raw evidence stays at this platform boundary.
 Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(
     DiagnosticsPort* diagnostics = nullptr);
+Result<WindowsDisplayInfo, Error> windows_query_display_state(
+    std::uintptr_t monitor, DiagnosticsPort* diagnostics = nullptr);
+// Read-only profile lookup, independent of the current HDR/ACM mode. Explicit
+// WCS scope selection is authoritative; an unconfigured profile uses the DC's
+// Windows default (which may be sRGB), never a hard-coded profile filename.
+Result<std::string, Error> windows_effective_icc_path(
+    const std::string& device_name, DiagnosticsPort* diagnostics = nullptr);
+// Narrow query seam for deterministic fallback/error propagation tests.
+using WindowsIccPathQuery = std::function<Result<std::string, Error>(const std::string&)>;
+Result<std::string, Error> windows_effective_icc_path(const std::string& device_name,
+    const WindowsIccPathQuery& configured_query, const WindowsIccPathQuery& dc_default_query);
+using WindowsIccProfileLoader = std::function<Result<std::shared_ptr<const WindowsIccProfile>, Error>(const std::string&)>;
+// Preparation policy only; preserve the actual queried path as provenance.
+void windows_resolve_display_icc(WindowsDisplayInfo& display,
+    DiagnosticsPort* diagnostics = nullptr, const WindowsIccPathQuery& query = {},
+    const WindowsIccProfileLoader& loader = {});
 Result<WindowsRawCapture, Error> windows_capture_display(
     const WindowsDisplayInfo& display, const std::atomic_bool* cancelled = nullptr,
     std::uint32_t timeout_ms = 5000, DiagnosticsPort* diagnostics = nullptr);

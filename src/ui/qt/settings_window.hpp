@@ -53,7 +53,11 @@ class SettingsWindow final : public QWidget {
  private:
   void choose_folder();
   void build_analysis_tab(QWidget*);
+  void build_pinned_screenshot_tab(QWidget*);
+  void persist_pinned_screenshot_defaults();
   void persist_analysis_defaults();
+  QCheckBox* pinned_always_on_top_check_{};
+  QComboBox* pinned_short_edge_combo_{};
   QCheckBox* magnifier_enabled_{};
   std::array<QComboBox*,6> analysis_combos_{};
   ReadingSelector* magnifier_readings_{};

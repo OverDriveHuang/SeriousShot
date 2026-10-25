@@ -10,18 +10,20 @@
 #include <optional>
 
 namespace hdrshot {
+class WindowsDisplayStateService;
 // Native composition root only. Math, scheduling and snapshot semantics live
 // outside this adapter; export continues through the existing coordinator.
 class WindowsQtAnalyzerController final : public QObject {
 public:
   using Export = std::function<bool(UiCommand, ExportSnapshot,
-                                    ExportCompletionCoordinator::Completed)>;
+                                    ExportCompletionCoordinator::Completed, QWidget*)>;
   using ReadSettings = std::function<SettingsSnapshot()>;
   using SavePreferences = std::function<void(std::string)>;
   WindowsQtAnalyzerController(QObject &dispatch_context, Export export_request,
                               ReadSettings read_settings,
                               SavePreferences save_preferences,
-                              std::shared_ptr<DiagnosticsPort> diagnostics);
+                              std::shared_ptr<DiagnosticsPort> diagnostics,
+                              std::shared_ptr<WindowsDisplayStateService> displays = {});
   ~WindowsQtAnalyzerController() override;
   void open(ExportSnapshot snapshot,
             QtOverlayHost::AnalysisCompleted completed);
@@ -34,9 +36,9 @@ private:
   struct Window;
   struct DispatchGate;
   void install(std::shared_ptr<Window> runtime);
-  void export_from(const std::shared_ptr<Window> &, analysis::ExportAction,
+  void export_from(std::shared_ptr<Window>, analysis::ExportAction,
                    analysis::ReportPlan);
-  void submit_export(const std::shared_ptr<Window> &, bool copy,
+  void submit_export(std::shared_ptr<Window>, bool copy,
                      ExportSnapshot);
   void flush_preferences();
   QObject &dispatch_context_;
@@ -46,6 +48,7 @@ private:
   ReadSettings read_settings_;
   SavePreferences save_preferences_;
   std::shared_ptr<DiagnosticsPort> diagnostics_;
+  std::shared_ptr<WindowsDisplayStateService> displays_;
   std::vector<std::weak_ptr<Window>> windows_;
   std::optional<std::string> pending_preferences_;
   QTimer preference_timer_;

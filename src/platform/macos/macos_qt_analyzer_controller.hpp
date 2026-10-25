@@ -15,7 +15,7 @@ namespace hdrshot {
 class MacQtAnalyzerController final : public QObject {
 public:
   using Export = std::function<bool(UiCommand, ExportSnapshot,
-                                    ExportCompletionCoordinator::Completed)>;
+                                    ExportCompletionCoordinator::Completed, QWidget*)>;
   using ReadSettings = std::function<SettingsSnapshot()>;
   using SavePreferences = std::function<void(std::string)>;
   MacQtAnalyzerController(QObject &dispatch_context, Export export_request,

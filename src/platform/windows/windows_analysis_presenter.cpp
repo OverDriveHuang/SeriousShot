@@ -3,6 +3,7 @@
 #include "platform/windows/windows_capture.hpp"
 #include "platform/windows/windows_d3d.hpp"
 #include "platform/windows/windows_display_transform.hpp"
+#include "platform/windows/windows_display_state.hpp"
 #include "ports/diagnostics_port.hpp"
 #include <algorithm>
 #include <array>
@@ -153,8 +154,11 @@ public:
         work_shader_.put()));
   }
 
+  void invalidate_display() { monitor_ = nullptr; display_transform_.reset(); }
+
   Result<bool, Error> draw(const Input &input, const SourceView &view,
-                           HWND hwnd) {
+                           HWND hwnd, const WindowsDisplayStateRef &display = {},
+                           const std::function<bool()> &current = {}) {
     using Out = Result<bool, Error>;
     if (!input.source || !valid_source_view(view))
       return Out::failure(presentation_error("invalid_source_view"));
@@ -245,11 +249,15 @@ public:
       c.output_scrgb = hwnd ? 1.0F : 0.0F;
       if (hwnd) {
         const auto monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (display && display->display.monitor != reinterpret_cast<std::uintptr_t>(monitor))
+          return Out::success(false); // The content crossed monitors while queued.
         if (monitor != monitor_) {
           // A failed target query must never reuse the previous monitor's ICC.
           display_transform_.reset();
           monitor_ = nullptr;
-          auto displays = windows_enumerate_displays(diagnostics_.get());
+          auto displays = display
+              ? Result<std::vector<WindowsDisplayInfo>, Error>::success({display->display})
+              : windows_enumerate_displays(diagnostics_.get());
           if (!displays) {
             record_diagnostic_stage(diagnostics_.get(),{}, {},"windows.color",
                 "analysis.target_query","failure",{},&displays.error());
@@ -314,6 +322,7 @@ public:
         // No unbounded GUI wait: the sole worker owns all immediate-context and
         // DXGI operations. The worker retains a busy frame until it succeeds,
         // is superseded, or is canceled; it never blocks GUI event delivery.
+        if (current && !current()) return Out::success(false);
         winrt::check_hresult(swapchain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT));
         winrt::check_hresult(composition_->Commit());
       }
@@ -505,6 +514,9 @@ struct Delivery {
     SourceView view;
     HWND hwnd{};
     std::uint64_t generation{};
+    std::uint64_t display_generation{};
+    std::uint64_t binding_generation{};
+    WindowsDisplayStateRef display;
   };
   std::mutex mutex;
   std::condition_variable ready;
@@ -514,6 +526,10 @@ struct Delivery {
   std::optional<Frame> pending;
   WindowsAnalysisPresentationStatus status;
   std::function<void(Error)> error;
+  bool bound{};
+  std::uintptr_t surface{}, monitor{};
+  std::uint64_t binding_generation{};
+  WindowsDisplayStateRef display;
   bool stopping{};
 };
 class Presenter final : public AnalysisPresenterPort {
@@ -524,6 +540,7 @@ public:
     // neither GPU completion nor an OS Present blocks the GUI destructor.
     std::thread([state = state_, log = std::move(diagnostics)] {
       std::unique_ptr<Renderer> renderer;
+      std::uint64_t display_generation{};
       for (;;) {
         Delivery::Frame frame;
         {
@@ -545,8 +562,22 @@ public:
         try {
           if (!renderer)
             renderer = std::make_unique<Renderer>(log);
+          if (display_generation != frame.display_generation) {
+            renderer->invalidate_display();
+            display_generation = frame.display_generation;
+          }
           for (;;) {
-            result = renderer->draw(frame.input, frame.view, frame.hwnd);
+            const auto current = [&] {
+              std::lock_guard lock(state->mutex);
+              return !state->stopping && (!state->bound ||
+                  (frame.binding_generation == state->binding_generation &&
+                   frame.display == state->display &&
+                   reinterpret_cast<std::uintptr_t>(frame.hwnd) == state->surface));
+            };
+            if (!current()) { superseded = true; break; }
+            result = renderer->draw(frame.input, frame.view, frame.hwnd,
+                                    frame.display, current);
+            if (result && !result.value()) superseded = true;
             if (result)
               break;
             const auto code = result.error().safe_context.find("hresult");
@@ -587,11 +618,16 @@ public:
           state->status.worker_active = false;
           if (state->stopping)
             return;
+          superseded = superseded || (state->bound &&
+              (frame.binding_generation != state->binding_generation ||
+               frame.display != state->display ||
+               reinterpret_cast<std::uintptr_t>(frame.hwnd) != state->surface));
           if (superseded) {
             ++state->status.dropped;
           } else if (result) {
             ++state->status.completed;
             state->status.completed_generation = frame.generation;
+            state->status.completed_display_generation = frame.display_generation;
           } else {
             ++state->status.failed;
           }
@@ -631,11 +667,18 @@ public:
       if (state_->stopping)
         return Result<bool, Error>::failure(
             presentation_error("presenter_stopped"));
+      // The shared service will request another presentation after it has a
+      // valid snapshot. Never query OS display state independently in a bound
+      // production presenter, including its first frame.
+      if (state_->bound && (!state_->display || native_surface != state_->surface))
+        return Result<bool, Error>::success(false);
       if (state_->pending)
         ++state_->status.dropped;
       auto generation = ++state_->status.requested;
       state_->pending = Delivery::Frame{
-          input, view, reinterpret_cast<HWND>(native_surface), generation};
+          input, view, reinterpret_cast<HWND>(native_surface), generation,
+          state_->status.display_generation, state_->binding_generation,
+          state_->display};
       state_->status.pending = true;
     }
     state_->ready.notify_one();
@@ -664,6 +707,32 @@ void set_windows_analysis_presenter_error_callback(
     std::lock_guard delivery_lock(native->state_->callback_mutex);
     std::lock_guard lock(native->state_->mutex);
     native->state_->error = std::move(callback);
+  }
+}
+void invalidate_windows_analysis_display(AnalysisPresenterPort &presenter) {
+  if (auto *native = dynamic_cast<Presenter *>(&presenter)) {
+    std::lock_guard lock(native->state_->mutex);
+    ++native->state_->status.display_generation;
+  }
+}
+void set_windows_analysis_display_target(AnalysisPresenterPort &presenter,
+    std::uintptr_t surface, std::uintptr_t monitor, std::uint64_t binding_generation,
+    std::shared_ptr<const WindowsDisplayState> display) {
+  if (auto *native = dynamic_cast<Presenter *>(&presenter)) {
+    std::lock_guard lock(native->state_->mutex);
+    auto &state = *native->state_;
+    if (state.stopping) return;
+    if (state.bound && state.surface == surface && state.monitor == monitor &&
+        state.binding_generation == binding_generation && state.display == display)
+      return;
+    state.bound = true;
+    state.surface = surface;
+    state.monitor = monitor;
+    state.binding_generation = binding_generation;
+    state.display = std::move(display);
+    ++state.status.display_generation;
+    if (state.pending) { state.pending.reset(); ++state.status.dropped; }
+    state.status.pending = false;
   }
 }
 Result<LinearSourceRef, Error>

@@ -25,6 +25,19 @@ Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_detailed_logging(
   return Result<SettingsUpdateReceipt, Error>::success({saved.value().revision});
 }
 
+Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_pinned_screenshot_defaults(
+    const PinnedScreenshotDefaults defaults, SettingsStorePort& settings_store) {
+  if (!valid_pinned_screenshot_defaults(defaults)) {
+    return Result<SettingsUpdateReceipt, Error>::failure(
+        invalid_field("pinned_screenshot_defaults"));
+  }
+  SettingsPatch patch;
+  patch.pinned_screenshot_defaults = defaults;
+  const auto saved = settings_store.save(patch);
+  if (!saved) return Result<SettingsUpdateReceipt, Error>::failure(saved.error());
+  return Result<SettingsUpdateReceipt, Error>::success({saved.value().revision});
+}
+
 Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_default_folder(
     std::string folder,
     SettingsStorePort& settings_store) {

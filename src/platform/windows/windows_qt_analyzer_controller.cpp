@@ -3,6 +3,7 @@
 #include "application/analysis_workflow.hpp"
 #include "platform/windows/windows_analysis_backend.hpp"
 #include "platform/windows/windows_color.hpp"
+#include "platform/windows/windows_source_display_binding.hpp"
 #include "ui/qt/analyzer_source_view.hpp"
 #include "ui/qt/analyzer_window.hpp"
 #include <QApplication>
@@ -53,13 +54,15 @@ struct WindowsQtAnalyzerController::DispatchGate {
 
 WindowsQtAnalyzerController::WindowsQtAnalyzerController(
     QObject &context, Export export_request, ReadSettings settings,
-    SavePreferences preferences, std::shared_ptr<DiagnosticsPort> diagnostics)
+    SavePreferences preferences, std::shared_ptr<DiagnosticsPort> diagnostics,
+    std::shared_ptr<WindowsDisplayStateService> displays)
     : dispatch_context_(context),
       dispatch_gate_(std::make_shared<DispatchGate>(&context)),
       prepare_executor_(context), export_request_(std::move(export_request)),
       read_settings_(std::move(settings)),
       save_preferences_(std::move(preferences)),
-      diagnostics_(std::move(diagnostics)) {
+      diagnostics_(std::move(diagnostics)), displays_(std::move(displays)) {
+  if (!displays_) displays_ = std::make_shared<WindowsDisplayStateService>(nullptr,diagnostics_);
   preference_timer_.setSingleShot(true);
   preference_timer_.setInterval(300);
   QObject::connect(&preference_timer_, &QTimer::timeout, this,
@@ -183,6 +186,18 @@ void WindowsQtAnalyzerController::install(std::shared_ptr<Window> runtime) {
   auto gate = dispatch_gate_;
   auto diagnostics = diagnostics_;
   const std::weak_ptr<Window> weak_runtime = runtime;
+  const QPointer<AnalyzerWindow> window_guard(window);
+  auto attached = bind_windows_source_display(*window,
+      *window->source_widget()->presentation_surface(),runtime->backend.presenter,displays_,
+      [window_guard] { if (window_guard) window_guard->refresh_presentation(); },
+      [window_guard,diagnostics](Error error) {
+        record_diagnostic_failure(diagnostics.get(),"analysis.display_state",error);
+        if (window_guard) window_guard->show_display_error(readable_error(error));
+      }, [window_guard] { if (window_guard) window_guard->clear_display_error(); });
+  if (!attached) {
+    record_diagnostic_failure(diagnostics.get(),"analysis.display_attach",attached.error());
+    window->show_error(readable_error(attached.error()));
+  }
   set_windows_analysis_presenter_error_callback(
       *runtime->backend.presenter, [guard, weak_runtime, gate](Error error) {
         gate->post([guard, weak_runtime, error] {
@@ -271,7 +286,7 @@ void WindowsQtAnalyzerController::install(std::shared_ptr<Window> runtime) {
 }
 
 void WindowsQtAnalyzerController::export_from(
-    const std::shared_ptr<Window> &runtime, analysis::ExportAction action,
+    std::shared_ptr<Window> runtime, analysis::ExportAction action,
     analysis::ReportPlan plan) {
   if (!runtime->widget)
     return;
@@ -321,7 +336,7 @@ void WindowsQtAnalyzerController::export_from(
 }
 
 void WindowsQtAnalyzerController::submit_export(
-    const std::shared_ptr<Window> &runtime, bool copy,
+    std::shared_ptr<Window> runtime, bool copy,
     ExportSnapshot snapshot) {
   auto adapted = windows_snapshot_with_capture_range(snapshot,
                                                      runtime->captured_range);
@@ -341,7 +356,7 @@ void WindowsQtAnalyzerController::submit_export(
         runtime->widget->set_export_busy(false);
         if (!result)
           runtime->widget->show_error(readable_error(result.error()));
-      });
+      }, runtime->widget);
   if (!accepted && runtime->widget) {
     runtime->widget->set_export_busy(false);
     runtime->widget->show_error(

@@ -5,8 +5,10 @@
 #include "ui/qt/qt_window_activation_port.hpp"
 #include "platform/windows/windows_capture.hpp"
 #include <QAbstractNativeEventFilter>
+#include <QPointer>
 
 namespace hdrshot {
+class WindowsExitCoordinator;
 class WindowsQtWindowActivation final : public QtWindowActivationPort {
  public:
   void activate(QWidget& window) override;
@@ -79,7 +81,10 @@ class WindowsClipboardPort final : public ClipboardPort {
 };
 class WindowsFileDialogPort final : public FileDialogPort {
  public:
+  explicit WindowsFileDialogPort(WindowsExitCoordinator *exit=nullptr);
   Result<ChooseSavePathOutcome,Error> choose_save_path(const ChooseSavePathRequest&) override;
+ private:
+  QPointer<WindowsExitCoordinator> exit_;
 };
 class WindowsClockPort final : public ClockPort {
  public:

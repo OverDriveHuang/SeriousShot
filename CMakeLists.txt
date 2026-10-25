@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.7 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.8 LANGUAGES CXX)
 set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
 if(HDRSHOT_UPDATE_TEST_VERSION)
   if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
@@ -25,6 +25,10 @@ if(APPLE)
 endif()
 
 include(CTest)
+option(HDRSHOT_TEST_IMAGEIO_PNG_CANDIDATE "Test unused ImageIO PNG encoding candidate" OFF)
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+endif()
 if(BUILD_TESTING)
   # The Windows capture options policy has no OS, Qt, or GPU dependency.
   add_executable(hdrshot_windows_capture_policy_tests tests/windows_capture_policy_tests.cpp)
@@ -383,6 +387,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
 
   add_library(hdrshot_qt_analyzer_ui STATIC
     src/ui/qt/analyzer_layout.cpp src/ui/qt/analyzer_source_view.cpp
+    src/ui/qt/source_presentation_controller.cpp
     src/ui/qt/analyzer_scope_plot.cpp src/ui/qt/analyzer_swatch_panel.cpp
     src/ui/qt/analyzer_window.cpp)
   target_link_libraries(hdrshot_qt_analyzer_ui PUBLIC hdrshot_analysis_core Qt6::Widgets)
@@ -403,6 +408,29 @@ if(HDRSHOT_ENABLE_QT_HOST)
     set_tests_properties(hdrshot_analyzer_scope_regression_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
   endif()
 
+  add_library(hdrshot_qt_pinned_screenshot STATIC
+    src/ui/qt/pinned_screenshot_window.cpp
+    src/ui/qt/pinned_screenshot_preview.cpp
+    src/platform/qt/qt_pinned_screenshot_controller.cpp)
+  target_link_libraries(hdrshot_qt_pinned_screenshot PUBLIC
+    hdrshot_qt_analyzer_ui hdrshot_analysis_application hdrshot_export_workflow hdrshot_input_mapper)
+  target_include_directories(hdrshot_qt_pinned_screenshot PUBLIC src)
+  hdrshot_enable_warnings(hdrshot_qt_pinned_screenshot)
+  if(BUILD_TESTING)
+    add_executable(hdrshot_pinned_screenshot_tests tests/pinned_screenshot_tests.cpp)
+    target_link_libraries(hdrshot_pinned_screenshot_tests PRIVATE hdrshot_qt_pinned_screenshot hdrshot_analysis_cpu)
+    target_include_directories(hdrshot_pinned_screenshot_tests PRIVATE tests)
+    hdrshot_enable_warnings(hdrshot_pinned_screenshot_tests)
+    add_test(NAME hdrshot_pinned_screenshot_tests COMMAND hdrshot_pinned_screenshot_tests)
+    set_tests_properties(hdrshot_pinned_screenshot_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    add_executable(hdrshot_source_presentation_tests tests/source_presentation_tests.cpp)
+    target_link_libraries(hdrshot_source_presentation_tests PRIVATE hdrshot_qt_pinned_screenshot hdrshot_analysis_cpu)
+    target_include_directories(hdrshot_source_presentation_tests PRIVATE tests)
+    hdrshot_enable_warnings(hdrshot_source_presentation_tests)
+    add_test(NAME hdrshot_source_presentation_tests COMMAND hdrshot_source_presentation_tests)
+    set_tests_properties(hdrshot_source_presentation_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+  endif()
+
   add_library(hdrshot_freetype_text_rasterizer STATIC
     src/platform/freetype/freetype_text_rasterizer_port.cpp
   )
@@ -415,6 +443,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
 
   add_library(hdrshot_qt_overlay_ui STATIC
     src/ui/qt/overlay_editor_widget.cpp
+    src/ui/qt/save_success_feedback.cpp
   )
   target_link_libraries(hdrshot_qt_overlay_ui
     PUBLIC hdrshot_annotation_model hdrshot_annotation_rasterizer hdrshot_geometry hdrshot_input_mapper hdrshot_capture_session hdrshot_export_workflow hdrshot_analysis_core Qt6::Widgets
@@ -443,6 +472,12 @@ if(HDRSHOT_ENABLE_QT_HOST)
 
   if(BUILD_TESTING)
     add_executable(hdrshot_qt_overlay_host_tests tests/qt_overlay_host_tests.cpp)
+    add_executable(hdrshot_save_success_feedback_tests tests/save_success_feedback_tests.cpp)
+    target_link_libraries(hdrshot_save_success_feedback_tests PRIVATE hdrshot_qt_overlay_ui)
+    target_include_directories(hdrshot_save_success_feedback_tests PRIVATE tests)
+    hdrshot_enable_warnings(hdrshot_save_success_feedback_tests)
+    add_test(NAME hdrshot_save_success_feedback_tests COMMAND hdrshot_save_success_feedback_tests)
+    set_tests_properties(hdrshot_save_success_feedback_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     target_link_libraries(hdrshot_qt_overlay_host_tests PRIVATE hdrshot_qt_overlay_ui hdrshot_interaction_controller)
     target_include_directories(hdrshot_qt_overlay_host_tests PRIVATE tests)
     hdrshot_enable_warnings(hdrshot_qt_overlay_host_tests)
@@ -759,6 +794,14 @@ if(APPLE)
     target_include_directories(hdrshot_macos_qt_input_platform_adapter PUBLIC src)
     hdrshot_enable_warnings(hdrshot_macos_qt_input_platform_adapter)
 
+    add_library(hdrshot_macos_qt_pinned_screenshot STATIC
+      src/platform/macos/macos_qt_pinned_screenshot.mm)
+    target_compile_options(hdrshot_macos_qt_pinned_screenshot PRIVATE -fobjc-arc)
+    target_link_libraries(hdrshot_macos_qt_pinned_screenshot PUBLIC
+      hdrshot_qt_pinned_screenshot hdrshot_macos_analysis hdrshot_macos_export_pixel_processor
+      "-framework AppKit")
+    hdrshot_enable_warnings(hdrshot_macos_qt_pinned_screenshot)
+
     add_library(hdrshot_macos_qt_analyzer STATIC
       src/platform/macos/macos_qt_analyzer_controller.mm)
     target_compile_options(hdrshot_macos_qt_analyzer PRIVATE -fobjc-arc)
@@ -766,6 +809,24 @@ if(APPLE)
       hdrshot_qt_analyzer_ui hdrshot_macos_analysis hdrshot_macos_export_pixel_processor)
     hdrshot_enable_warnings(hdrshot_macos_qt_analyzer)
     if(BUILD_TESTING)
+      add_executable(hdrshot_macos_pinned_screenshot_tests tests/macos_pinned_screenshot_tests.mm)
+      target_compile_options(hdrshot_macos_pinned_screenshot_tests PRIVATE -fobjc-arc)
+      target_link_libraries(hdrshot_macos_pinned_screenshot_tests PRIVATE hdrshot_macos_qt_pinned_screenshot)
+      target_include_directories(hdrshot_macos_pinned_screenshot_tests PRIVATE tests)
+      hdrshot_enable_warnings(hdrshot_macos_pinned_screenshot_tests)
+      add_test(NAME hdrshot_macos_pinned_screenshot_tests COMMAND hdrshot_macos_pinned_screenshot_tests)
+      # This target dereferences native NSViews. The shared Qt test preset uses
+      # offscreen, whose opaque window IDs must never be treated as NSViews.
+      set_tests_properties(hdrshot_macos_pinned_screenshot_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=cocoa" SKIP_RETURN_CODE 77 TIMEOUT 30)
+      add_executable(hdrshot_macos_source_presentation_tests tests/macos_source_presentation_tests.mm)
+      target_compile_options(hdrshot_macos_source_presentation_tests PRIVATE -fobjc-arc)
+      target_link_libraries(hdrshot_macos_source_presentation_tests PRIVATE
+        hdrshot_qt_pinned_screenshot hdrshot_macos_analysis hdrshot_analysis_cpu)
+      target_include_directories(hdrshot_macos_source_presentation_tests PRIVATE tests)
+      hdrshot_enable_warnings(hdrshot_macos_source_presentation_tests)
+      add_test(NAME hdrshot_macos_source_presentation_tests COMMAND hdrshot_macos_source_presentation_tests)
+      set_tests_properties(hdrshot_macos_source_presentation_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
       add_executable(hdrshot_analyzer_ui_native_surface_tests tests/analyzer_ui_native_surface_tests.mm)
       add_executable(hdrshot_analyzer_interaction_probe
         tests/macos_analyzer_interaction_probe.mm)
@@ -799,6 +860,7 @@ if(APPLE)
     target_link_libraries(hdrshot_macos_qt_overlay_poc PRIVATE
       hdrshot_capture_session
       hdrshot_macos_qt_analyzer
+      hdrshot_macos_qt_pinned_screenshot
       hdrshot_headless_capture
       hdrshot_interaction_controller
       hdrshot_multi_display_preview
@@ -919,12 +981,15 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(hdrshot_headless_capture_tests tests/headless_capture_tests.cpp)
-  # Python is optional for test tooling, never a runtime/build requirement.
-  find_package(Python3 QUIET COMPONENTS Interpreter)
+  # Python is required when testing is enabled; it is not an App runtime dependency.
   if(Python3_Interpreter_FOUND)
     add_test(NAME hdrshot_source_identity_tests
       COMMAND "${CMAKE_COMMAND}" -E env "HDRSHOT_TEST_CMAKE=${CMAKE_COMMAND}"
         "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/source_identity_tests.py")
+    if(APPLE)
+      add_test(NAME hdrshot_macos_build_workflow_tests
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/macos_build_workflow_tests.py")
+    endif()
   endif()
   target_link_libraries(hdrshot_headless_capture_tests PRIVATE hdrshot_headless_capture)
   target_include_directories(hdrshot_headless_capture_tests PRIVATE tests)
@@ -1257,8 +1322,10 @@ if(BUILD_TESTING)
       hdrshot_png hdrshot_color "-framework Foundation" "-framework ImageIO" "-framework CoreGraphics")
     target_compile_options(hdrshot_macos_imageio_png_benchmark PRIVATE -fobjc-arc)
     hdrshot_enable_warnings(hdrshot_macos_imageio_png_benchmark)
-    add_test(NAME hdrshot_macos_imageio_png_contract COMMAND hdrshot_macos_imageio_png_benchmark)
-    set_tests_properties(hdrshot_macos_imageio_png_contract PROPERTIES TIMEOUT 60)
+    if(HDRSHOT_TEST_IMAGEIO_PNG_CANDIDATE)
+      add_test(NAME hdrshot_macos_imageio_png_contract COMMAND hdrshot_macos_imageio_png_benchmark)
+      set_tests_properties(hdrshot_macos_imageio_png_contract PROPERTIES TIMEOUT 60 LABELS candidate_imageio_png)
+    endif()
 
     add_executable(
       hdrshot_macos_metal_export_pixel_processor_tests
@@ -1313,6 +1380,13 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(hdrshot_clean_content_tests tests/clean_content_tests.cpp)
+  add_executable(hdrshot_annotation_sparse_tests tests/annotation_sparse_tests.cpp)
+  target_link_libraries(hdrshot_annotation_sparse_tests PRIVATE hdrshot_annotation_rasterizer)
+  target_include_directories(hdrshot_annotation_sparse_tests PRIVATE tests)
+  hdrshot_enable_warnings(hdrshot_annotation_sparse_tests)
+  add_test(NAME hdrshot_annotation_sparse_tests COMMAND hdrshot_annotation_sparse_tests)
+  set_tests_properties(hdrshot_annotation_sparse_tests PROPERTIES TIMEOUT 30)
+
   add_executable(hdrshot_async_clean_content_tests tests/async_clean_content_tests.cpp)
   target_link_libraries(hdrshot_async_clean_content_tests PRIVATE hdrshot_export_workflow)
   target_include_directories(hdrshot_async_clean_content_tests PRIVATE tests)
@@ -1367,7 +1441,52 @@ if(APPLE)
   target_link_libraries(hdrshot_macos_export_pixel_processor PUBLIC hdrshot_macos_linear_storage hdrshot_macos_gpu_source)
 endif()
 
+# Current production performance workloads run with every normal regression.
+# Candidate encoders, parameter sweeps and retired executors remain explicit tools.
+if(BUILD_TESTING)
+  add_test(NAME hdrshot_test_execution_policy_tests
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_execution_policy_tests.py")
+  function(hdrshot_performance name target)
+    add_test(NAME hdrshot_perf_${name} COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/record_performance.py"
+      --name ${name} --root "${CMAKE_BINARY_DIR}/performance"
+      -- "$<TARGET_FILE:${target}>" ${ARGN})
+    set_tests_properties(hdrshot_perf_${name} PROPERTIES LABELS production_performance
+      RUN_SERIAL TRUE TIMEOUT 660 SKIP_RETURN_CODE 77)
+  endfunction()
+  if(APPLE)
+    hdrshot_performance(export_5k hdrshot_macos_export_benchmark --5k)
+    foreach(displays 1 2)
+      foreach(content empty aa)
+        hdrshot_performance(gpu_source_${displays}_${content}
+          hdrshot_macos_gpu_source_benchmark native ${displays} ${content})
+      endforeach()
+    endforeach()
+    if(HDRSHOT_ENABLE_QT_HOST)
+      hdrshot_performance(analysis_5k_6k hdrshot_macos_analysis_tests --benchmark)
+      hdrshot_performance(analysis_retina hdrshot_macos_analysis_tests --benchmark-retina)
+      hdrshot_performance(analysis_detail hdrshot_macos_analysis_tests --benchmark-detail)
+      hdrshot_performance(magnifier_and_annotations hdrshot_macos_magnifier_benchmark "{output}")
+      foreach(mode RANGE 1 10)
+        hdrshot_performance(analyzer_interaction_${mode} hdrshot_analyzer_interaction_probe ${mode} 2048 1280 120 8333)
+        set_tests_properties(hdrshot_perf_analyzer_interaction_${mode} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
+      endforeach()
+      add_test(NAME hdrshot_macos_thumbnail_click_tests COMMAND hdrshot_macos_pinned_screenshot_tests --thumbnail-click-only)
+      set_tests_properties(hdrshot_macos_thumbnail_click_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=cocoa" SKIP_RETURN_CODE 77 TIMEOUT 30 RUN_SERIAL TRUE)
+    endif()
+  endif()
+endif()
+
 if(WIN32 AND BUILD_TESTING AND HDRSHOT_ENABLE_QT_HOST)
+  hdrshot_performance(windows_analysis_6k hdrshot_windows_analysis_tests --6k)
+  hdrshot_performance(windows_annotation_preview hdrshot_windows_overlay_session_tests --annotation-performance)
+  hdrshot_performance(windows_pin_idle hdrshot_windows_pinned_screenshot_tests --idle)
+  set_tests_properties(hdrshot_perf_windows_annotation_preview hdrshot_perf_windows_pin_idle
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows")
+  set_tests_properties(hdrshot_perf_windows_annotation_preview PROPERTIES TIMEOUT 45)
+  set_tests_properties(hdrshot_perf_windows_pin_idle PROPERTIES TIMEOUT 60)
+  set_tests_properties(hdrshot_perf_windows_analysis_6k PROPERTIES TIMEOUT 120)
   # CTest-launched processes need the configured Qt runtime even when their
   # parent shell/preset does not propagate its amended DLL search path.
   get_property(_hdrshot_tests DIRECTORY PROPERTY TESTS)

@@ -1,6 +1,7 @@
 #include "platform/windows/windows_capture.hpp"
 #include "platform/windows/windows_capture_operations.hpp"
 #include "platform/windows/windows_d3d.hpp"
+#include "platform/windows/windows_icc_transform.hpp"
 #include "domain/frame/frame_pipeline.hpp"
 #include "test_support.hpp"
 #include <future>
@@ -10,6 +11,7 @@
 #include <barrier>
 #include <thread>
 #include <stdexcept>
+#include <icm.h>
 #ifdef HDRSHOT_TEST_CAPTURE_LOG_SINK
 #include "platform/qt/qt_session_diagnostics_port.hpp"
 #include <QDir>
@@ -18,6 +20,130 @@
 #endif
 using namespace hdrshot;
 namespace {
+void icc_preparation_falls_back_and_recovers() {
+  using Path = Result<std::string, Error>;
+  using Profile = Result<std::shared_ptr<const WindowsIccProfile>, Error>;
+  WindowsDisplayInfo display;
+  display.device_name = "injected-display";
+  auto error = windows_capture_error("legacy_profile_unavailable", E_ACCESSDENIED);
+  error.safe_context["api"] = "InjectedProfileQuery";
+  error.safe_context["nativeCode"] = "5";
+  int loads = 0;
+  const WindowsIccProfileLoader broken = [&](const std::string& path) {
+    ++loads;
+    HDRSHOT_CHECK(path == "known-broken.icc");
+    return Profile::failure(error);
+  };
+  windows_resolve_display_icc(display, nullptr,
+      [&](const auto&) { return Path::failure(error); }, broken);
+  HDRSHOT_CHECK(display.icc_profile_assumed_srgb && display.icc_path.empty());
+  HDRSHOT_CHECK(display.icc_profile == windows_srgb_icc_profile() && loads == 0);
+  const WindowsIccPathQuery known = [](const auto&) { return Path::success("known-broken.icc"); };
+  windows_resolve_display_icc(display, nullptr, known, broken);
+  HDRSHOT_CHECK(display.icc_profile_assumed_srgb && display.icc_path == "known-broken.icc" && loads == 1);
+  // A distinct successfully parsed system profile clears the assumed marker.
+  const auto real = std::make_shared<const WindowsIccProfile>("recovered_system_profile",
+      display.icc_profile->decode_curves, display.icc_profile->device_to_p3,
+      display.icc_profile->p3_to_device);
+  windows_resolve_display_icc(display, nullptr, known,
+      [&](const auto&) { return Profile::success(real); });
+  HDRSHOT_CHECK(!display.icc_profile_assumed_srgb && display.icc_profile == real);
+  HDRSHOT_CHECK(display.icc_path == "known-broken.icc");
+}
+
+void effective_icc_default_requires_a_successful_system_query() {
+  using Out = Result<std::string, Error>;
+  int fallback_calls = 0;
+  const WindowsIccPathQuery fallback = [&](const std::string& name) {
+    HDRSHOT_CHECK(name == "injected-display");
+    ++fallback_calls;
+    return Out::success("system-returned-default.icm");
+  };
+  const auto injected = [](const char* api, DWORD code) {
+    auto error = windows_capture_error("legacy_profile_unavailable", HRESULT_FROM_WIN32(code));
+    error.safe_context["api"] = api;
+    error.safe_context["nativeCode"] = std::to_string(code);
+    return error;
+  };
+  for (const auto* api : {"WcsGetDefaultColorProfileSize", "WcsGetDefaultColorProfile"}) {
+    const auto missing = injected(api, ERROR_FILE_NOT_FOUND);
+    const auto result = windows_effective_icc_path("injected-display",
+        [&](const auto&) { return Out::failure(missing); }, fallback);
+    HDRSHOT_CHECK(result && result.value() == "system-returned-default.icm");
+    const auto denied = injected(api, ERROR_ACCESS_DENIED);
+    const auto before = fallback_calls;
+    const auto failure = windows_effective_icc_path("injected-display",
+        [&](const auto&) { return Out::failure(denied); }, fallback);
+    HDRSHOT_CHECK(!failure && failure.error() == denied && fallback_calls == before);
+    HDRSHOT_CHECK(failure.error().origin.line() == denied.origin.line());
+  }
+  HDRSHOT_CHECK(fallback_calls == 2);
+  const auto scope_failure = injected("WcsGetUsePerUserProfiles", ERROR_FILE_NOT_FOUND);
+  const auto scoped = windows_effective_icc_path("injected-display",
+      [&](const auto&) { return Out::failure(scope_failure); }, fallback);
+  HDRSHOT_CHECK(!scoped && scoped.error() == scope_failure && fallback_calls == 2);
+  const auto configured = windows_effective_icc_path("injected-display",
+      [](const auto&) { return Out::success("explicit-user-profile.icc"); }, fallback);
+  HDRSHOT_CHECK(configured.value() == "explicit-user-profile.icc" && fallback_calls == 2);
+  const auto missing = injected("WcsGetDefaultColorProfileSize", ERROR_FILE_NOT_FOUND);
+  const auto dc_failure = injected("GetICMProfileW", ERROR_FILE_NOT_FOUND);
+  const auto unavailable = windows_effective_icc_path("injected-display",
+      [&](const auto&) { return Out::failure(missing); },
+      [&](const auto&) { return Out::failure(dc_failure); });
+  HDRSHOT_CHECK(!unavailable && unavailable.error() == dc_failure);
+  HDRSHOT_CHECK(unavailable.error().origin.line() == dc_failure.origin.line());
+}
+
+void real_effective_profiles() {
+  std::size_t displays = 0;
+  for (DWORD index = 0;; ++index) {
+    DISPLAY_DEVICEW display{};
+    display.cb = sizeof(display);
+    if (!EnumDisplayDevicesW(nullptr, index, &display, 0)) break;
+    if (!(display.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) continue;
+    ++displays;
+    const auto name = winrt::to_string(display.DeviceName);
+    // Query the production function directly even when this display is HDR/ACM.
+    const auto effective = windows_effective_icc_path(name);
+    if (!effective) {
+      for (const auto& [key, value] : effective.error().safe_context)
+        std::cout << key << '=' << value << ' ';
+      std::cout << '\n';
+    }
+    HDRSHOT_CHECK(effective.has_value());
+    const auto profile = windows_load_icc_profile(effective.value());
+    HDRSHOT_CHECK(profile.has_value() && profile.value()->sha256.size() == 64);
+    DISPLAY_DEVICEW monitor{};
+    monitor.cb = sizeof(monitor);
+    HDRSHOT_CHECK(EnumDisplayDevicesW(display.DeviceName, 0, &monitor, EDD_GET_DEVICE_INTERFACE_NAME));
+    BOOL per_user = FALSE;
+    HDRSHOT_CHECK(WcsGetUsePerUserProfiles(monitor.DeviceKey, CLASS_MONITOR, &per_user));
+    const auto scope = per_user ? WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
+                               : WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE;
+    DWORD bytes = 0;
+    const bool configured = WcsGetDefaultColorProfileSize(scope, monitor.DeviceKey,
+        CPT_ICC, CPST_NONE, 0, &bytes) != FALSE;
+    const auto code = configured ? ERROR_SUCCESS : GetLastError();
+    std::cout << "device=" << name << " scope=" << (per_user ? "user" : "system")
+        << " explicit_size_code=" << code << " profile=" << effective.value()
+        << " sha256=" << profile.value()->sha256;
+    if (!configured && code == ERROR_FILE_NOT_FOUND) {
+      // An independent fresh DC must confirm the actual Windows default; the
+      // production lookup may not invent an sRGB fallback or a profile path.
+      const auto dc = CreateDCW(L"DISPLAY", display.DeviceName, nullptr, nullptr);
+      HDRSHOT_CHECK(dc != nullptr);
+      struct DcOwner { HDC value; ~DcOwner() { DeleteDC(value); } } owner{dc};
+      DWORD characters = 32768;
+      std::vector<wchar_t> dc_path(characters);
+      HDRSHOT_CHECK(GetICMProfileW(dc, &characters, dc_path.data()));
+      HDRSHOT_CHECK(effective.value() == winrt::to_string(dc_path.data()));
+      std::cout << " dc_default_match=1";
+    }
+    std::cout << '\n';
+  }
+  HDRSHOT_CHECK(displays > 0);
+}
+
 void immutable_catalog() {
   WindowsDisplayInfo display;display.snapshot.id=DisplayId{17};display.snapshot.capture_size_px={200,100};
   auto source=std::make_shared<const std::vector<WindowsDisplayInfo>>(std::vector{display});
@@ -153,6 +279,44 @@ void cleanup_preserves_primary_and_reports_unique_failure() {
   HDRSHOT_CHECK(!allocation.complete(Result<int, Error>::success(1)).error().safe_context.contains("hresult"));
 }
 #ifdef HDRSHOT_TEST_CAPTURE_LOG_SINK
+void icc_fallback_survives_actual_sink() {
+  QTemporaryDir temporary;
+  const auto evidence = qEnvironmentVariable("HDRSHOT_CAPTURE_LOG_EVIDENCE_DIR");
+  const auto root = evidence.isEmpty() ? temporary.path() : QDir(evidence).filePath("icc-fallback");
+  auto error = windows_capture_error("legacy_profile_unavailable", E_ACCESSDENIED);
+  error.safe_context["api"] = "InjectedProfileQuery";
+  error.safe_context["nativeCode"] = "5";
+  for (const bool detailed : {false, true}) {
+    QtSessionDiagnosticsPort log(QDir(root).filePath(detailed ? "detailed" : "simple").toStdString());
+    HDRSHOT_CHECK(log.start("synthetic_icc_fallback", "Windows").has_value());
+    log.set_detailed_logging(detailed);
+    WindowsDisplayInfo display;
+    windows_resolve_display_icc(display, &log,
+        [&](const auto&) { return Result<std::string, Error>::failure(error); });
+    auto parse_error = windows_capture_error("matrix_trc_missing_or_invalid", E_FAIL);
+    parse_error.safe_context["api"] = "InjectedProfileParser";
+    parse_error.safe_context["nativeCode"] = "13";
+    windows_resolve_display_icc(display, &log,
+        [](const auto&) { return Result<std::string, Error>::success("broken.icc"); },
+        [&](const auto&) { return Result<std::shared_ptr<const WindowsIccProfile>, Error>::failure(parse_error); });
+    QFile file(QString::fromStdString(log.exact_path()));
+    HDRSHOT_CHECK(file.open(QIODevice::ReadOnly));
+    const auto bytes = file.readAll();
+    HDRSHOT_CHECK(bytes.contains("assumed_srgb") == detailed);
+    HDRSHOT_CHECK(bytes.contains("InjectedProfileQuery") == detailed);
+    if (detailed) {
+      HDRSHOT_CHECK(bytes.contains("nativeCode=5"));
+      HDRSHOT_CHECK(bytes.contains("nativeCode=13"));
+      HDRSHOT_CHECK(bytes.contains("reason=legacy_profile_unavailable"));
+      HDRSHOT_CHECK(bytes.contains("reason=matrix_trc_missing_or_invalid"));
+      HDRSHOT_CHECK(bytes.contains("api=InjectedProfileParser"));
+      HDRSHOT_CHECK(bytes.contains(QByteArray("windows_capture_tests.cpp:") + QByteArray::number(parse_error.origin.line())));
+      HDRSHOT_CHECK(bytes.contains("fallback"));
+      HDRSHOT_CHECK(bytes.contains(QByteArray("windows_capture_tests.cpp:") + QByteArray::number(error.origin.line())));
+    }
+  }
+}
+
 void injected_boundaries_survive_actual_sink() {
   QTemporaryDir temporary;
   const auto evidence = qEnvironmentVariable("HDRSHOT_CAPTURE_LOG_EVIDENCE_DIR");
@@ -188,6 +352,9 @@ void injected_boundaries_survive_actual_sink() {
 #endif
 }
 int main(int argc, char** argv) {
+  // Read-only hardware query: no capture session or display/settings changes.
+  if (argc == 2 && std::string_view(argv[1]) == "--effective-profiles")
+    return test::run({{"real effective ICC profiles", real_effective_profiles}});
   // Explicit hardware mode; ordinary CTest remains deterministic and private
   // normalized source is not additionally read back and no pixels are written.
   if(argc==2 && std::string_view(argv[1])=="--real-capture") {
@@ -224,7 +391,10 @@ int main(int argc, char** argv) {
     }}});
   }
   return test::run({
+    {"ICC preparation fallback and recovery",icc_preparation_falls_back_and_recovers},
+    {"effective ICC default requires successful system query",effective_icc_default_requires_a_successful_system_query},
 #ifdef HDRSHOT_TEST_CAPTURE_LOG_SINK
+    {"ICC fallback detailed-only actual sink",icc_fallback_survives_actual_sink},
     {"synthetic native boundaries through actual sink",injected_boundaries_survive_actual_sink},
 #endif
     {"native call origin survives future and returned status",native_call_origin_and_integer_identity},

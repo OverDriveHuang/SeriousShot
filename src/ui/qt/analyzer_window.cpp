@@ -6,6 +6,7 @@
 #include "ui/qt/analyzer_layout.hpp"
 #include "ui/qt/analyzer_scope_plot.hpp"
 #include "ui/qt/analyzer_swatch_panel.hpp"
+#include "ui/qt/source_presentation_controller.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -46,37 +47,7 @@
 
 namespace hdrshot {
 namespace {
-class AnalyzerToolButton final : public QToolButton {
-public:
-  using QToolButton::QToolButton;
-protected:
-  void paintEvent(QPaintEvent *event) override {
-    if (popupMode() != QToolButton::MenuButtonPopup || !menu()) {
-      QToolButton::paintEvent(event);
-      return;
-    }
-    QStyleOptionToolButton option;
-    initStyleOption(&option);
-    const QRect arrow = style()->subControlRect(QStyle::CC_ToolButton, &option,
-                                                QStyle::SC_ToolButtonMenu, this);
-    QPainter p(this);
-    // QStyleSheetStyle's SC_ToolButton includes the menu area; its default
-    // label is centred over the entire split button. Paint the label only in
-    // the main action area, keeping QToolButton's native hit/event behaviour.
-    QStyleOptionToolButton background = option;
-    background.icon = {};
-    background.text.clear();
-    style()->drawComplexControl(QStyle::CC_ToolButton, &background, &p, this);
-    QStyleOptionToolButton label = option;
-    label.rect.setRight(arrow.left() - 1);
-    style()->drawControl(QStyle::CE_ToolButtonLabel, &label, &p, this);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(isEnabled() ? QColor("#d6dbe3") : QColor("#747982"),
-                  1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    const QPointF c = QRectF(arrow).center();
-    p.drawPolyline(QPolygonF{c + QPointF(-3, -1), c + QPointF(0, 2), c + QPointF(3, -1)});
-  }
-};
+using AnalyzerToolButton = analyzer_control_style::PressToolButton;
 class AnalyzerComboBox final : public QComboBox {
 public:
   using QComboBox::QComboBox;
@@ -269,10 +240,6 @@ AnalyzerWindow::AnalyzerWindow(analysis::Input input, std::string preferences,
       request_.scopes.histogram_mode == analysis::HistogramMode::parade_adobe)
     request_.scopes.histogram_mode = analysis::HistogramMode::parade_rgb;
   request_timer_ = new QTimer(this);
-  present_timer_ = new QTimer(this);
-  present_timer_->setSingleShot(true);
-  present_timer_->setTimerType(Qt::PreciseTimer);
-  connect(present_timer_, &QTimer::timeout, this, [this] { present_now(); });
   refine_timer_ = new QTimer(this);
   refine_timer_->setSingleShot(true);
   refine_timer_->setInterval(160);
@@ -291,6 +258,19 @@ AnalyzerWindow::AnalyzerWindow(analysis::Input input, std::string preferences,
   connect(request_timer_, &QTimer::timeout, this,
           [this] { dispatch_request(); });
   build_ui();
+  presentation_ = new SourcePresentationController(*this, *source_, [this] {
+    SourcePresentationOptions options;
+    options.settings = request_.settings;
+    options.false_color = false_color_;
+    options.mask = request_.mask;
+    options.include_operation_overlay = true;
+    return options;
+  }, [this](analysis::SourceView view, std::uintptr_t surface) {
+    if (!present_handler_)
+      return false;
+    present_handler_(std::move(view), surface);
+    return true;
+  }, [this] { return bool(present_handler_); });
   // Native macOS styles draw through an NSGraphicsContext, which is absent
   // during report rendering. Scope a pure Qt style to this window and all its
   // children, including future menu/reference/swatch widgets.
@@ -314,7 +294,9 @@ AnalyzerWindow::AnalyzerWindow(analysis::Input input, std::string preferences,
 AnalyzerWindow::~AnalyzerWindow() {
   closed_ = true;
   qApp->removeEventFilter(this);
-  for (auto *timer : {request_timer_, present_timer_, refine_timer_})
+  if (presentation_)
+    presentation_->stop();
+  for (auto *timer : {request_timer_, refine_timer_})
     if (timer)
       timer->stop();
   // Native-child teardown may deliver hide/ungrab events while QWidget removes
@@ -440,6 +422,7 @@ void AnalyzerWindow::build_ui() {
     b->setPopupMode(QToolButton::MenuButtonPopup);
     auto *menu = new QMenu(b);
     menu->addAction(i ? "复制分析图" : "保存分析图", this, [this, i] {
+      if (export_busy_) return;
       export_original_[std::size_t(i)] = false;
       update_export_buttons();
       persist();
@@ -447,6 +430,7 @@ void AnalyzerWindow::build_ui() {
                       : analysis::ExportAction::save_analysis);
     });
     menu->addAction(i ? "复制原截图" : "保存原截图", this, [this, i] {
+      if (export_busy_) return;
       export_original_[std::size_t(i)] = true;
       update_export_buttons();
       persist();
@@ -1149,7 +1133,7 @@ void AnalyzerWindow::dispatch_request() {
     request_handler_(request_);
 }
 void AnalyzerWindow::schedule_refinement() {
-  if (refine_timer_ && !closed_ && wave_ && hist_ && vector_)
+  if (refine_timer_ && !closed_ && !report_mode_ && wave_ && hist_ && vector_)
     refine_timer_->start();
 }
 void AnalyzerWindow::update_scope_resolution() {
@@ -1259,11 +1243,26 @@ void AnalyzerWindow::accept_result(analysis::ResultRef result) {
     status_->hide();
 }
 void AnalyzerWindow::show_error(const QString &message) {
+  status_->setProperty("displayError", false);
   status_->setProperty("analysisError", false);
   status_->setProperty("error", true);
   status_->setStyleSheet("color:#ff7580;");
   status_->setText(message);
   status_->show();
+}
+void AnalyzerWindow::show_display_error(const QString &message) {
+  show_error(message);
+  status_->setProperty("displayError", true);
+}
+void AnalyzerWindow::clear_display_error() {
+  if (!status_->property("displayError").toBool()) return;
+  status_->setProperty("displayError", false);
+  status_->setProperty("error", false);
+  status_->setStyleSheet("color:#abb1bb;");
+  if (result_ && result_->invalid_count) {
+    status_->setText(QString("%1 个非有限样本未参与分析").arg(result_->invalid_count));
+    status_->show();
+  } else status_->hide();
 }
 void AnalyzerWindow::accept_error(std::uint64_t revision,
                                   const QString &message) {
@@ -1273,46 +1272,23 @@ void AnalyzerWindow::accept_error(std::uint64_t revision,
   status_->setProperty("analysisError", true);
 }
 void AnalyzerWindow::set_export_busy(bool busy) {
-  for (auto *b : export_buttons_)
-    b->setEnabled(!busy);
-  if (!busy) {
+  // Fast exports must not flash both buttons through their disabled palette.
+  // Gate actions independently of their visual state, including menu actions.
+  export_busy_ = busy;
+  if (!busy && !status_->property("displayError").toBool()) {
     status_->setProperty("error", false);
     status_->hide();
   }
 }
 analysis::SourceView AnalyzerWindow::source_view() const {
-  const double dpr = source_->devicePixelRatioF();
-  const auto rect = source_->image_rect();
-  analysis::SourceView view;
-  view.target_size = {int(std::lround(source_->width() * dpr)),
-                      int(std::lround(source_->height() * dpr))};
-  view.scale = source_->effective_scale() * dpr;
-  view.offset_x = rect.x() * dpr;
-  view.offset_y = rect.y() * dpr;
-  view.settings = request_.settings;
-  view.false_color = false_color_;
-  view.mask = request_.mask;
-  return view;
+  return presentation_->view();
 }
 void AnalyzerWindow::present() {
-  if (!present_timer_ || closed_ || present_timer_->isActive())
-    return;
-  const double hz = screen() ? screen()->refreshRate() : 60.;
-  const int interval = int(std::ceil(1000. / std::clamp(hz, 30., 120.)));
-  present_timer_->start(interval);
+  refresh_presentation();
 }
-void AnalyzerWindow::present_now() {
-  if (present_handler_ && source_ && isVisible()) {
-    const auto surface = std::uintptr_t(source_->presentation_surface()->winId());
-    auto view = source_view();
-    const QImage marks = source_->presentation_overlay(source_->devicePixelRatioF());
-    if (!operation_overlay_ || operation_overlay_key_ != marks.cacheKey()) {
-      operation_overlay_ = std::make_shared<analysis::UiImage>(ui_image(marks));
-      operation_overlay_key_ = marks.cacheKey();
-    }
-    view.operation_overlay = operation_overlay_;
-    present_handler_(std::move(view), surface);
-  }
+void AnalyzerWindow::refresh_presentation() {
+  if (!closed_ && presentation_)
+    presentation_->request_present();
 }
 void AnalyzerWindow::set_fixture_image(QImage image) {
   source_->set_fixture_image(std::move(image));
@@ -1685,12 +1661,6 @@ bool AnalyzerWindow::cancel_transient() {
   return false;
 }
 bool AnalyzerWindow::eventFilter(QObject *object, QEvent *event) {
-  if (event->type() == QEvent::Expose) {
-    auto *native = qobject_cast<QWindow *>(object);
-    auto *surface = source_ ? source_->findChild<QWidget *>("analyzerSourceSurface") : nullptr;
-    if (native && (native == windowHandle() || (surface && native == surface->windowHandle())))
-      present(); // replay retained view after occlusion/unlock, never reanalyze
-  }
   auto *widget = qobject_cast<QWidget *>(object);
   if (!widget || (widget != this && !isAncestorOf(widget)))
     return QWidget::eventFilter(object, event);
@@ -1699,12 +1669,12 @@ bool AnalyzerWindow::eventFilter(QObject *object, QEvent *event) {
     widget->setProperty("analyzerRasterStyle", true);
     widget->setStyle(analyzer_style_);
   }
-  if (event->type() == QEvent::DevicePixelRatioChange) {
+  if (event->type() == QEvent::DevicePixelRatioChange &&
+      (widget == this || widget == wave_ || widget == hist_ || widget == vector_)) {
+    // Chart resolution belongs to the analyzer. Source/native child redraws
+    // are handled independently by SourcePresentationController.
     schedule_refinement();
-    present();
   }
-  if (event->type() == QEvent::WindowActivate || event->type() == QEvent::Show)
-    present();
   if (event->type() == QEvent::KeyPress &&
       static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
     if (!cancel_transient())
@@ -1775,7 +1745,7 @@ void AnalyzerWindow::closeEvent(QCloseEvent *e) {
   }
   closed_ = true;
   request_timer_->stop();
-  present_timer_->stop();
+  presentation_->stop();
   refine_timer_->stop();
   e->accept();
 }
@@ -1827,6 +1797,22 @@ void AnalyzerWindow::update_minimum_height() {
 }
 
 analysis::ReportPlan AnalyzerWindow::report_plan() {
+  report_mode_ = true;
+  setProperty("analyzerReportRender", true);
+  // A target-display failure is screen-only state, including its layout row.
+  // Remove it before measuring the report, then restore the live window below.
+  const bool display_error = status_->property("displayError").toBool();
+  const bool status_hidden = status_->isHidden();
+  const auto activate_layouts = [](auto &&self, QWidget *widget) -> void {
+    if (widget->layout())
+      widget->layout()->activate();
+    for (auto *child : widget->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
+      self(self, child);
+  };
+  if (display_error && !status_hidden) {
+    status_->hide();
+    activate_layouts(activate_layouts, this);
+  }
   const double dpr = devicePixelRatioF();
   analysis::ReportPlan plan;
   plan.revision = result_ ? result_->revision : request_.revision;
@@ -1835,7 +1821,6 @@ analysis::ReportPlan AnalyzerWindow::report_plan() {
   plan.source_rect = {
       int(std::lround(origin.x() * dpr)), int(std::lround(origin.y() * dpr)),
       plan.source_view.target_size.width, plan.source_view.target_size.height};
-  report_mode_ = true;
   if (swatches_)
     swatches_->set_transient_hidden(true);
   const QString gain_draft = gain_->text();
@@ -1869,14 +1854,19 @@ analysis::ReportPlan AnalyzerWindow::report_plan() {
   gain_->setText(gain_draft);
   gain_->setStyleSheet(gain_style);
   source_->set_report_mode(false);
+  if (display_error && !status_hidden) {
+    status_->show();
+    activate_layouts(activate_layouts, this);
+  }
   report_mode_ = false;
+  setProperty("analyzerReportRender", false);
   if (swatches_)
     swatches_->set_transient_hidden(false);
   refresh_readouts();
   return plan;
 }
 void AnalyzerWindow::export_action(analysis::ExportAction action) {
-  if (!export_handler_)
+  if (!export_handler_ || export_busy_)
     return;
   for (auto *button : export_buttons_)
     if (button->menu())
@@ -1915,8 +1905,10 @@ void AnalyzerWindow::export_action(analysis::ExportAction action) {
     status_->setProperty("analysisError", true);
     return;
   }
-  status_->setProperty("error", false);
-  status_->hide();
+  if (!status_->property("displayError").toBool()) {
+    status_->setProperty("error", false);
+    status_->hide();
+  }
   export_handler_(action, original ? analysis::ReportPlan{} : report_plan());
 }
 void AnalyzerWindow::update_export_buttons() {

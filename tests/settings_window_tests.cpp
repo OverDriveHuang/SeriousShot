@@ -31,6 +31,7 @@
 #include <QScrollBar>
 #include <QStyleHints>
 #include <QWindow>
+#include <QVBoxLayout>
 #include <QTabWidget>
 
 #include <cstdio>
@@ -64,6 +65,8 @@ class MemorySettingsStore final : public SettingsStorePort {
     }
     if (patch.detailed_logging) snapshot.detailed_logging = *patch.detailed_logging;
     if (patch.analysis_defaults) snapshot.analysis_defaults = *patch.analysis_defaults;
+    if (patch.pinned_screenshot_defaults)
+      snapshot.pinned_screenshot_defaults = *patch.pinned_screenshot_defaults;
     if (patch.global_capture_hotkey.has_value()) {
       snapshot.global_capture_hotkey = *patch.global_capture_hotkey;
     }
@@ -769,11 +772,153 @@ void detailed_logging_applies_and_rolls_back_on_failure() {
   check->click();
   HDRSHOT_CHECK(!active && !fixture.store.snapshot.detailed_logging && changes==2);
 }
+void pinned_tab_does_not_fill_the_shared_tab_background() {
+  Fixture f;
+  f.window.reload_and_show();
+  auto* tabs = f.window.findChild<QTabWidget*>("settingsTabs");
+  HDRSHOT_CHECK(tabs);
+  tabs->setCurrentIndex(2);
+  QApplication::processEvents();
+  for (const auto* name : {"generalSettingsScrollArea", "analysisSettingsScrollArea",
+                           "pinnedScreenshotSettingsScrollArea"}) {
+    auto* scroll = f.window.findChild<QScrollArea*>(name);
+    HDRSHOT_CHECK(scroll && scroll->widget());
+    HDRSHOT_CHECK(!scroll->autoFillBackground());
+    HDRSHOT_CHECK(!scroll->viewport()->autoFillBackground());
+    HDRSHOT_CHECK(!scroll->widget()->autoFillBackground());
+  }
+}
+
+void pinned_tab_native_parent_background_matches_general() {
+  // Render the actual parent hierarchy: a detached content grab loses the
+  // native tab surface that exposed this regression on macOS.
+  if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return;
+  const auto previous_scheme = QApplication::styleHints()->colorScheme();
+  bool backgrounds_match = true;
+  for (const auto scheme : {Qt::ColorScheme::Light, Qt::ColorScheme::Dark}) {
+    QApplication::styleHints()->setColorScheme(scheme);
+    Fixture f;
+    f.window.reload_and_show();
+    auto* tabs = f.window.findChild<QTabWidget*>("settingsTabs");
+    HDRSHOT_CHECK(tabs);
+    const auto background = [&](int index, const char* name) {
+      tabs->setCurrentIndex(index);
+      QApplication::processEvents();
+      auto* scroll = f.window.findChild<QScrollArea*>(name);
+      HDRSHOT_CHECK(scroll && scroll->widget());
+      const auto point = scroll->viewport()->mapTo(
+          &f.window, QPoint(scroll->viewport()->width() - 4, 3));
+      const auto image = f.window.grab().toImage();
+      return image.pixelColor(QPoint(qRound(point.x() * image.devicePixelRatio()),
+                                    qRound(point.y() * image.devicePixelRatio())));
+    };
+    const auto general = background(0, "generalSettingsScrollArea");
+    const auto pinned = background(2, "pinnedScreenshotSettingsScrollArea");
+    std::printf("native settings blank background scheme=%s general=%s pinned=%s\n",
+        scheme == Qt::ColorScheme::Light ? "light" : "dark",
+        general.name().toUtf8().constData(), pinned.name().toUtf8().constData());
+    backgrounds_match = backgrounds_match && general == pinned;
+  }
+  QApplication::styleHints()->setColorScheme(previous_scheme);
+  HDRSHOT_CHECK(backgrounds_match);
+}
+
+void pinned_tab_copy_and_minimum_layout_match_defaults_contract() {
+  Fixture f;
+  f.window.reload_and_show();
+  auto* tabs = f.window.findChild<QTabWidget*>("settingsTabs");
+  HDRSHOT_CHECK(tabs && tabs->tabText(2) == QStringLiteral("贴图"));
+  tabs->setCurrentIndex(2);
+  auto* title = f.window.findChild<QLabel*>("pinnedScreenshotSectionTitle");
+  auto* group = f.window.findChild<QGroupBox*>("pinnedScreenshotSettingsContainer");
+  auto* topmost = f.window.findChild<QCheckBox*>("pinnedScreenshotAlwaysOnTopCheckBox");
+  auto* edge = f.window.findChild<QComboBox*>("pinnedScreenshotShortEdgeCombo");
+  auto* hint = f.window.findChild<QLabel*>("pinnedScreenshotLogicalPixelHint");
+  auto* note = f.window.findChild<QLabel*>("pinnedScreenshotDefaultsNote");
+  auto* scroll = f.window.findChild<QScrollArea*>("pinnedScreenshotSettingsScrollArea");
+  HDRSHOT_CHECK(title && group && topmost && edge && hint && note && scroll);
+  HDRSHOT_CHECK(title->text() == QStringLiteral("新建贴图默认行为"));
+  HDRSHOT_CHECK(topmost->text().isEmpty());
+  HDRSHOT_CHECK(topmost->accessibleName() == QStringLiteral("默认置顶"));
+  auto* form = qobject_cast<QFormLayout*>(group->layout());
+  HDRSHOT_CHECK(form);
+  auto* topmost_label = qobject_cast<QLabel*>(form->labelForField(topmost));
+  auto* edge_label = qobject_cast<QLabel*>(form->labelForField(edge));
+  HDRSHOT_CHECK(topmost_label && topmost_label->text() == QStringLiteral("默认置顶"));
+  HDRSHOT_CHECK(edge_label && edge_label->text() == QStringLiteral("默认窗口短边"));
+  HDRSHOT_CHECK(hint->text() == QStringLiteral("窗口尺寸使用逻辑像素，适应屏幕缩放。"));
+  HDRSHOT_CHECK(note->text() == QStringLiteral("每张贴图创建后可单独调整大小和置顶状态。"));
+  auto* section = scroll->widget()->layout()->itemAt(0)->layout();
+  HDRSHOT_CHECK(section && section->spacing() == 6);
+  const auto normal_size = f.window.size();
+  for (const auto size : {normal_size, QSize(800, f.window.minimumHeight())}) {
+    f.window.resize(size);
+    QApplication::processEvents();
+    HDRSHOT_CHECK(scroll->horizontalScrollBar()->maximum() == 0);
+    HDRSHOT_CHECK(title->geometry().bottom() < group->geometry().top());
+    HDRSHOT_CHECK(group->geometry().bottom() < note->geometry().top());
+    for (auto* control : {static_cast<QWidget*>(topmost), static_cast<QWidget*>(edge)}) {
+      HDRSHOT_CHECK(control->isVisible());
+      HDRSHOT_CHECK(group->rect().contains(control->geometry()));
+    }
+  }
+  HDRSHOT_CHECK(f.store.save_attempts == 0);
+}
+
+void pinned_tab_persists_future_defaults_and_rolls_back_both_controls() {
+  Fixture f;
+  int applied = 0;
+  SettingsSnapshot observed;
+  f.window.set_applied([&](const SettingsSnapshot& settings) { ++applied; observed = settings; });
+  f.window.reload_and_show();
+  QApplication::processEvents();
+  auto* tabs = f.window.findChild<QTabWidget*>("settingsTabs");
+  HDRSHOT_CHECK(tabs && tabs->count() == 3 && tabs->tabText(2) == "贴图");
+  tabs->setCurrentIndex(2);
+  f.window.resize(f.window.minimumSize());
+  QApplication::processEvents();
+  auto* topmost = f.window.findChild<QCheckBox*>("pinnedScreenshotAlwaysOnTopCheckBox");
+  auto* edge = f.window.findChild<QComboBox*>("pinnedScreenshotShortEdgeCombo");
+  auto* scroll = f.window.findChild<QScrollArea*>("pinnedScreenshotSettingsScrollArea");
+  HDRSHOT_CHECK(topmost && edge && scroll);
+  HDRSHOT_CHECK(topmost->isChecked() && edge->count() == 8 && edge->currentData().toInt() == 500);
+  HDRSHOT_CHECK(edge->currentText() == QStringLiteral("500 px（默认）"));
+  HDRSHOT_CHECK(edge->itemText(0) == QStringLiteral("450 px"));
+  HDRSHOT_CHECK(edge->findData(400) == -1);
+  HDRSHOT_CHECK(f.store.save_attempts == 0 && applied == 0);
+  HDRSHOT_CHECK(topmost->isVisible() && edge->isVisible());
+  HDRSHOT_CHECK(scroll->horizontalScrollBar()->maximum() == 0);
+  HDRSHOT_CHECK(f.window.findChild<QGroupBox*>("pinnedScreenshotSettingsContainer"));
+  topmost->click();
+  HDRSHOT_CHECK(!f.store.snapshot.pinned_screenshot_defaults.always_on_top);
+  HDRSHOT_CHECK(applied == 1 && !observed.pinned_screenshot_defaults.always_on_top);
+  for (int index = 0; index < edge->count(); ++index) {
+    HDRSHOT_CHECK(edge->itemData(index).toInt() == 450 + index * 50);
+    edge->setCurrentIndex(index);
+    HDRSHOT_CHECK(f.store.snapshot.pinned_screenshot_defaults.short_edge == 450 + index * 50);
+  }
+  HDRSHOT_CHECK(applied == 9 && f.store.save_attempts == 9);
+  const auto before = f.store.snapshot;
+  f.store.fail_next_save = true;
+  topmost->click();
+  HDRSHOT_CHECK(!topmost->isChecked() && f.store.snapshot == before && applied == 9);
+  f.store.fail_next_save = true;
+  edge->setCurrentIndex(1);
+  HDRSHOT_CHECK(edge->currentData().toInt() == 800 && f.store.snapshot == before && applied == 9);
+  HDRSHOT_CHECK(f.window.findChild<QLabel*>("settingsStatusLabel")->text().contains("已恢复"));
+  HDRSHOT_CHECK(f.store.snapshot.analysis_defaults == AnalysisDefaults{});
+  HDRSHOT_CHECK(f.store.snapshot.save_format == SaveFormat::png_display_p3_dual_range);
+  f.window.hide();
+  f.window.reload_and_show();
+  HDRSHOT_CHECK(!topmost->isChecked() && edge->currentData().toInt() == 800);
+  HDRSHOT_CHECK(applied == 9 && f.store.save_attempts == 11);
+}
+
 void analysis_tab_defaults_are_shared_independent_and_rollback_immediately() {
   Fixture f;
   f.window.reload_and_show(); QApplication::processEvents();
   auto* tabs=f.window.findChild<QTabWidget*>("settingsTabs");
-  HDRSHOT_CHECK(tabs && tabs->count()==2 && tabs->tabText(0)=="通用" && tabs->tabText(1)=="分析");
+  HDRSHOT_CHECK(tabs && tabs->count()==3 && tabs->tabText(0)=="通用" && tabs->tabText(1)=="分析" && tabs->tabText(2)=="贴图");
   tabs->setCurrentIndex(1); QApplication::processEvents();
   for(const auto* name : {"analysisHdrSpaceCombo","analysisSdrSpaceCombo","analysisWhiteCombo","analysisBlurCombo","analysisSampleCombo","magnifierZoomCombo"})
     HDRSHOT_CHECK(f.window.findChildren<QComboBox*>(name).size()==1);
@@ -908,6 +1053,14 @@ int main(int argc, char** argv) {
     palette.setColor(QPalette::ButtonText, QColor(240, 240, 240));
     application.setPalette(palette);
   }
+  if (argc >= 2 && std::string_view(argv[1]) == "--pinned-settings-regression") {
+    return hdrshot::test::run({
+        {"pinned tab content and viewport preserve shared background", pinned_tab_does_not_fill_the_shared_tab_background},
+        {"pinned tab native parent blank background matches general", pinned_tab_native_parent_background_matches_general},
+        {"pinned tab copy and minimum layout match defaults contract", pinned_tab_copy_and_minimum_layout_match_defaults_contract},
+        {"pinned tab defaults persist immediately and roll back failed changes", pinned_tab_persists_future_defaults_and_rolls_back_both_controls},
+    });
+  }
   const auto screenshot_path = qgetenv("HDRSHOT_SETTINGS_SCREENSHOT");
   if (!screenshot_path.isEmpty()) {
     const int font_id = QFontDatabase::addApplicationFont(
@@ -926,6 +1079,10 @@ int main(int argc, char** argv) {
     }
     fixture.window.reload_and_show();
     QApplication::processEvents();
+    if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_PINNED")) {
+      fixture.window.findChild<QTabWidget*>("settingsTabs")->setCurrentIndex(2);
+      QApplication::processEvents();
+    }
     if (qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS")) {
       fixture.window.findChild<QTabWidget*>("settingsTabs")->setCurrentIndex(1);
       QApplication::processEvents();
@@ -959,7 +1116,8 @@ int main(int argc, char** argv) {
       if(!qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_BOTTOM"))return;
       QApplication::processEvents();
       auto* scroll=fixture.window.findChild<QScrollArea*>(
-          qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS")?"analysisSettingsScrollArea":"generalSettingsScrollArea");
+          qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_PINNED") ? "pinnedScreenshotSettingsScrollArea" :
+          qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_ANALYSIS") ? "analysisSettingsScrollArea" : "generalSettingsScrollArea");
       HDRSHOT_CHECK(scroll);
       scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
       QApplication::processEvents();
@@ -1028,7 +1186,11 @@ int main(int argc, char** argv) {
   return hdrshot::test::run({
       {"general sections share dynamic scroll without overlap", general_sections_scroll_together_without_overlap},
       {"reading selector blank hit area and independent chips", reading_selector_blank_area_opens_menu_and_chips_stay_independent},
-      {"two-tab defaults, separate readings, bounded scroll and error rollback", analysis_tab_defaults_are_shared_independent_and_rollback_immediately},
+      {"pinned tab content and viewport preserve shared background", pinned_tab_does_not_fill_the_shared_tab_background},
+      {"pinned tab native parent blank background matches general", pinned_tab_native_parent_background_matches_general},
+      {"pinned tab copy and minimum layout match defaults contract", pinned_tab_copy_and_minimum_layout_match_defaults_contract},
+      {"pinned tab defaults persist immediately and roll back failed changes", pinned_tab_persists_future_defaults_and_rolls_back_both_controls},
+      {"analysis defaults, separate readings, bounded scroll and error rollback", analysis_tab_defaults_are_shared_independent_and_rollback_immediately},
       {"update footer dynamic states preserve layout and actions", update_footer_states},
       {"detailed log checkbox autosaves and restores on error", detailed_logging_applies_and_rolls_back_on_failure},
       {"fresh settings opens with either legacy flag and close stays closed", fresh_settings_window_ignores_legacy_presentation_flag_and_close_stays_closed},

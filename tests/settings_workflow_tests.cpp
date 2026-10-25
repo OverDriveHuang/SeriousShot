@@ -46,6 +46,8 @@ class RecordingSettingsStore final : public SettingsStorePort {
       return Result<SettingsReceipt, Error>::failure(test_error(
           *save_error, "RecordingSettingsStore", Retryability::after_user_action));
     }
+    if (patch.pinned_screenshot_defaults)
+      snapshot.pinned_screenshot_defaults = *patch.pinned_screenshot_defaults;
     if (patch.global_capture_hotkey.has_value()) {
       snapshot.global_capture_hotkey = *patch.global_capture_hotkey;
     }
@@ -325,6 +327,30 @@ void invalid_completion_action_is_rejected() {
   HDRSHOT_CHECK(settings.patches.empty());
 }
 
+void pinned_defaults_validate_discrete_sizes_and_propagate_save_errors() {
+  RecordingSettingsStore settings;
+  HDRSHOT_CHECK(settings.snapshot.pinned_screenshot_defaults == hdrshot::PinnedScreenshotDefaults{});
+  for (const int edge : {-50, 0, 399, 400, 401, 425, 799, 801, 850}) {
+    const auto invalid = SettingsWorkflow::change_pinned_screenshot_defaults({false, edge}, settings);
+    HDRSHOT_CHECK(!invalid && invalid.error().code == ErrorCode::invalid_input);
+  }
+  HDRSHOT_CHECK(settings.patches.empty());
+  for (int edge = 450; edge <= 800; edge += 50) {
+    const hdrshot::PinnedScreenshotDefaults chosen{edge != 600, edge};
+    const auto saved = SettingsWorkflow::change_pinned_screenshot_defaults(chosen, settings);
+    HDRSHOT_CHECK(saved.has_value());
+    HDRSHOT_CHECK(settings.snapshot.pinned_screenshot_defaults == chosen);
+    HDRSHOT_CHECK(saved.value().settings_revision == settings.snapshot.revision);
+    HDRSHOT_CHECK(!settings.patches.back().analysis_defaults);
+    HDRSHOT_CHECK(!settings.patches.back().save_format);
+  }
+  const auto before = settings.snapshot;
+  settings.save_error = ErrorCode::permission_denied;
+  const auto failed = SettingsWorkflow::change_pinned_screenshot_defaults({false, 500}, settings);
+  HDRSHOT_CHECK(!failed && failed.error().code == ErrorCode::permission_denied);
+  HDRSHOT_CHECK(settings.snapshot == before);
+}
+
 void initial_settings_presentation_is_persisted() {
   RecordingSettingsStore settings;
   HDRSHOT_CHECK(!settings.snapshot.initial_settings_presented);
@@ -340,6 +366,7 @@ void initial_settings_presentation_is_persisted() {
 int main() {
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
+      {"pinned defaults validate every size and propagate persistence failure", pinned_defaults_validate_discrete_sizes_and_propagate_save_errors},
       {"default folder persists only folder", default_folder_persists_only_folder},
       {"hotkey success updates both", hotkey_success_updates_system_then_settings},
       {"hotkey conflict does not persist", hotkey_conflict_does_not_write_settings},

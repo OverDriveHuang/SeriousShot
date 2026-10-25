@@ -10,7 +10,7 @@ target_compile_definitions(hdrshot_windows_icc PRIVATE NOMINMAX WIN32_LEAN_AND_M
 hdrshot_enable_warnings(hdrshot_windows_icc)
 add_library(hdrshot_windows_capture STATIC src/platform/windows/windows_capture.cpp
   src/platform/windows/windows_gpu_source.cpp src/platform/windows/windows_display_mode.cpp)
-target_link_libraries(hdrshot_windows_capture PUBLIC hdrshot_windows_color hdrshot_windows_icc PRIVATE d3d11 dxgi d3dcompiler windowsapp shcore gdi32)
+target_link_libraries(hdrshot_windows_capture PUBLIC hdrshot_windows_color hdrshot_windows_icc PRIVATE d3d11 dxgi d3dcompiler windowsapp shcore gdi32 Mscms)
 target_compile_definitions(hdrshot_windows_capture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 hdrshot_enable_warnings(hdrshot_windows_capture)
 add_executable(hdrshot_windows_capture_probe tools/windows_capture_probe.cpp)
@@ -34,6 +34,13 @@ hdrshot_enable_warnings(hdrshot_windows_d3d_presenter)
 include(cmake/windows_analysis.cmake)
 target_link_libraries(hdrshot_windows_analysis PUBLIC hdrshot_windows_display_transform)
 if(HDRSHOT_ENABLE_QT_HOST)
+  add_library(hdrshot_windows_display_state STATIC
+      src/platform/windows/windows_display_state_service.cpp
+      src/platform/windows/windows_source_display_binding.cpp)
+  target_link_libraries(hdrshot_windows_display_state PUBLIC hdrshot_windows_analysis Qt6::Widgets
+      PRIVATE CoreMessaging windowsapp advapi32)
+  target_compile_definitions(hdrshot_windows_display_state PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  hdrshot_enable_warnings(hdrshot_windows_display_state)
   add_executable(hdrshot_windows_color_roundtrip_probe tools/windows_color_roundtrip_probe.cpp)
   target_link_libraries(hdrshot_windows_color_roundtrip_probe PRIVATE hdrshot_windows_d3d_presenter
       hdrshot_windows_analysis hdrshot_qt_diagnostics Qt6::Core dwmapi dcomp)
@@ -46,9 +53,19 @@ if(HDRSHOT_ENABLE_QT_HOST)
   add_library(hdrshot_windows_qt_analyzer STATIC src/platform/windows/windows_qt_analyzer_controller.cpp)
   target_link_libraries(hdrshot_windows_qt_analyzer PUBLIC hdrshot_analysis_application
       hdrshot_qt_analyzer_ui hdrshot_windows_analysis hdrshot_windows_d3d_export
+      hdrshot_windows_display_state
       hdrshot_qt_overlay_ui hdrshot_qt_diagnostics hdrshot_qt_settings)
   target_compile_definitions(hdrshot_windows_qt_analyzer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   hdrshot_enable_warnings(hdrshot_windows_qt_analyzer)
+  add_library(hdrshot_windows_qt_pinned_screenshot STATIC
+      src/platform/windows/windows_pinned_decoration.cpp
+      src/platform/windows/windows_qt_pinned_screenshot.cpp)
+  target_link_libraries(hdrshot_windows_qt_pinned_screenshot PUBLIC
+      hdrshot_qt_pinned_screenshot hdrshot_windows_analysis hdrshot_windows_color
+      hdrshot_windows_display_state
+      PRIVATE windowsapp CoreMessaging dwmapi dcomp d2d1)
+  target_compile_definitions(hdrshot_windows_qt_pinned_screenshot PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  hdrshot_enable_warnings(hdrshot_windows_qt_pinned_screenshot)
   add_executable(hdrshot_windows_app WIN32 tools/windows_app.cpp
       src/platform/windows/windows_capture_cli.cpp)
   add_executable(hdrshot_windows_icon_writer tools/windows_icon_writer.cpp)
@@ -68,7 +85,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
   target_sources(hdrshot_windows_app PRIVATE "${_hdrshot_windows_rc}")
   set_target_properties(hdrshot_windows_app PROPERTIES OUTPUT_NAME SeriousShot)
   target_link_libraries(hdrshot_windows_app PRIVATE hdrshot_windows_qt_ports hdrshot_windows_d3d_export
-      hdrshot_windows_qt_analyzer hdrshot_headless_capture hdrshot_qt_update
+      hdrshot_windows_qt_analyzer hdrshot_windows_qt_pinned_screenshot hdrshot_headless_capture hdrshot_qt_update
       hdrshot_windows_d3d_presenter hdrshot_capture_session hdrshot_interaction_controller
       hdrshot_multi_display_preview hdrshot_export_workflow hdrshot_ultra_hdr_codec
       hdrshot_qt_overlay_ui hdrshot_qt_settings hdrshot_qt_diagnostics hdrshot_freetype_text_rasterizer Qt6::Widgets)
@@ -79,6 +96,42 @@ if(HDRSHOT_ENABLE_QT_HOST)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/NotoSansSC-VF.ttf"
           "$<TARGET_FILE_DIR:hdrshot_windows_app>/assets/fonts/NotoSansSC-VF.ttf")
   if(BUILD_TESTING)
+    add_executable(hdrshot_windows_source_display_tests tests/windows_source_display_tests.cpp)
+    target_link_libraries(hdrshot_windows_source_display_tests PRIVATE hdrshot_windows_display_state
+        hdrshot_qt_pinned_screenshot hdrshot_analysis_cpu)
+    target_include_directories(hdrshot_windows_source_display_tests PRIVATE tests)
+    target_compile_definitions(hdrshot_windows_source_display_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    hdrshot_enable_warnings(hdrshot_windows_source_display_tests)
+    add_test(NAME hdrshot_windows_source_display_tests COMMAND hdrshot_windows_source_display_tests)
+    set_tests_properties(hdrshot_windows_source_display_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60 RUN_SERIAL TRUE)
+    add_executable(hdrshot_windows_display_state_tests tests/windows_display_state_tests.cpp)
+    target_link_libraries(hdrshot_windows_display_state_tests PRIVATE hdrshot_windows_display_state)
+    target_include_directories(hdrshot_windows_display_state_tests PRIVATE tests)
+    target_compile_definitions(hdrshot_windows_display_state_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    hdrshot_enable_warnings(hdrshot_windows_display_state_tests)
+    add_test(NAME hdrshot_windows_display_state_tests COMMAND hdrshot_windows_display_state_tests)
+    set_tests_properties(hdrshot_windows_display_state_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60)
+    add_executable(hdrshot_windows_exit_safety_tests tests/windows_exit_safety_tests.cpp)
+    target_link_libraries(hdrshot_windows_exit_safety_tests PRIVATE hdrshot_windows_qt_ports
+        hdrshot_qt_pinned_screenshot hdrshot_analysis_cpu hdrshot_export_workflow)
+    target_include_directories(hdrshot_windows_exit_safety_tests PRIVATE tests)
+    target_compile_definitions(hdrshot_windows_exit_safety_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    hdrshot_enable_warnings(hdrshot_windows_exit_safety_tests)
+    add_test(NAME hdrshot_windows_exit_safety_tests COMMAND hdrshot_windows_exit_safety_tests)
+    set_tests_properties(hdrshot_windows_exit_safety_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60 RUN_SERIAL TRUE)
+    add_executable(hdrshot_windows_pinned_screenshot_tests tests/windows_pinned_screenshot_tests.cpp)
+    target_link_libraries(hdrshot_windows_pinned_screenshot_tests PRIVATE
+        hdrshot_windows_qt_pinned_screenshot hdrshot_windows_d3d_export hdrshot_analysis_cpu)
+    target_include_directories(hdrshot_windows_pinned_screenshot_tests PRIVATE tests)
+    target_compile_definitions(hdrshot_windows_pinned_screenshot_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    hdrshot_enable_warnings(hdrshot_windows_pinned_screenshot_tests)
+    add_test(NAME hdrshot_windows_pinned_screenshot_tests COMMAND hdrshot_windows_pinned_screenshot_tests)
+    set_tests_properties(hdrshot_windows_pinned_screenshot_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60 RUN_SERIAL TRUE)
+    add_test(NAME hdrshot_windows_pinned_desktop_tests COMMAND hdrshot_windows_pinned_screenshot_tests --visual)
+    set_tests_properties(hdrshot_windows_pinned_desktop_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
     add_executable(hdrshot_windows_analyzer_hwnd_smoke_tests tests/windows_analyzer_hwnd_smoke_tests.cpp)
     target_link_libraries(hdrshot_windows_analyzer_hwnd_smoke_tests PRIVATE hdrshot_windows_analysis
         hdrshot_qt_analyzer_ui hdrshot_analysis_cpu)
@@ -95,7 +148,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
     set_tests_properties(hdrshot_windows_native_input_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 45)
     add_executable(hdrshot_windows_overlay_session_tests tests/windows_overlay_session_tests.cpp)
     target_link_libraries(hdrshot_windows_overlay_session_tests PRIVATE hdrshot_windows_qt_ports
-        hdrshot_windows_d3d_presenter hdrshot_qt_overlay_ui hdrshot_interaction_controller)
+        hdrshot_windows_d3d_presenter hdrshot_windows_d3d_export hdrshot_qt_overlay_ui hdrshot_interaction_controller)
     target_include_directories(hdrshot_windows_overlay_session_tests PRIVATE tests)
     target_compile_definitions(hdrshot_windows_overlay_session_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     hdrshot_enable_warnings(hdrshot_windows_overlay_session_tests)

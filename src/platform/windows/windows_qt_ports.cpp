@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
+#include "platform/windows/windows_exit_coordinator.hpp"
 #include <QKeyEvent>
 #include <QImage>
 #include <QMouseEvent>
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <sstream>
 
 namespace hdrshot {
@@ -547,8 +549,22 @@ Result<ClipboardReceipt,Error> WindowsClipboardPort::write(const ClipboardWriteR
   }
   return Result<ClipboardReceipt,Error>::success({request.bytes.size(),{png?"image/png":"image/jpeg","text/uri-list"}});
 }
+WindowsFileDialogPort::WindowsFileDialogPort(WindowsExitCoordinator *exit):exit_(exit) {}
 Result<ChooseSavePathOutcome,Error> WindowsFileDialogPort::choose_save_path(const ChooseSavePathRequest& request) {
-  QFileDialog dialog(QApplication::activeWindow(),QStringLiteral("保存截图"),QString::fromUtf8(request.initial_folder));
+  if(exit_ && !exit_->accepting_work())
+    return Result<ChooseSavePathOutcome,Error>::success(UserCancelled{});
+  const QPointer<QWidget> owner=QApplication::activeWindow();
+  // A synchronous stack dialog must never be a QObject child of an editor:
+  // closing one window or destroying its controller may delete that editor
+  // inside exec(). Use native transient ownership only; it owns no C++ object.
+  QFileDialog dialog(nullptr,QStringLiteral("保存截图"),QString::fromUtf8(request.initial_folder));
+  dialog.setObjectName(QStringLiteral("windowsSaveDialog"));
+  if(owner) {
+    (void)dialog.winId();
+    if(owner->windowHandle()) dialog.windowHandle()->setTransientParent(owner->windowHandle());
+    QObject::connect(owner,&QObject::destroyed,&dialog,&QDialog::reject);
+  }
+  auto call=exit_?std::optional<WindowsExitCoordinator::Call>(exit_->enter_dialog(dialog)):std::nullopt;
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   const bool png=request.save_format==SaveFormat::png_display_p3_dual_range;
   dialog.setNameFilter(png?QStringLiteral("PNG 图片 (*.png)"):QStringLiteral("JPEG 图片 (*.jpg)"));

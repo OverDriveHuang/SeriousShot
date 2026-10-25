@@ -7,6 +7,7 @@
 #include "core/result.hpp"
 #include "domain/color/hdr_pq_precision.hpp"
 #include "domain/input/completion_action.hpp"
+#include "domain/pinned_screenshot_defaults.hpp"
 
 #include <cstddef>
 #include <cmath>
@@ -165,12 +166,14 @@ struct SettingsSnapshot {
   bool windows_capture_bypass_sdr_white_enabled{false};
 
   AnalysisDefaults analysis_defaults{};
+  PinnedScreenshotDefaults pinned_screenshot_defaults{};
 
   friend bool operator==(const SettingsSnapshot&, const SettingsSnapshot&) = default;
 };
 
 struct SettingsPatch {
   std::optional<AnalysisDefaults> analysis_defaults;
+  std::optional<PinnedScreenshotDefaults> pinned_screenshot_defaults;
   std::optional<std::string> global_capture_hotkey;
   std::optional<std::string> default_save_folder;
   std::optional<SaveFormat> save_format;

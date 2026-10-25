@@ -2,6 +2,7 @@
 #include "platform/qt/update/qt_update_runtime.hpp"
 #include "application/export_completion_coordinator.hpp"
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
+#include "platform/macos/macos_qt_pinned_screenshot.hpp"
 #include "platform/macos/macos_capture_cli.hpp"
 #include "platform/macos/macos_qt_overlay_window.hpp"
 #include "ui/qt/qt_overlay_host.hpp"
@@ -30,6 +31,7 @@
 #include "platform/qt/qt_settings_store_port.hpp"
 #include "ui/qt/overlay_editor_widget.hpp"
 #include "ui/qt/settings_window.hpp"
+#include "ui/qt/save_success_feedback.hpp"
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -180,8 +182,8 @@ class MacApplicationShell final {
           set_capture_overlays_system_dialog_active(active, display);
         }, hdrshot::ExportCompletionCoordinator::Event{}, diagnostics_.get());
     analyzer_ = std::make_unique<hdrshot::MacQtAnalyzerController>(app_,
-        [this](auto command, auto snapshot, auto completed) {
-          return request_export(command, std::move(snapshot), std::move(completed));
+        [this](auto command, auto snapshot, auto completed, QWidget *source) {
+          return request_export(command, std::move(snapshot), std::move(completed), source);
         }, [this] { return settings_; }, [this](std::string preferences) {
           hdrshot::SettingsPatch patch;
           patch.analyzer_preferences_json = std::move(preferences);
@@ -192,6 +194,14 @@ class MacApplicationShell final {
           }
           else hdrshot::record_diagnostic_failure(diagnostics_.get(), "analysis.preferences", saved.error());
         }, diagnostics_);
+    pinned_ = std::make_unique<hdrshot::QtPinnedScreenshotController>(
+        app_, hdrshot::prepare_macos_pinned_screenshot,
+        hdrshot::make_macos_pinned_window_port(),
+        [this](auto command, auto snapshot, auto completed, QWidget *source) {
+          return request_export(command, std::move(snapshot), std::move(completed), source);
+        }, [this](auto snapshot, auto completed) {
+          analyzer_->open(std::move(snapshot), std::move(completed));
+        }, [this] { return settings_; }, diagnostics_);
     create_tray();
     hotkey_->set_trigger_handler([this] {
       hdrshot::record_diagnostic_stage(diagnostics_.get(), {}, {},
@@ -221,7 +231,7 @@ class MacApplicationShell final {
     auto update_native=hdrshot::update::native_installer();
     auto update_identity=hdrshot::update::runtime_identity(update_native->install_identity());
     updater_=std::make_unique<hdrshot::update::Runtime>(std::move(update_identity),std::move(update_native),
-        [this]{return bool(capture_session_) || export_executor_.pending() || (analyzer_&&analyzer_->has_windows());},[this]{return shutdown();});
+        [this]{return bool(capture_session_) || export_executor_.pending() || (analyzer_&&analyzer_->has_windows()) || (pinned_&&pinned_->has_windows());},[this]{return shutdown();});
     updater_->start();
     show_settings();
     return true;
@@ -241,6 +251,7 @@ class MacApplicationShell final {
       tray_->hide();
     }
     finish_capture();
+    if (pinned_) pinned_->shutdown();
     if (analyzer_) analyzer_->shutdown();
     export_executor_.drain();
     app_.quit();
@@ -369,23 +380,17 @@ class MacApplicationShell final {
           5000);
       return;
     }
-    if (const auto* file = std::get_if<hdrshot::FileReceipt>(
-            &result.value().destination)) {
-      tray_->showMessage(
-          QStringLiteral("SeriousShot 已保存"),
-          QString::fromStdString(file->exact_path),
-          QSystemTrayIcon::Information,
-          2500);
-    }
   }
 
 
   bool request_export(
       const hdrshot::UiCommand command, hdrshot::ExportSnapshot snapshot,
-      QtOverlayHost::ExportCompleted completed) {
+      QtOverlayHost::ExportCompleted completed, QWidget *source) {
+    auto anchor = hdrshot::SaveSuccessFeedback::capture(source);
     return completion_->submit(command, std::move(snapshot),
-        [this, completed = std::move(completed)](QtOverlayHost::ExportResult result) mutable {
+        [this, anchor = std::move(anchor), completed = std::move(completed)](QtOverlayHost::ExportResult result) mutable {
           report_background_export_result(result);
+          save_feedback_.completed(result, std::move(anchor));
           completed(std::move(result));
         });
   }
@@ -431,6 +436,7 @@ class MacApplicationShell final {
     }
     const auto session_id = hdrshot::SessionId{next_session_id_++};
     if (!capture_lifecycle_.begin(session_id)) return;
+    save_feedback_.set_capture_active(true);
     const auto operation_id = hdrshot::OperationId{1};
     const auto initial_selection = hdrshot::SelectionSnapshot{
         1,
@@ -464,6 +470,7 @@ class MacApplicationShell final {
       host->set_diagnostics(diagnostics_);
       host->set_text_rasterizer(text_rasterizer_, text_editor_font_family_);
       host->set_background_clean_composition(export_executor_, export_pixel_processor_);
+      host->set_annotation_preview_optimization(true);
       host->set_finished([this, session_id] { finish_capture(session_id); });
       host->set_interaction_allowed(
           [this, session_id](const hdrshot::DisplayId activated) {
@@ -481,10 +488,13 @@ class MacApplicationShell final {
           [this](
               const hdrshot::UiCommand command,
               hdrshot::ExportSnapshot snapshot,
-              QtOverlayHost::ExportCompleted completed) -> bool {
-            return request_export(command, std::move(snapshot), std::move(completed));
+              QtOverlayHost::ExportCompleted completed, QWidget *source) -> bool {
+            return request_export(command, std::move(snapshot), std::move(completed), source);
           },
           settings_);
+      host->set_pin_requested([this](auto snapshot, auto completed) {
+        pinned_->open(std::move(snapshot), std::move(completed));
+      });
       host->set_analysis_requested([this](auto snapshot, auto completed) {
         analyzer_->open(std::move(snapshot), std::move(completed));
       });
@@ -683,6 +693,7 @@ class MacApplicationShell final {
     display_overlays_.clear();
     capture_.reset();
     catalog_.reset();
+    save_feedback_.set_capture_active(false);
     std::cout << "captureSessionReturnedToResident=1\n";
   }
 
@@ -701,7 +712,9 @@ class MacApplicationShell final {
   hdrshot::SettingsSnapshot settings_{};
   hdrshot::QtExportTaskExecutor export_executor_;
   std::unique_ptr<hdrshot::ExportCompletionCoordinator> completion_;
+  hdrshot::SaveSuccessFeedback save_feedback_;
   std::unique_ptr<hdrshot::MacQtAnalyzerController> analyzer_;
+  std::unique_ptr<hdrshot::QtPinnedScreenshotController> pinned_;
   bool hotkey_registered_{};
   hdrshot::CaptureInteractionSession capture_lifecycle_;
   std::uint64_t next_session_id_{1};

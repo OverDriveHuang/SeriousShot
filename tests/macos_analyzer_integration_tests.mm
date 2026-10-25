@@ -1,15 +1,18 @@
 #include "adapters/shared/libultrahdr_encoder.hpp"
 #include "application/analysis_workflow.hpp"
+#include "domain/analysis/math.hpp"
 #include "platform/macos/macos_analysis_backend.hpp"
 #include "platform/macos/macos_metal_export_pixel_processor.hpp"
 #include "platform/macos/macos_export_ports.hpp"
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
 #include "test_support.hpp"
 #include "ui/qt/analyzer_scope_plot.hpp"
+#include "ui/qt/analyzer_source_view.hpp"
 #include "ui/qt/analyzer_window.hpp"
 #include "ultra_hdr_metadata_test_support.hpp"
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
@@ -20,8 +23,23 @@
 #include <QThread>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <atomic>
 #include <zlib.h>
 #include <cstring>
+
+// Per-instance native fixture. Its failure mode returns an owned, real Metal
+// drawable of the wrong size; successful rendering always uses CAMetalLayer.
+@interface HDRShotRecoveryTestLayer : CAMetalLayer {
+@public
+  std::atomic<bool> wrong_size;
+}
+@property(nonatomic, strong) id<CAMetalDrawable> wrongDrawable;
+@end
+@implementation HDRShotRecoveryTestLayer
+- (id<CAMetalDrawable>)nextDrawable {
+  return wrong_size.load() ? self.wrongDrawable : [super nextDrawable];
+}
+@end
 
 namespace {
 using namespace hdrshot;
@@ -223,7 +241,7 @@ void production_controller_window_export_and_close() {
   std::vector<ExportSnapshot> exports;
   MacQtAnalyzerController controller(
       *qApp,
-      [&](UiCommand, ExportSnapshot snapshot, auto done) {
+      [&](UiCommand, ExportSnapshot snapshot, auto done, QWidget *) {
         exports.push_back(std::move(snapshot));
         ExportReceipt receipt;
         receipt.destination = UserCancelled{};
@@ -296,6 +314,136 @@ void production_controller_window_export_and_close() {
   HDRSHOT_CHECK(settings.analyzer_preferences_json.find("\"white\"") == std::string::npos);
   controller.shutdown();
 }
+void gpu_completion_recovery_is_current_and_acknowledged() {
+  auto backend=make_macos_analysis_backend();HDRSHOT_CHECK(backend.has_value());
+  auto prepared=AnalysisWorkflow::prepare(fixture(),*backend.value().port);
+  HDRSHOT_CHECK(prepared.has_value());
+  auto &presenter=*backend.value().presenter;
+  struct Counters {std::atomic<std::uint64_t> generation{},notifications{};};
+  const auto counters=std::make_shared<Counters>();
+  auto &completion_generation=counters->generation;
+  auto &notifications=counters->notifications;
+  set_macos_analysis_presenter_recovery_callback(presenter,[counters](std::uint64_t generation) {
+    counters->generation=generation;++counters->notifications;
+  });
+  AnalyzerWindow window(prepared.value().input);
+  window.set_close_confirmation([] {return true;});
+  window.resize(1280,720);
+  window.set_present_handler([&](auto view,auto surface) {
+    auto submitted=presenter.present(prepared.value().input,view,surface);
+    HDRSHOT_CHECK(submitted.has_value());
+  });
+  const auto idle=[&] {auto status=macos_analysis_presentation_status(presenter);
+    return !status.worker_active && !status.pending && status.completed_generation==status.requested;};
+  const auto initial_requested=macos_analysis_presentation_status(presenter).requested;
+  window.show();HDRSHOT_CHECK(spin([&] {
+    return macos_analysis_presentation_status(presenter).requested>initial_requested && idle();
+  }));
+  const auto draw=[&] {
+    const auto previous=macos_analysis_presentation_status(presenter).requested;
+    window.refresh_presentation();
+    HDRSHOT_CHECK(spin([&] {
+      return macos_analysis_presentation_status(presenter).requested>previous && idle();
+    }));
+  };
+  HDRSHOT_CHECK(notifications==0); // Normal frames do not enqueue GUI recovery.
+  auto fail=[&] {
+    HDRSHOT_CHECK(!presenter.present(prepared.value().input,window.source_view(),0));
+  };
+  fail();HDRSHOT_CHECK(notifications==0);
+  draw();HDRSHOT_CHECK(notifications>0);
+  const auto old_generation=completion_generation.load();
+  // A newer synchronous failure can arrive before the queued GUI callback.
+  // Reject that stale recovery without consuming the pending recovery state.
+  fail();
+  HDRSHOT_CHECK(!acknowledge_macos_analysis_presenter_recovery(presenter,old_generation));
+  const auto before=notifications.load();
+  draw();HDRSHOT_CHECK(notifications>before);
+  HDRSHOT_CHECK(acknowledge_macos_analysis_presenter_recovery(presenter,completion_generation));
+  const auto acknowledged=notifications.load();
+  draw();
+  HDRSHOT_CHECK(notifications==acknowledged);
+  // Work-pending is an expected scheduling result, not a visible failure.
+  auto view=window.source_view();view.false_color=true;
+  view.settings.reference_white_nits=view.settings.reference_white_nits==203 ? 100 : 203;
+  HDRSHOT_CHECK(analysis::valid_source_view(view));
+  auto pending=presenter.present(prepared.value().input,view,
+      std::uintptr_t(window.source_widget()->presentation_surface()->winId()));
+  HDRSHOT_CHECK(!pending && pending.error().safe_context.at("reason")=="analysis_work_pending");
+  draw();
+  HDRSHOT_CHECK(notifications==acknowledged);
+  window.close();
+  HDRSHOT_CHECK(spin([&]{auto status=macos_analysis_presentation_status(presenter);return !status.worker_active&&!status.pending;}));
+  set_macos_analysis_presenter_recovery_callback(presenter,{});
+}
+void exhausted_retry_publishes_failure_before_new_submission() {
+  auto backend=make_macos_analysis_backend();HDRSHOT_CHECK(backend.has_value());
+  auto prepared=AnalysisWorkflow::prepare(fixture(),*backend.value().port);
+  HDRSHOT_CHECK(prepared.has_value());
+  auto &presenter=*backend.value().presenter;
+  QWidget surface;
+  surface.setAttribute(Qt::WA_NativeWindow);
+  surface.resize(320,240);surface.show();
+  NSView *view=(__bridge NSView *)(void *)surface.winId();
+  view.wantsLayer=YES;
+  CAMetalLayer *donor=[CAMetalLayer layer];
+  donor.device=MTLCreateSystemDefaultDevice();
+  donor.pixelFormat=MTLPixelFormatRGBA16Float;
+  donor.framebufferOnly=NO;donor.allowsNextDrawableTimeout=YES;
+  donor.drawableSize=CGSizeMake(16,16);donor.frame=CGRectMake(0,0,16,16);
+  [view.layer addSublayer:donor];
+  id<CAMetalDrawable> wrong=[donor nextDrawable];
+  HDRSHOT_CHECK(wrong && wrong.texture.width==16 && wrong.texture.height==16);
+  HDRShotRecoveryTestLayer *layer=[HDRShotRecoveryTestLayer layer];
+  layer.name=@"hdrshot.analysis.source";
+  layer.device=donor.device;layer.pixelFormat=MTLPixelFormatRGBA16Float;
+  layer.framebufferOnly=NO;layer.allowsNextDrawableTimeout=YES;
+  layer.wrongDrawable=wrong;layer->wrong_size.store(true);
+  [view.layer addSublayer:layer];
+  struct State {
+    dispatch_semaphore_t release=dispatch_semaphore_create(0);
+    std::atomic<bool> entered{},expected_reason{};
+    std::atomic<std::uint64_t> recovered{};
+  };
+  const auto state=std::make_shared<State>();
+  struct ReleaseOnExit {
+    std::shared_ptr<State> state;
+    bool released{};
+    void release() {if(!released) {released=true;dispatch_semaphore_signal(state->release);}}
+    ~ReleaseOnExit() {release();}
+  } gate{state};
+  set_macos_analysis_presenter_error_callback(presenter,[state](Error error) {
+    const auto reason=error.safe_context.find("reason");
+    state->expected_reason=reason!=error.safe_context.end() && reason->second=="drawable_size_retry_exhausted";
+    if(!state->entered.exchange(true))
+      dispatch_semaphore_wait(state->release,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC));
+  });
+  set_macos_analysis_presenter_recovery_callback(presenter,[state](std::uint64_t generation) {
+    state->recovered=generation;
+  });
+  analysis::SourceView source_view;
+  source_view.target_size={320,240};source_view.scale=1;
+  HDRSHOT_CHECK(presenter.present(prepared.value().input,source_view,std::uintptr_t(surface.winId())).has_value());
+  HDRSHOT_CHECK(spin([&]{return state->entered.load();}));
+  const auto before=macos_analysis_presentation_status(presenter).submitted;
+  layer->wrong_size.store(false);
+  HDRSHOT_CHECK(presenter.present(prepared.value().input,source_view,std::uintptr_t(surface.winId())).has_value());
+  // While failure publication is blocked, a new frame may be queued but must
+  // not start a second worker. Always release before checking the regression.
+  const bool overtook=spin([&]{return macos_analysis_presentation_status(presenter).submitted>before;},1000);
+  gate.release();
+  const bool finished=spin([&] {
+    const auto status=macos_analysis_presentation_status(presenter);
+    return !status.worker_active && !status.pending && status.completed_generation==status.requested && state->recovered>0;
+  });
+  set_macos_analysis_presenter_error_callback(presenter,{});
+  set_macos_analysis_presenter_recovery_callback(presenter,{});
+  surface.close();
+  HDRSHOT_CHECK(state->expected_reason.load());
+  HDRSHOT_CHECK(finished);
+  HDRSHOT_CHECK(acknowledge_macos_analysis_presenter_recovery(presenter,state->recovered));
+  HDRSHOT_CHECK(!overtook);
+}
 } // namespace
 int main(int argc, char **argv) {
   @autoreleasepool {
@@ -306,6 +454,10 @@ int main(int argc, char **argv) {
       return 77;
     return test::run({{"actual PNG/JPEG report and original output",
                        report_and_original_use_real_codecs},
+                      {"GPU recovery is current, acknowledged and error-only",
+                       gpu_completion_recovery_is_current_and_acknowledged},
+                      {"exhausted retry publishes before next submission",
+                       exhausted_retry_publishes_failure_before_new_submission},
                       {"production bridge window/export/settings/close",
                        production_controller_window_export_and_close}});
   }

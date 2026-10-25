@@ -6,6 +6,7 @@
 
 namespace hdrshot {
 class DiagnosticsPort;
+struct WindowsDisplayState;
 struct WindowsAnalysisBackend {
   std::shared_ptr<AnalysisPort> port;
   std::shared_ptr<AnalysisPresenterPort> presenter;
@@ -14,6 +15,7 @@ struct WindowsAnalysisBackend {
 struct WindowsAnalysisPresentationStatus {
   std::uint64_t requested{}, submitted{}, completed{}, failed{}, dropped{};
   std::uint64_t completed_generation{};
+  std::uint64_t display_generation{}, completed_display_generation{};
   bool worker_active{}, pending{};
 };
 
@@ -27,6 +29,13 @@ windows_analysis_presentation_status(const AnalysisPresenterPort &presenter);
 // work. Clearing the handler synchronizes with an in-progress delivery.
 void set_windows_analysis_presenter_error_callback(
     AnalysisPresenterPort &presenter, std::function<void(Error)> callback);
+// Event-driven target invalidation; the worker refreshes only its display LUT.
+void invalidate_windows_analysis_display(AnalysisPresenterPort &presenter);
+// UI-side binding publishes immutable display state. A null snapshot suspends
+// submission until initialization completes; it never causes per-window queries.
+void set_windows_analysis_display_target(AnalysisPresenterPort &presenter,
+    std::uintptr_t surface, std::uintptr_t monitor, std::uint64_t binding_generation,
+    std::shared_ptr<const WindowsDisplayState> state);
 Result<LinearSourceRef, Error>
 windows_analysis_render_offscreen(const analysis::Input &input,
                                   const analysis::SourceView &view);

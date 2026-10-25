@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
@@ -197,14 +198,20 @@ void pending_text_requests_the_fixed_variable_font_instance() {
 }
 
 void explicit_completion_commits_text_and_failure_preserves_input() {
-  for (const auto* action : {"actionSaveDefault", "actionSaveAs", "actionCopy"}) {
+  for (const auto* action : {"actionSaveDefault", "actionSaveAs", "actionCopy",
+                             "actionAnalyze", "actionPinScreenshot"}) {
     Fixture fixture;
+    fixture.widget.set_analysis_available(true);
+    fixture.widget.set_pin_available(true);
     fixture.button("toolText")->click();
     send_drag(fixture.widget, {100, 100}, {350, 180});
     auto* input = fixture.widget.findChild<QLineEdit*>("annotationTextEditor");
     input->setText("new text");
     int completions = 0;
-    fixture.widget.set_action_requested([&](UiCommand) {
+    fixture.widget.set_action_requested([&](UiCommand command) {
+      if (std::string(action) == "actionPinScreenshot") {
+        HDRSHOT_CHECK(command == UiCommand::pin_screenshot);
+      }
       ++completions;
       HDRSHOT_CHECK(fixture.widget.annotations().objects.size() == 1);
       HDRSHOT_CHECK(fixture.widget.annotations().objects.front().text == "new text");
@@ -254,8 +261,11 @@ void pending_input_fixed_keys_do_not_complete_capture() {
 }
 
 void empty_text_completion_and_capture_cancel_do_not_create_objects() {
-  for (const auto* action : {"actionSaveDefault", "actionSaveAs", "actionCopy", "actionCancel"}) {
+  for (const auto* action : {"actionSaveDefault", "actionSaveAs", "actionCopy",
+                             "actionAnalyze", "actionPinScreenshot", "actionCancel"}) {
     Fixture fixture;
+    fixture.widget.set_analysis_available(true);
+    fixture.widget.set_pin_available(true);
     fixture.button("toolText")->click();
     send_drag(fixture.widget, {100, 100}, {350, 180});
     auto* input = fixture.widget.findChild<QLineEdit*>("annotationTextEditor");
@@ -334,9 +344,9 @@ void icon_toolbar_preserves_accessibility_and_scopes_press_feedback_to_actions()
   Fixture fixture;
   constexpr std::array<const char*, 5> tool_names{
       "toolSelect", "toolRectangle", "toolEllipse", "toolArrow", "toolText"};
-  constexpr std::array<const char*, 6> action_names{
+  constexpr std::array<const char*, 8> action_names{
       "actionUndo", "actionRedo", "actionSaveDefault",
-      "actionSaveAs", "actionCopy", "actionCancel"};
+      "actionSaveAs", "actionCopy", "actionAnalyze", "actionPinScreenshot", "actionCancel"};
 
   for (const auto* name : tool_names) {
     const auto* button = fixture.button(name);
@@ -364,8 +374,119 @@ void icon_toolbar_preserves_accessibility_and_scopes_press_feedback_to_actions()
   const bool dark = fixture.widget.palette().color(QPalette::Window).lightness() < 128;
   const auto hover = dark ? QStringLiteral("#4D525A") : QStringLiteral("#CBCED3");
   HDRSHOT_CHECK(toolbar->styleSheet().contains(hover));
-  HDRSHOT_CHECK(toolbar->styleSheet().contains(
-      QStringLiteral("QToolButton:pressed { background: %1; }").arg(hover)));
+  // Rendered state regressions below require distinct hover/pressed colors;
+  // the previous shared hover color is no longer the interaction contract.
+}
+
+void copy_action_has_distinct_rendered_feedback(bool dark) {
+  struct PaletteRestore {
+    QPalette palette=QApplication::palette();
+    ~PaletteRestore() { QApplication::setPalette(palette); }
+  } restore;
+  auto palette=QApplication::palette();
+  palette.setColor(QPalette::Window,dark ? QColor("#26292E") : QColor("#F5F6F8"));
+  QApplication::setPalette(palette);
+  Fixture fixture;
+  auto *button=fixture.button("actionCopy");
+  auto background=[&](bool hover,bool pressed) {
+    button->setAttribute(Qt::WA_UnderMouse,hover);
+    button->setDown(pressed);
+    auto *parent=button->parentWidget();
+    const auto point=button->mapTo(parent,QPoint(3,button->height()/2));
+    const auto image=parent->grab().toImage();
+    // Read the composed background away from the centered glyph.
+    return image.pixelColor(int(point.x()*image.devicePixelRatio()),
+                            int(point.y()*image.devicePixelRatio()));
+  };
+  const auto normal=background(false,false);
+  const auto hover=background(true,false);
+  const auto pressed=background(true,true);
+  std::cout<<"overlay copy "<<(dark ? "dark" : "light")<<" background "
+           <<normal.name().toStdString()<<" / "<<hover.name().toStdString()
+           <<" / "<<pressed.name().toStdString()<<'\n';
+  HDRSHOT_CHECK(normal!=hover);
+  HDRSHOT_CHECK(normal!=pressed);
+  HDRSHOT_CHECK(hover!=pressed);
+  HDRSHOT_CHECK(background(false,false)==normal);
+}
+
+void pin_action_availability_preserves_toolbar_groups_and_dispatches_command() {
+  Fixture fixture;
+  auto* toolbar = fixture.widget.findChild<QFrame*>("editorToolbar");
+  auto* pin = fixture.button("actionPinScreenshot");
+  auto* before_pin = fixture.widget.findChild<QFrame*>("separatorBeforePin");
+  auto* before_cancel = fixture.widget.findChild<QFrame*>("separatorBeforeCancel");
+  HDRSHOT_CHECK(toolbar && before_pin && before_cancel);
+  HDRSHOT_CHECK(pin->isHidden() && before_pin->isHidden());
+  HDRSHOT_CHECK(before_cancel->isVisible());
+  const auto original_width = toolbar->width();
+
+  fixture.widget.set_pin_available(true);
+  HDRSHOT_CHECK(pin->isVisible() && before_pin->isVisible());
+  HDRSHOT_CHECK(toolbar->width() > original_width);
+  HDRSHOT_CHECK(fixture.button("actionAnalyze")->isHidden());
+  HDRSHOT_CHECK(pin->toolTip() == QStringLiteral("新建贴图窗口"));
+  HDRSHOT_CHECK(pin->accessibleName() == QStringLiteral("新建贴图窗口"));
+  HDRSHOT_CHECK(pin->property("toolbarSymbol").toString() == "pin_create");
+  HDRSHOT_CHECK(!pin->isCheckable());
+  HDRSHOT_CHECK(pin->size() == QSize(38, 38));
+  for (auto* separator : {before_pin, before_cancel}) {
+    HDRSHOT_CHECK(separator->frameShape() == QFrame::VLine);
+    HDRSHOT_CHECK(separator->property("toolbarSeparator").toBool());
+    HDRSHOT_CHECK(separator->isVisible());
+  }
+
+  fixture.widget.set_analysis_available(true);
+  const std::vector<QString> expected{
+      "toolSelect", "separatorAfterSelect", "toolRectangle", "toolEllipse",
+      "toolArrow", "toolText", "separatorBeforeUndo", "actionUndo", "actionRedo",
+      "separatorBeforeAnalyze", "actionAnalyze", "separatorBeforeSave",
+      "actionSaveDefault", "actionSaveAs", "actionCopy", "separatorBeforePin",
+      "actionPinScreenshot", "separatorBeforeCancel", "actionCancel"};
+  std::vector<QString> actual;
+  for (int index = 0; index < toolbar->layout()->count(); ++index) {
+    const auto* item = toolbar->layout()->itemAt(index)->widget();
+    HDRSHOT_CHECK(item && item->isVisible());
+    actual.push_back(item->objectName());
+  }
+  HDRSHOT_CHECK(actual == expected);
+  HDRSHOT_CHECK(fixture.button("actionCopy")->property("primary").toBool());
+  HDRSHOT_CHECK(fixture.button("actionAnalyze")->property("analysisAction").toBool());
+  HDRSHOT_CHECK(fixture.button("actionCancel")->property("cancelAction").toBool());
+
+  int calls = 0;
+  fixture.widget.set_action_requested([&](UiCommand command) {
+    HDRSHOT_CHECK(command == UiCommand::pin_screenshot);
+    ++calls;
+  });
+  fixture.widget.setEnabled(false);
+  HDRSHOT_CHECK(!pin->isEnabled());
+  pin->click();
+  HDRSHOT_CHECK(calls == 0);
+  fixture.widget.setEnabled(true);
+  pin->click();
+  HDRSHOT_CHECK(calls == 1);
+  HDRSHOT_CHECK(!pin->isChecked());
+
+  fixture.widget.set_pin_available(false);
+  HDRSHOT_CHECK(pin->isHidden() && before_pin->isHidden());
+  HDRSHOT_CHECK(before_cancel->isVisible());
+  HDRSHOT_CHECK(fixture.button("actionAnalyze")->isVisible());
+  fixture.widget.set_analysis_available(false);
+  HDRSHOT_CHECK(toolbar->width() == original_width);
+}
+
+void pin_action_requires_a_committed_selection() {
+  TestInputPlatformAdapter input_platform;
+  SolidTextRasterizer text_rasterizer;
+  OverlayEditorWidget widget({1000, 600}, 1.0, &text_rasterizer, "", input_platform,
+                             {1, {}});
+  widget.set_pin_available(true);
+  int calls = 0;
+  widget.set_action_requested([&](UiCommand) { ++calls; });
+  widget.findChild<QToolButton*>("actionPinScreenshot")->click();
+  HDRSHOT_CHECK(calls == 0);
+  HDRSHOT_CHECK(widget.selection().desktop_rect.empty());
 }
 
 void fixed_keys_are_interpreted_by_the_injected_platform_adapter() {
@@ -954,6 +1075,49 @@ void leaving_candidate_clears_preview_without_touching_selection() {
   QApplication::sendEvent(&fixture.widget, &enter);
   HDRSHOT_CHECK(!fixture.widget.initial_highlight().rect.empty());
 }
+void annotation_moves_coalesce_and_release_keeps_final_coordinate() {
+  TestInputPlatformAdapter input;
+  SolidTextRasterizer text;
+  OverlayEditorWidget editor({600, 400}, 1.0, &text, "", input,
+                             {1, {0, 0, 600, 400}});
+  editor.resize(600, 400);
+  editor.set_clean_content_presented(true);
+  editor.set_annotation_preview_coalescing(true);
+  editor.show();
+  QApplication::processEvents();
+  int previews = 0;
+  editor.set_preview_changed([&](auto&, auto&, auto) { ++previews; });
+  editor.findChild<QToolButton*>("toolArrow")->click();
+  const auto mouse = [&](QEvent::Type type, QPointF p) {
+    QMouseEvent e(
+        type, p, p, type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+        type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(&editor, &e);
+  };
+  mouse(QEvent::MouseButtonPress, {60, 60});
+  for (int i = 0; i < 10; ++i)
+    mouse(QEvent::MouseMove, {double(100 + i * 10), double(90 + i * 5)});
+  HDRSHOT_CHECK(previews == 0);
+  QApplication::processEvents();
+  HDRSHOT_CHECK(previews == 1);
+  mouse(QEvent::MouseMove, {250, 170});
+  mouse(QEvent::MouseButtonRelease, {350, 220});
+  HDRSHOT_CHECK(editor.annotations().objects.size() == 1);
+  HDRSHOT_CHECK((editor.annotations().objects.front().arrow_geometry->end ==
+                 PixelPoint{350, 220}));
+  const auto committed = previews;
+  QApplication::processEvents();
+  HDRSHOT_CHECK(previews == committed);
+  mouse(QEvent::MouseButtonPress, {100, 100});
+  mouse(QEvent::MouseMove, {400, 250});
+  editor.interrupt_pointer_gesture();
+  const auto interrupted = previews;
+  QApplication::processEvents();
+  HDRSHOT_CHECK(previews == interrupted);
+  HDRSHOT_CHECK(editor.annotations().objects.size() == 1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -980,6 +1144,8 @@ int main(int argc, char** argv) {
         "",
         input_platform,
         SelectionSnapshot{SelectionRevision{1}, PixelRect{140, 90, 680, 330}}};
+    widget.set_analysis_available(true);
+    widget.set_pin_available(true);
     widget.resize(1000, 600);
     widget.show();
     QApplication::processEvents();
@@ -1017,35 +1183,75 @@ int main(int argc, char** argv) {
     }
   }
   return hdrshot::test::run({
-      {"rotation commits exact pose in one undo",rotation_gesture_commits_exact_preview_and_one_history_step},
-      {"rotation at Retina and capture-loss retry",rotation_at_retina_scale_and_cancel_retry},
-      {"rotation hot band respects other objects",rotation_hot_zone_does_not_steal_other_objects_or_controls},
-      {"rotated crop uses coverage not old local bounds",rotated_crop_can_shrink_past_unrotated_bounds_and_keep_editing},
-      {"initial crosshair needs no mouse input", initial_cursor_is_crosshair_without_move_or_press},
-      {"manual fallback crosshair transitions on release", initial_cursor_covers_manual_fallback_and_release},
-      {"window candidate is not exportable until release", window_hover_is_not_a_selection_or_export_and_click_confirms},
-      {"manual window gesture and lost-capture retry", window_manual_drag_uses_anchor_and_cancel_allows_retry},
-      {"leaving a candidate clears only preview", leaving_candidate_clears_preview_without_touching_selection},
-      {"drawing cursor stays out of toolbar and properties", drawing_cursor_does_not_leak_into_controls},
-      {"preview retains grayscale annotation coverage", preview_preserves_partial_coverage},
-      {"pending input requests fixed wght instance", pending_text_requests_the_fixed_variable_font_instance},
-      {"pending text explicit completion is transactional", explicit_completion_commits_text_and_failure_preserves_input},
-      {"input focus blocks fixed completion", pending_input_fixed_keys_do_not_complete_capture},
-      {"empty text and cancellation do not add objects", empty_text_completion_and_capture_cancel_do_not_create_objects},
-      {"pending text owns property changes", pending_text_owns_property_changes_and_empty_input_is_discarded},
-      {"selection properties and toolbar separators", selected_object_exposes_its_own_units_and_toolbar_has_group_separators},
-      {"icon toolbar accessibility and press feedback", icon_toolbar_preserves_accessibility_and_scopes_press_feedback_to_actions},
-      {"fixed keys use injected platform adapter", fixed_keys_are_interpreted_by_the_injected_platform_adapter},
-      {"configured completion actions reach shell", configured_enter_and_double_click_actions_reach_the_shell},
-      {"annotations use capture coordinates", annotations_use_capture_coordinates_and_drag_is_clamped_to_selection},
-      {"target lock rejects second display", interaction_gate_rejects_a_second_display_after_target_lock},
-      {"selection changes only from border", one_selection_changes_only_from_its_border},
-      {"selected annotations resize and constrain crop", selected_annotations_resize_and_crop_cannot_exclude_them},
-      {"rectangle and ellipse keep all resize handles", rectangle_and_ellipse_keep_all_eight_resize_handles},
-      {"invalid selection candidate preserves drawing", invalid_selection_candidate_does_not_poison_later_drawing},
-      {"preview rerasterizes only adjusted object", previews_rerasterize_only_the_adjusted_object_and_rebase_selection},
-      {"selected annotation move is clamped", selected_annotation_moves_without_moving_selection_and_is_clamped},
-      {"arrow endpoints and tiny shape guard", arrow_endpoints_move_independently_and_tiny_shapes_are_discarded},
-      {"text finish click is consumed", finishing_text_consumes_the_click_before_another_text_box_can_start},
+      {"latest annotation moves, final release and interruption",
+       annotation_moves_coalesce_and_release_keeps_final_coordinate},
+      {"rotation commits exact pose in one undo",
+       rotation_gesture_commits_exact_preview_and_one_history_step},
+      {"rotation at Retina and capture-loss retry",
+       rotation_at_retina_scale_and_cancel_retry},
+      {"rotation hot band respects other objects",
+       rotation_hot_zone_does_not_steal_other_objects_or_controls},
+      {"rotated crop uses coverage not old local bounds",
+       rotated_crop_can_shrink_past_unrotated_bounds_and_keep_editing},
+      {"initial crosshair needs no mouse input",
+       initial_cursor_is_crosshair_without_move_or_press},
+      {"manual fallback crosshair transitions on release",
+       initial_cursor_covers_manual_fallback_and_release},
+      {"window candidate is not exportable until release",
+       window_hover_is_not_a_selection_or_export_and_click_confirms},
+      {"manual window gesture and lost-capture retry",
+       window_manual_drag_uses_anchor_and_cancel_allows_retry},
+      {"leaving a candidate clears only preview",
+       leaving_candidate_clears_preview_without_touching_selection},
+      {"drawing cursor stays out of toolbar and properties",
+       drawing_cursor_does_not_leak_into_controls},
+      {"preview retains grayscale annotation coverage",
+       preview_preserves_partial_coverage},
+      {"pending input requests fixed wght instance",
+       pending_text_requests_the_fixed_variable_font_instance},
+      {"pending text explicit completion is transactional",
+       explicit_completion_commits_text_and_failure_preserves_input},
+      {"input focus blocks fixed completion",
+       pending_input_fixed_keys_do_not_complete_capture},
+      {"empty text and cancellation do not add objects",
+       empty_text_completion_and_capture_cancel_do_not_create_objects},
+      {"pending text owns property changes",
+       pending_text_owns_property_changes_and_empty_input_is_discarded},
+      {"selection properties and toolbar separators",
+       selected_object_exposes_its_own_units_and_toolbar_has_group_separators},
+      {"icon toolbar accessibility and press feedback",
+       icon_toolbar_preserves_accessibility_and_scopes_press_feedback_to_actions},
+      {"copy rendered feedback light",
+       [] { copy_action_has_distinct_rendered_feedback(false); }},
+      {"copy rendered feedback dark",
+       [] { copy_action_has_distinct_rendered_feedback(true); }},
+      {"pin toolbar availability, grouping and command",
+       pin_action_availability_preserves_toolbar_groups_and_dispatches_command},
+      {"pin requires committed selection",
+       pin_action_requires_a_committed_selection},
+      {"fixed keys use injected platform adapter",
+       fixed_keys_are_interpreted_by_the_injected_platform_adapter},
+      {"configured completion actions reach shell",
+       configured_enter_and_double_click_actions_reach_the_shell},
+      {"annotations use capture coordinates",
+       annotations_use_capture_coordinates_and_drag_is_clamped_to_selection},
+      {"target lock rejects second display",
+       interaction_gate_rejects_a_second_display_after_target_lock},
+      {"selection changes only from border",
+       one_selection_changes_only_from_its_border},
+      {"selected annotations resize and constrain crop",
+       selected_annotations_resize_and_crop_cannot_exclude_them},
+      {"rectangle and ellipse keep all resize handles",
+       rectangle_and_ellipse_keep_all_eight_resize_handles},
+      {"invalid selection candidate preserves drawing",
+       invalid_selection_candidate_does_not_poison_later_drawing},
+      {"preview rerasterizes only adjusted object",
+       previews_rerasterize_only_the_adjusted_object_and_rebase_selection},
+      {"selected annotation move is clamped",
+       selected_annotation_moves_without_moving_selection_and_is_clamped},
+      {"arrow endpoints and tiny shape guard",
+       arrow_endpoints_move_independently_and_tiny_shapes_are_discarded},
+      {"text finish click is consumed",
+       finishing_text_consumes_the_click_before_another_text_box_can_start},
   });
 }

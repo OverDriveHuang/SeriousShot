@@ -84,13 +84,31 @@ struct AnnotationPixelPlan {
   friend bool operator==(const AnnotationPixelPlan&, const AnnotationPixelPlan&) = default;
 };
 
+// Capture/editor-owned, bounded cache of coverage for integer translations.
+// It stores no platform resources and must only be used on its owner's thread.
+class AnnotationCoverageCache {
+ public:
+  [[nodiscard]] Result<AnnotationCoverageLayer, Error> get(
+      const AnnotationObject& object, PixelSize output);
+  void clear() { entries_.clear(); }
+
+ private:
+  struct Entry {
+    AnnotationObject key;
+    PixelRect clip;
+    AnnotationCoverageLayer layer;
+    int x{}, y{};
+  };
+  std::vector<Entry> entries_;
+};
+
 class AnnotationRenderPlanner {
  public:
   [[nodiscard]] static Result<AnnotationRenderPlan, Error> build(
       const AnnotationDocumentSnapshot& annotations,
-      PixelRect selection_rect_px,
-      double pixels_per_point,
-      TextRasterizerPort* text_rasterizer = nullptr);
+      PixelRect selection_rect_px, double pixels_per_point,
+      TextRasterizerPort* text_rasterizer = nullptr,
+      AnnotationCoverageCache* coverage_cache = nullptr);
 
   [[nodiscard]] static Result<AnnotationRenderPlan, Error> rebase(
       const AnnotationRenderPlan& render_plan,

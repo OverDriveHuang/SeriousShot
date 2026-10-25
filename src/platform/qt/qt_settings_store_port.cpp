@@ -137,6 +137,23 @@ Result<CompletionAction, Error> parse_completion_action(
       {{"field", field}}));
 }
 
+PinnedScreenshotDefaults pinned_defaults_from_settings(const QSettings& settings) {
+  PinnedScreenshotDefaults defaults;
+  // Parse explicitly: QVariant::toBool would turn arbitrary nonempty strings on.
+  const auto topmost = settings.value(QStringLiteral("pinnedScreenshotAlwaysOnTop")).toString();
+  if (topmost == QStringLiteral("true")) defaults.always_on_top = true;
+  else if (topmost == QStringLiteral("false")) defaults.always_on_top = false;
+  bool parsed = false;
+  const auto edge_text = settings.value(QStringLiteral("pinnedScreenshotShortEdge")).toString();
+  const int saved_edge = edge_text.toInt(&parsed);
+  // Legacy 400 cannot be honored for portrait windows with a 450-wide toolbar.
+  const int edge = saved_edge == 400 ? minimum_pinned_screenshot_short_edge : saved_edge;
+  if (parsed && valid_pinned_screenshot_defaults({defaults.always_on_top, edge})) {
+    defaults.short_edge = edge;
+  }
+  return defaults;
+}
+
 #ifdef Q_OS_WIN
 Result<bool, Error> parse_windows_bool(const QSettings& settings, const QString& key) {
   if (settings.contains(key)) {
@@ -300,10 +317,17 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
       windows_gain_enabled,
       windows_bypass_sdr_white_enabled,
       analysis_defaults_from_json(settings.value("analysisDefaults").toString(),analyzer_text),
+      pinned_defaults_from_settings(settings),
   });
 }
 
 Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& patch) {
+  if (patch.pinned_screenshot_defaults &&
+      !valid_pinned_screenshot_defaults(*patch.pinned_screenshot_defaults)) {
+    return Result<SettingsReceipt, Error>::failure(settings_error(
+        ErrorCode::invalid_input, Retryability::never,
+        {{"field", "pinned_screenshot_defaults"}}));
+  }
   if (patch.analysis_defaults && !valid_analysis_defaults(*patch.analysis_defaults))
     return Result<SettingsReceipt, Error>::failure(settings_error(ErrorCode::invalid_input,Retryability::never,{{"field","analysisDefaults"}}));
   if (patch.windows_scrgb_gain && !valid_windows_scrgb_gain(*patch.windows_scrgb_gain))
@@ -366,6 +390,10 @@ Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& pa
   settings.setValue(QStringLiteral("detailedLogging"),
       patch.detailed_logging.value_or(current.value().detailed_logging));
   settings.setValue("analysisDefaults", analysis_defaults_json(patch.analysis_defaults.value_or(current.value().analysis_defaults)));
+  const auto pinned = patch.pinned_screenshot_defaults.value_or(
+      current.value().pinned_screenshot_defaults);
+  settings.setValue(QStringLiteral("pinnedScreenshotAlwaysOnTop"), pinned.always_on_top);
+  settings.setValue(QStringLiteral("pinnedScreenshotShortEdge"), pinned.short_edge);
   settings.setValue(QStringLiteral("analyzerPreferences"), QString::fromStdString(
       patch.analyzer_preferences_json.value_or(current.value().analyzer_preferences_json)));
 #ifdef Q_OS_WIN

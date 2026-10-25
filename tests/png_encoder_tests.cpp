@@ -364,6 +364,34 @@ void adaptive_filters_reduce_structured_rgba16_data() {
   HDRSHOT_CHECK(has_nonzero_filter);
 }
 
+// Preserve production edge cases when the unused ImageIO candidate leaves CTest.
+void streaming_small_and_full_range_odd_images() {
+  for (const auto size : {std::pair{1U,1U}, std::pair{257U,87U}}) {
+    const auto [width,height]=size;
+    std::vector<std::uint16_t> expected(std::size_t(width)*height*3);
+    for(std::size_t i=0;i<expected.size();++i)expected[i]=static_cast<std::uint16_t>(i);
+    if(width==1)expected={0,32768,65535};
+    auto encoded=StreamingPngEncoder::encode_16bit_rgb({width,height,
+        PngColorMetadata{kDisplayP3PqFullRange,std::nullopt},
+        [&](std::uint32_t y) {
+          auto begin=expected.begin()+std::ptrdiff_t(y*width*3);
+          return Result<std::vector<std::uint16_t>,Error>::success({begin,begin+width*3});
+        }});
+    HDRSHOT_CHECK(encoded.has_value());
+    std::vector<std::uint8_t> compressed;
+    for(const auto &chunk:parse_chunks(encoded.value().bytes))
+      if(chunk.type=="IDAT")compressed.insert(compressed.end(),chunk.data.begin(),chunk.data.end());
+    const auto stride=std::size_t(width)*6;
+    std::vector<std::uint8_t> filtered((stride+1)*height);
+    auto length=static_cast<uLongf>(filtered.size());
+    HDRSHOT_CHECK(uncompress(filtered.data(),&length,compressed.data(),compressed.size())==Z_OK);
+    HDRSHOT_CHECK(length==filtered.size());
+    const auto decoded=unfilter(filtered,stride,height,6);
+    for(std::size_t i=0;i<expected.size();++i)
+      HDRSHOT_CHECK(((std::uint16_t(decoded[i*2])<<8)|decoded[i*2+1])==expected[i]);
+  }
+}
+
 void streaming_encoder_decodes_exactly_and_never_uses_average_filter() {
   constexpr std::uint32_t width = 4U;
   constexpr std::uint32_t height = 3U;
@@ -593,6 +621,7 @@ void compression_level_switch_preserves_sink_errors() {
 
 int main() {
   return hdrshot::test::run({
+      {"production PNG 1x1 and full-range odd dimensions", streaming_small_and_full_range_odd_images},
       {"D8-STRUCT-001 and D8-PQ-CICP-001", structure_crc_and_cicp_match_reference},
       {"D8-DECODE-001", decode_back_preserves_all_u16_samples},
       {"D8-INVALID-001 sample count", invalid_sample_count_is_rejected},

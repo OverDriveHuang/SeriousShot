@@ -47,6 +47,9 @@ public:
   [[nodiscard]] QPointF local_at(QPointF source) const;
   [[nodiscard]] QRectF sample_bounds(QPointF source, int size) const;
   [[nodiscard]] QWidget *presentation_surface();
+  // Inspect the existing child without creating a native surface or hiding the
+  // fixture overlay. Used only to observe presentation lifecycle events.
+  [[nodiscard]] QWidget *presentation_widget() const { return surface_; }
   [[nodiscard]] bool dragging() const { return pressed_; }
   [[nodiscard]] bool transient_visible() const;
 

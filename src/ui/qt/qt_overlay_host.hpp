@@ -39,7 +39,7 @@ class QtOverlayHost final : public QWidget {
   using ExportResult = hdrshot::Result<hdrshot::ExportReceipt, hdrshot::Error>;
   using ExportCompleted = std::function<void(ExportResult)>;
   using ExportRequested = std::function<bool(
-      hdrshot::UiCommand, hdrshot::ExportSnapshot, ExportCompleted)>;
+      hdrshot::UiCommand, hdrshot::ExportSnapshot, ExportCompleted, QWidget*)>;
   using Finished = std::function<void()>;
   using AnalysisCompleted = std::function<void(Result<bool, Error>)>;
   using AnalysisRequested = std::function<void(ExportSnapshot, AnalysisCompleted)>;
@@ -123,6 +123,11 @@ class QtOverlayHost final : public QWidget {
     if (editor_) editor_->set_analysis_available(static_cast<bool>(analysis_requested_));
   }
 
+  void set_pin_requested(AnalysisRequested callback) {
+    pin_requested_ = std::move(callback);
+    if (editor_) editor_->set_pin_available(static_cast<bool>(pin_requested_));
+  }
+
   void set_interaction_allowed(InteractionAllowed callback) {
     interaction_allowed_ = std::move(callback);
   }
@@ -155,6 +160,9 @@ class QtOverlayHost final : public QWidget {
 
   void set_magnifier_card(std::shared_ptr<MagnifierCardPresenterPort> card) { magnifier_card_ = std::move(card); }
   void* native_magnifier_surface() const { return window_->magnifier_surface(); }
+  void set_annotation_preview_optimization(bool enabled) {
+    annotation_preview_optimization_ = enabled;
+  }
   void set_background_clean_composition(ExportTaskExecutorPort& tasks, std::shared_ptr<CleanCompositionPort> composition) {
     async_clean_cache_ = std::make_unique<AsyncCleanContentCache>(tasks, std::move(composition));
   }
@@ -194,8 +202,11 @@ class QtOverlayHost final : public QWidget {
         input_platform_,
         selection_,
         this);
+    editor_->set_annotation_preview_coalescing(
+        annotation_preview_optimization_);
     editor_->set_clean_content_presented(clean_cache_ != nullptr || async_clean_cache_ != nullptr);
     editor_->set_analysis_available(static_cast<bool>(analysis_requested_));
+    editor_->set_pin_available(static_cast<bool>(pin_requested_));
     editor_->setGeometry(rect());
     editor_->setObjectName(QStringLiteral("overlayEditor"));
     editor_->set_window_candidates(payload.window_snapshot, target_display_id_);
@@ -247,13 +258,15 @@ class QtOverlayHost final : public QWidget {
       }
       if (command != hdrshot::UiCommand::copy_and_close &&
           command != hdrshot::UiCommand::save_default &&
-          command != hdrshot::UiCommand::save_as && command != hdrshot::UiCommand::analyze) {
+          command != hdrshot::UiCommand::save_as && command != hdrshot::UiCommand::analyze &&
+          command != hdrshot::UiCommand::pin_screenshot) {
         return;
       }
       if (exporting_) {
         return;
       }
-      if (command == hdrshot::UiCommand::analyze ? !analysis_requested_ : !export_requested_) {
+      if (command == hdrshot::UiCommand::analyze ? !analysis_requested_ :
+          command == hdrshot::UiCommand::pin_screenshot ? !pin_requested_ : !export_requested_) {
         editor_->show_status(QStringLiteral("导出服务尚未就绪"), true);
         return;
       }
@@ -412,17 +425,18 @@ class QtOverlayHost final : public QWidget {
   void dispatch_completion(UiCommand command, ExportSnapshot snapshot) {
       exporting_ = true;
       const QPointer<QtOverlayHost> guard(this);
-      if (command == hdrshot::UiCommand::analyze) {
+      if (command == hdrshot::UiCommand::analyze || command == hdrshot::UiCommand::pin_screenshot) {
+        const bool pin = command == hdrshot::UiCommand::pin_screenshot;
         editor_->setEnabled(false);
-        editor_->show_status(QStringLiteral("正在准备分析…"), false);
-        analysis_requested_(std::move(snapshot),
-            [guard](Result<bool, Error> result) {
+        editor_->show_status(pin ? QStringLiteral("正在准备贴图…") : QStringLiteral("正在准备分析…"), false);
+        (pin ? pin_requested_ : analysis_requested_)(std::move(snapshot),
+            [guard, pin](Result<bool, Error> result) {
               if (!guard) return;
               guard->exporting_ = false;
               if (result && result.value()) { guard->finish_capture(); return; }
               guard->editor_->setEnabled(true);
-              guard->editor_->show_status(QStringLiteral("分析准备失败，选区和标注已保留"), true);
-              if (!result) record_diagnostic_failure(guard->diagnostics_.get(), "analysis.prepare", result.error());
+              guard->editor_->show_status(pin ? QStringLiteral("贴图准备失败，选区和标注已保留") : QStringLiteral("分析准备失败，选区和标注已保留"), true);
+              if (!result) record_diagnostic_failure(guard->diagnostics_.get(), pin ? "pin.prepare" : "analysis.prepare", result.error());
             });
         return;
       }
@@ -433,7 +447,7 @@ class QtOverlayHost final : public QWidget {
         if (guard != nullptr) {
           guard->handle_export_completed(std::move(result));
         }
-      });
+      }, this);
       if (!dispatched) {
         exporting_ = false; editor_->setEnabled(true);
       }
@@ -671,57 +685,98 @@ class QtOverlayHost final : public QWidget {
     if (async_clean_cache_ && annotation_render_plan_) {
       const auto plan = annotation_render_plan_;
       if (clean_ready_plan_ != plan) {
-        if (clean_pending_plan_ == plan) return;
+        const auto epoch = editor_->annotation_preview_epoch();
+        if (clean_pending_plan_ == plan && clean_pending_epoch_ == epoch)
+          return;
         clean_pending_plan_ = plan;
+        clean_pending_epoch_ = epoch;
+        const auto ticket = ++clean_requested_;
+        const auto saved_selection = selection_;
+        const auto saved_document = annotation_document_;
+        const auto saved_highlight = initial_highlight_;
+        const auto saved_magnifier =
+            magnifier_card_ ? MagnifierPreview{} : magnifier_;
         const QPointer<QtOverlayHost> guard(this);
         const auto source=frozen_desktop_;
-        async_clean_cache_->preview(source, target_display_id_, plan,
-            [guard,plan,source](auto result) {
-          if (!guard || !guard->capture_active_ || guard->frozen_desktop_ != source || guard->annotation_render_plan_ != plan) return;
-          guard->clean_pending_plan_.reset();
-          if (!result) {
-            if(result.error().code!=ErrorCode::operation_cancelled) {
-              guard->editor_->show_status(QStringLiteral("标注合成失败，编辑内容已保留"), true);
-              record_diagnostic_failure(guard->diagnostics_.get(),"overlay.clean_content",result.error());
-            }
-            return;
-          }
-          guard->clean_content_ = std::move(result.value());
-          guard->clean_ready_plan_ = plan;
-          guard->present();
-        });
+        async_clean_cache_->preview(
+            source, target_display_id_, plan,
+            [guard, plan, source, epoch, ticket, saved_selection,
+             saved_document, saved_highlight, saved_magnifier](auto result) {
+              if (!guard || !guard->capture_active_ ||
+                  guard->frozen_desktop_ != source || !guard->editor_)
+                return;
+              if (guard->annotation_preview_optimization_) {
+                if (guard->editor_->annotation_preview_epoch() != epoch ||
+                    guard->annotation_document_.revision !=
+                        saved_document.revision ||
+                    guard->selection_ != saved_selection ||
+                    ticket <= guard->clean_published_)
+                  return;
+              } else if (guard->annotation_render_plan_ != plan)
+                return;
+              if (guard->clean_pending_plan_ == plan &&
+                  guard->clean_pending_epoch_ == epoch)
+                guard->clean_pending_plan_.reset();
+              if (!result) {
+                if (result.error().code != ErrorCode::operation_cancelled) {
+                  guard->editor_->show_status(
+                      QStringLiteral("标注合成失败，编辑内容已保留"), true);
+                  record_diagnostic_failure(guard->diagnostics_.get(),
+                                            "overlay.clean_content",
+                                            result.error());
+                }
+                return;
+              }
+              guard->clean_content_ = std::move(result.value());
+              guard->clean_ready_plan_ = plan;
+              if (guard->annotation_preview_optimization_) {
+                guard->clean_published_ = ticket;
+                guard->publish_preview(hdrshot::PreviewModel{
+                    guard->session_id_, source, saved_selection, saved_document,
+                    hdrshot::OverlayStyle{}, source->display_generation,
+                    saved_highlight, guard->clean_content_, saved_magnifier});
+              } else
+                guard->present();
+            });
         return;
       }
     } else if (!refresh_clean_content()) return;
+    publish_preview(hdrshot::PreviewModel{
+        session_id_,
+        frozen_desktop_,
+        selection_,
+        annotation_document_,
+        hdrshot::OverlayStyle{},
+        frozen_desktop_->display_generation,
+        initial_highlight_,
+        clean_content_,
+        magnifier_card_ ? MagnifierPreview{} : magnifier_,
+    });
+  }
+
+  void publish_preview(hdrshot::PreviewModel model) {
     const auto operation_id = next_operation_id();
     presenter_->present(
         hdrshot::PresentPreviewRequest{
             operation_id,
-            hdrshot::PreviewModel{
-                session_id_,
-                frozen_desktop_,
-                selection_,
-                annotation_document_,
-                hdrshot::OverlayStyle{},
-                frozen_desktop_->display_generation,
-                initial_highlight_,
-                clean_content_,
-                magnifier_card_ ? MagnifierPreview{} : magnifier_,
-            },
+            std::move(model),
             target_display_id_,
         },
         [operation_id, session = session_id_, log = diagnostics_](
             hdrshot::Result<hdrshot::PresentReceipt, hdrshot::Error> result) {
-      if (!result) {
-        if (result.error().code == hdrshot::ErrorCode::operation_cancelled) {
-          return;
-        }
-        std::cerr << "Qt host presentation failed operationId=" << operation_id.value << ' ';
-        hdrshot::record_diagnostic_stage(log.get(), session, operation_id,
-            "overlay", "present", "failure", {}, &result.error());
-        print_overlay_error(result.error());
-      }
-    });
+          if (!result) {
+            if (result.error().code ==
+                hdrshot::ErrorCode::operation_cancelled) {
+              return;
+            }
+            std::cerr << "Qt host presentation failed operationId="
+                      << operation_id.value << ' ';
+            hdrshot::record_diagnostic_stage(log.get(), session, operation_id,
+                                             "overlay", "present", "failure",
+                                             {}, &result.error());
+            print_overlay_error(result.error());
+          }
+        });
   }
 
   [[nodiscard]] hdrshot::OperationId next_operation_id() const {
@@ -744,6 +799,8 @@ class QtOverlayHost final : public QWidget {
   std::shared_ptr<const hdrshot::AnnotationRenderPlan> annotation_render_plan_;
   std::unique_ptr<CleanContentCache> clean_cache_;
   CleanContentRef clean_content_;
+  bool annotation_preview_optimization_{false};
+  std::uint64_t clean_requested_{}, clean_published_{}, clean_pending_epoch_{};
   std::unique_ptr<AsyncCleanContentCache> async_clean_cache_;
   std::shared_ptr<const AnnotationRenderPlan> clean_ready_plan_, clean_pending_plan_;
   hdrshot::PreviewHighlight initial_highlight_{};
@@ -754,6 +811,7 @@ class QtOverlayHost final : public QWidget {
   hdrshot::OverlayEditorWidget* editor_{};
   ExportRequested export_requested_;
   AnalysisRequested analysis_requested_;
+  AnalysisRequested pin_requested_;
   Finished finished_;
   std::shared_ptr<hdrshot::DiagnosticsPort> diagnostics_;
   InteractionAllowed interaction_allowed_;

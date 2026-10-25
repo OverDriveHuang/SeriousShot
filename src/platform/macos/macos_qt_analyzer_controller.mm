@@ -166,8 +166,21 @@ void MacQtAnalyzerController::install(std::shared_ptr<Window> runtime) {
               if (reason != error.safe_context.end() &&
                   reason->second == "drawable_retry_exhausted")
                 return;
-              current->widget->show_error(readable_error(error));
+              current->presenter_error_reported = true;
+              current->widget->show_display_error(readable_error(error));
             });
+      });
+  set_macos_analysis_presenter_recovery_callback(
+      *runtime->backend.presenter, [guard, weak_runtime](std::uint64_t generation) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          const auto current = weak_runtime.lock();
+          if (!guard || !current || !current->widget ||
+              !acknowledge_macos_analysis_presenter_recovery(
+                  *current->backend.presenter, generation))
+            return;
+          current->presenter_error_reported = false;
+          current->widget->clear_display_error();
+        });
       });
   window->set_request_handler([runtime, dispatch,
                                diagnostics](analysis::Request request) {
@@ -220,9 +233,8 @@ void MacQtAnalyzerController::install(std::shared_ptr<Window> runtime) {
       runtime->presenter_error_reported = true;
       record_diagnostic_failure(guard->diagnostics_.get(), "analysis.present",
                                 result.error());
-      runtime->widget->show_error(readable_error(result.error()));
-    } else if (result)
-      runtime->presenter_error_reported = false;
+      runtime->widget->show_display_error(readable_error(result.error()));
+    }
   });
   window->set_preferences_changed([guard](std::string json) {
     if (!guard || guard->shutting_down_)
@@ -307,7 +319,7 @@ void MacQtAnalyzerController::submit_export(
                     if (!result)
                       runtime->widget->show_error(
                           readable_error(result.error()));
-                  });
+                  }, runtime->widget);
 }
 
 void MacQtAnalyzerController::flush_preferences() {

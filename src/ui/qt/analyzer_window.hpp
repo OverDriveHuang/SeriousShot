@@ -22,6 +22,7 @@ namespace hdrshot {
 class AnalyzerSplitPane;
 class AnalyzerScopePlot;
 class AnalyzerSwatchPanel;
+class SourcePresentationController;
 
 class AnalyzerWindow final : public QWidget {
 public:
@@ -38,12 +39,16 @@ public:
   void accept_result(analysis::ResultRef result);
   void accept_error(std::uint64_t revision, const QString &message);
   void show_error(const QString &message);
+  void show_display_error(const QString &message);
+  void clear_display_error();
   void set_export_busy(bool busy);
   [[nodiscard]] analysis::Request current_request() const { return request_; }
   [[nodiscard]] analysis::SourceView source_view() const;
   [[nodiscard]] analysis::ReportPlan report_plan();
   [[nodiscard]] std::string preferences_json() const;
   [[nodiscard]] AnalyzerSourceView *source_widget() const { return source_; }
+  // Replays the current Source only; never schedules analysis or refinement.
+  void refresh_presentation();
   [[nodiscard]] AnalyzerScopePlot *waveform_plot() const { return wave_; }
   [[nodiscard]] AnalyzerScopePlot *histogram_plot() const { return hist_; }
   [[nodiscard]] AnalyzerScopePlot *vectorscope_plot() const { return vector_; }
@@ -85,7 +90,6 @@ private:
   void schedule_refinement();
   void persist();
   void present();
-  void present_now();
   void apply_layout();
   void refresh_readouts();
   void refresh_swatches();
@@ -121,6 +125,7 @@ private:
   bool syncing_{}, report_mode_{}, gesture_active_{}, picker_{}, mask_armed_{},
       ellipse_{}, false_color_{}, closed_{};
   bool readings_pending_{true};
+  bool export_busy_{};
   bool initialized_{}, first_show_{true}, adapting_size_{};
   QSize preferred_size_{1280, 720};
   double scope_gain_{1.};
@@ -167,10 +172,8 @@ private:
   std::array<QToolButton *, 2> export_buttons_{};
   std::array<ReferenceEditor, 2> ref_editors_{};
   QTimer *request_timer_{};
-  QTimer *present_timer_{};
   QTimer *refine_timer_{};
-  qint64 operation_overlay_key_{};
-  std::shared_ptr<const analysis::UiImage> operation_overlay_;
+  SourcePresentationController *presentation_{};
   QStyle *analyzer_style_{};
 };
 } // namespace hdrshot

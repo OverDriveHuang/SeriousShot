@@ -614,7 +614,7 @@ void shared_host_snapshot_dialog_cancel_and_acceptance() {
   int finishes = 0, exports = 0;
   host.set_finished([&] { ++finishes; });
   bool accept = false;
-  host.set_export_requested([&](UiCommand command, ExportSnapshot snapshot, auto done) {
+  host.set_export_requested([&](UiCommand command, ExportSnapshot snapshot, auto done, QWidget *) {
     ++exports;
     HDRSHOT_CHECK(command == UiCommand::save_as);
     HDRSHOT_CHECK(snapshot.frozen_desktop == frozen);
@@ -668,7 +668,7 @@ void first_capture_uses_current_format_snapshot() {
     segment.point_pixel_scale = 1;
     frozen->canonical_segments.push_back(segment);
     int exports = 0;
-    host.set_export_requested([&](UiCommand command, ExportSnapshot snapshot, auto) {
+    host.set_export_requested([&](UiCommand command, ExportSnapshot snapshot, auto, QWidget *) {
       ++exports;
       HDRSHOT_CHECK(command == UiCommand::copy_and_close);
       HDRSHOT_CHECK(snapshot.save_format == format);
@@ -750,7 +750,7 @@ struct RecoveryFixture {
     host->resize(500, 300);
     host->set_finished([this] { ++finishes; });
     host->set_selection_established([this](DisplayId) { ++locks; });
-    host->set_export_requested([this](UiCommand, ExportSnapshot, auto) { ++exports; return false; }, {});
+    host->set_export_requested([this](UiCommand, ExportSnapshot, auto, QWidget *) { ++exports; return false; }, {});
     auto frozen = std::make_shared<FrozenDesktop>();
     frozen->frame_id = {3}; frozen->display_generation = 9;
     CanonicalFrameSegment segment;
@@ -923,6 +923,105 @@ struct CleanTasks final : ExportTaskExecutorPort {
     }
   }
 };
+// Deterministic scheduling: a newer input arrives before the old build
+// callback.
+void continuous_annotation_results_publish_within_their_gesture() {
+  test::TestInputPlatformAdapter input;
+  CleanTasks tasks;
+  QtOverlayHost host(std::make_unique<Window>(), {7}, {1, {0, 0, 500, 300}},
+                     input);
+  host.resize(500, 300);
+  auto source = std::make_shared<FrozenDesktop>();
+  source->frame_id = {3};
+  source->display_generation = 9;
+  CanonicalFrameSegment segment;
+  segment.display_id = {7};
+  segment.size_px = {500, 300};
+  segment.encoding = {ColorPrimaries::display_p3, TransferFunction::linear,
+                      AlphaMode::opaque, 0};
+  segment.rgba_float.assign(500 * 300 * 4, .5F);
+  source->canonical_segments.push_back(std::move(segment));
+  auto presenter = std::make_shared<Presenter>();
+  host.set_background_clean_composition(
+      tasks, std::make_shared<CpuCleanComposition>());
+  host.set_annotation_preview_optimization(true);
+  host.activate_capture({source, {{1}, {1}, {3}, 9, 1, 0}}, presenter,
+                        std::make_shared<std::atomic<std::uint64_t>>(2));
+  QApplication::processEvents();
+  tasks.drain();
+  auto* editor = dynamic_cast<OverlayEditorWidget*>(
+      host.findChild<QWidget*>("overlayEditor"));
+  HDRSHOT_CHECK(editor);
+  const auto mouse = [&](QEvent::Type type, QPointF point) {
+    QMouseEvent e(
+        type, point, point,
+        type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+        type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(editor, &e);
+  };
+  const auto build = [&] {
+    auto work = std::move(tasks.builds);
+    tasks.builds.clear();
+    for (auto& f : work) f();
+  };
+  const auto publish = [&] {
+    auto work = std::move(tasks.callbacks);
+    tasks.callbacks.clear();
+    for (auto& f : work) f();
+  };
+  host.findChild<QToolButton*>("toolArrow")->click();
+  mouse(QEvent::MouseButtonPress, {60, 60});
+  mouse(QEvent::MouseMove, {130, 100});
+  QApplication::processEvents();
+  const auto before = presenter->frames;
+  for (int i = 0; i < 8; ++i) {
+    build();
+    mouse(QEvent::MouseMove, {double(150 + i * 20), double(110 + i * 8)});
+    QApplication::processEvents();
+    publish();
+    HDRSHOT_CHECK(presenter->frames == before + i + 1);
+    HDRSHOT_CHECK(!presenter->last->model.clean_content->owned.empty());
+  }
+  // Reverse callback order: older same-gesture completion cannot replace newer.
+  build();
+  mouse(QEvent::MouseMove, {340, 200});
+  QApplication::processEvents();
+  build();
+  const auto previous = presenter->frames;
+  std::reverse(tasks.callbacks.begin(), tasks.callbacks.end());
+  publish();
+  HDRSHOT_CHECK(presenter->frames == previous + 1);
+  // Interrupt with unchanged document revision: old transient result is
+  // invalid.
+  mouse(QEvent::MouseMove, {360, 220});
+  QApplication::processEvents();
+  build();
+  const auto epoch = editor->annotation_preview_epoch();
+  editor->interrupt_pointer_gesture();
+  HDRSHOT_CHECK(editor->annotation_preview_epoch() > epoch);
+  const auto stopped = presenter->frames;
+  publish();
+  HDRSHOT_CHECK(presenter->frames == stopped);
+  tasks.drain();
+  HDRSHOT_CHECK(presenter->last->model.clean_content->owned.empty());
+  // A new gesture in the same uncommitted document is a separate epoch.
+  mouse(QEvent::MouseButtonPress, {60, 60});
+  mouse(QEvent::MouseMove, {150, 120});
+  QApplication::processEvents();
+  build();
+  mouse(QEvent::MouseButtonPress, {80, 70});
+  const auto restarted = presenter->frames;
+  publish();
+  HDRSHOT_CHECK(presenter->frames == restarted);
+  mouse(QEvent::MouseButtonRelease, {380, 230});
+  tasks.drain();
+  HDRSHOT_CHECK(editor->annotations().objects.size() == 1);
+  HDRSHOT_CHECK(presenter->last->model.annotation_document.revision ==
+                editor->annotations().revision);
+  HDRSHOT_CHECK(!presenter->last->model.clean_content->owned.empty());
+}
+
 void background_publication_ignores_old_document_and_closed_host() {
   test::TestInputPlatformAdapter input;CleanTasks tasks;
   QtOverlayHost host(std::make_unique<Window>(),{7},{1,{0,0,500,300}},input);host.resize(500,300);
@@ -932,6 +1031,7 @@ void background_publication_ignores_old_document_and_closed_host() {
   segment.rgba_float.assign(500*300*4,.5F);source->canonical_segments.push_back(std::move(segment));
   auto presenter=std::make_shared<Presenter>();
   host.set_background_clean_composition(tasks,std::make_shared<CpuCleanComposition>());
+  host.set_annotation_preview_optimization(true);
   host.activate_capture({source,{{1},{1},{3},9,1,0}},presenter,std::make_shared<std::atomic<std::uint64_t>>(2));
   QApplication::processEvents();tasks.drain();
   auto* editor=dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));HDRSHOT_CHECK(editor);
@@ -1021,7 +1121,7 @@ void panel_reuses_controls_and_invalidates_layout_and_theme() {
   panel.show_sample({4,5},{},fields,180,16,false);panel.render(&image);
   HDRSHOT_CHECK(image.pixelColor(1,1)==QColor("#fafafa"));
 }
-void pending_text_exports_final_clean_revision_without_present_completion(bool analyze = false, bool background = false) {
+void pending_text_exports_final_clean_revision_without_present_completion(bool analyze = false, bool background = false, bool pin = false) {
   test::TestInputPlatformAdapter input;
   QtOverlayHost host(std::make_unique<Window>(),{7},{1,{0,0,500,300}},input);
   host.resize(500,300);
@@ -1032,18 +1132,24 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
   auto text=std::make_shared<CountingText>();auto presenter=std::make_shared<DeferredPresenter>();
   CleanTasks tasks;
   host.set_text_rasterizer(text,"fixture");
-  if(background) host.set_background_clean_composition(tasks,std::make_shared<CpuCleanComposition>());
-  else host.set_clean_composition(std::make_shared<CpuCleanComposition>());
+  if (background) {
+    host.set_background_clean_composition(
+        tasks, std::make_shared<CpuCleanComposition>());
+    host.set_annotation_preview_optimization(true);
+  } else
+    host.set_clean_composition(std::make_shared<CpuCleanComposition>());
   std::optional<ExportSnapshot> accepted; int export_count=0;
-  host.set_export_requested([&](UiCommand,ExportSnapshot snapshot,auto done) {
+  host.set_export_requested([&](UiCommand,ExportSnapshot snapshot,auto done,QWidget *) {
     accepted=std::move(snapshot);++export_count;
     ExportReceipt receipt;receipt.destination=UserCancelled{};
     done(Result<ExportReceipt,Error>::success(receipt));return false;
   },SettingsSnapshot{});
-  if(analyze) host.set_analysis_requested([&](ExportSnapshot snapshot,auto done) {
+  auto prepare_action = [&](ExportSnapshot snapshot,QtOverlayHost::AnalysisCompleted done) {
     accepted=std::move(snapshot);++export_count;
     done(Result<bool,Error>::failure({ErrorCode::presenter_failed,"fixture",Retryability::same_input,{}}));
-  });
+  };
+  if(analyze) host.set_analysis_requested(prepare_action);
+  if(pin) host.set_pin_requested(prepare_action);
   host.activate_capture({source,{{1},{1},{3},9,1,0}},presenter,std::make_shared<std::atomic<std::uint64_t>>(2));
   QApplication::processEvents();
   auto* editor=dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));
@@ -1056,25 +1162,26 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
   auto* field=host.findChild<QLineEdit*>("annotationTextEditor");HDRSHOT_CHECK(field!=nullptr);
   field->setText("final text");
   HDRSHOT_CHECK(text->calls==0);
-  host.findChild<QToolButton*>(analyze ? "actionAnalyze" : "actionCopy")->click();
+  host.findChild<QToolButton*>(pin ? "actionPinScreenshot" : analyze ? "actionAnalyze" : "actionCopy")->click();
   if(background) {HDRSHOT_CHECK(!accepted && !editor->isEnabled());tasks.drain();}
   HDRSHOT_CHECK(accepted.has_value() && text->calls==1);
   HDRSHOT_CHECK(accepted->annotations.objects.size()==1 && accepted->clean_content!=nullptr);
   HDRSHOT_CHECK(accepted->clean_document_revision==accepted->annotations.revision);
   HDRSHOT_CHECK(!accepted->clean_content->owned.empty());
   const auto content=accepted->clean_content;
-  host.findChild<QToolButton*>(analyze ? "actionAnalyze" : "actionCopy")->click();
+  host.findChild<QToolButton*>(pin ? "actionPinScreenshot" : analyze ? "actionAnalyze" : "actionCopy")->click();
   if(background) tasks.drain();
   HDRSHOT_CHECK(accepted->clean_content==content && text->calls==1 && export_count==2);
   // Every screen refresh is still pending; export nevertheless owns final content.
   HDRSHOT_CHECK(!presenter->completions.empty());
-  if(analyze) {
+  if(analyze || pin) {
     HDRSHOT_CHECK(host.isVisible() && editor->isEnabled());
     int finished=0;
     QtOverlayHost::AnalysisCompleted done;
     host.set_finished([&] { ++finished; });
-    host.set_analysis_requested([&](ExportSnapshot,auto callback) { done=std::move(callback); });
-    host.findChild<QToolButton*>("actionAnalyze")->click();
+    auto deferred = [&](ExportSnapshot,QtOverlayHost::AnalysisCompleted callback) { done=std::move(callback); };
+    if(pin) host.set_pin_requested(deferred); else host.set_analysis_requested(deferred);
+    host.findChild<QToolButton*>(pin ? "actionPinScreenshot" : "actionAnalyze")->click();
     HDRSHOT_CHECK(finished==0 && !editor->isEnabled());
     if(background) tasks.drain();
     done(Result<bool,Error>::success(true));
@@ -1126,35 +1233,87 @@ int main(int argc, char** argv) {
     if(!native_path.isEmpty()){QImage native(native_path);HDRSHOT_CHECK(!native.isNull());QPainter paint(&pixels);paint.drawImage(QRect(0,CaptureMagnifierPanel::header_height(),216,216),native);}
     HDRSHOT_CHECK(pixels.save(screenshot));return 0;
   }
-  return hdrshot::test::run({
-      {"pending readings retain briefly, expire through motion, replace/fail/hide safely (panel)",[]{host_pending_readings_have_one_bounded_grace(false);}},
-      {"pending readings retain briefly, expire through motion, replace/fail/hide safely (card)",[]{host_pending_readings_have_one_bounded_grace(true);}},
-      {"background old document/closed host publication is ignored",background_publication_ignores_old_document_and_closed_host},
-      {"single card geometry, isolated background and stale completion",card_geometry_content_and_late_callbacks_are_separate},
-      {"magnifier control reuse with layout and theme invalidation",panel_reuses_controls_and_invalidates_layout_and_theme},
-      {"background exact text export retains requested document",[]{pending_text_exports_final_clean_revision_without_present_completion(false,true);}},
-      {"background exact analysis retains requested document",[]{pending_text_exports_final_clean_revision_without_present_completion(true,true);}},
-      {"frozen SDR capture sampler keeps SDR scalar rows with strict ordinary/HDR inputs", sampler_frozen_sdr_provenance_reaches_scalar_rows},
-      {"all magnifier groups retain complete wrapped headings and one scalar per line", magnifier_all_groups_keep_complete_headings_and_scalar_lines},
-      {"host DPR mapping and paired native viewport, same-pixel dedup, off zero work", host_magnifier_pairs_physical_coordinates_and_off_does_no_work},
-      {"magnifier image hole excludes annotation and restores on hide", magnifier_hole_excludes_existing_annotation_during_selection_resize},
-      {"capture defaults freeze white/readings and refresh each new session", magnifier_capture_defaults_are_frozen_and_next_session_reads_new_defaults},
-      {"delayed readback cannot restore hidden, cancelled or destroyed host", magnifier_late_readback_cannot_restore_hidden_cancelled_or_destroyed_host},
-      {"tiny sampler bounds, latest completion and cancellation lifetime", tiny_sampler_coalesces_stale_results_and_releases_cancelled_owners},
-      {"pending text exports final clean revision before async screen completion",[]{pending_text_exports_final_clean_revision_without_present_completion();}},
-      {"analysis commits text, retains failures, waits for ROI handoff",[]{pending_text_exports_final_clean_revision_without_present_completion(true);}},
-      {"shared target lock and late session callbacks", session_target_lock_and_stale_finish_are_shared},
-      {"locked initial editor never offers crosshair", locked_initial_editor_does_not_offer_crosshair},
-      {"recovery consumes full gesture then next click selects", recovery_press_drag_release_cannot_select_and_next_click_can},
-      {"recovery does not pair into completion double click", next_system_double_click_is_ordinary_press_not_export},
-      {"multi-display recovery is consumed once and Esc cancels", recovery_is_shared_across_screens_and_escape_remains_cancel},
-      {"recovery click cannot activate copy child control", first_recovery_click_on_copy_button_does_not_fire_action},
-      {"internal focus transfers and dialogs do not consume normal click", normal_leave_focus_transfer_and_save_dialog_do_not_arm_recovery},
-      {"application deactivation uses shared recovery gate", application_deactivation_enters_same_recovery_gate},
-      {"recovery preserves pending text and discards interrupted drag", recovery_preserves_pending_text_and_cancels_uncommitted_drawing},
-      {"candidate uses native renderer; release locks target", candidate_uses_native_presenter_and_commits_target_only_on_release},
-      {"shared host owns completion lifecycle", shared_host_snapshot_dialog_cancel_and_acceptance},
-      {"first capture reads current format and freezes it", first_capture_uses_current_format_snapshot},
-      {"non-target display permits cancellation", locked_non_target_host_still_allows_escape},
-      {"permission explanation from platform", permission_error_uses_injected_guidance}});
+  return hdrshot::test::run(
+      {{"pending readings retain briefly, expire through motion, "
+        "replace/fail/hide safely (panel)",
+        [] { host_pending_readings_have_one_bounded_grace(false); }},
+       {"pending readings retain briefly, expire through motion, "
+        "replace/fail/hide safely (card)",
+        [] { host_pending_readings_have_one_bounded_grace(true); }},
+       {"continuous annotation publishes monotonic snapshots with gesture "
+        "barriers",
+        continuous_annotation_results_publish_within_their_gesture},
+       {"background old document/closed host publication is ignored",
+        background_publication_ignores_old_document_and_closed_host},
+       {"single card geometry, isolated background and stale completion",
+        card_geometry_content_and_late_callbacks_are_separate},
+       {"magnifier control reuse with layout and theme invalidation",
+        panel_reuses_controls_and_invalidates_layout_and_theme},
+       {"background exact text export retains requested document",
+        [] {
+          pending_text_exports_final_clean_revision_without_present_completion(
+              false, true);
+        }},
+       {"background exact pin commits text, retains failure and hands off once",
+        [] { pending_text_exports_final_clean_revision_without_present_completion(false,true,true); }},
+       {"background exact analysis retains requested document",
+        [] {
+          pending_text_exports_final_clean_revision_without_present_completion(
+              true, true);
+        }},
+       {"frozen SDR capture sampler keeps SDR scalar rows with strict "
+        "ordinary/HDR inputs",
+        sampler_frozen_sdr_provenance_reaches_scalar_rows},
+       {"all magnifier groups retain complete wrapped headings and one scalar "
+        "per line",
+        magnifier_all_groups_keep_complete_headings_and_scalar_lines},
+       {"host DPR mapping and paired native viewport, same-pixel dedup, off "
+        "zero work",
+        host_magnifier_pairs_physical_coordinates_and_off_does_no_work},
+       {"magnifier image hole excludes annotation and restores on hide",
+        magnifier_hole_excludes_existing_annotation_during_selection_resize},
+       {"capture defaults freeze white/readings and refresh each new session",
+        magnifier_capture_defaults_are_frozen_and_next_session_reads_new_defaults},
+       {"delayed readback cannot restore hidden, cancelled or destroyed host",
+        magnifier_late_readback_cannot_restore_hidden_cancelled_or_destroyed_host},
+       {"tiny sampler bounds, latest completion and cancellation lifetime",
+        tiny_sampler_coalesces_stale_results_and_releases_cancelled_owners},
+       {"pending text exports final clean revision before async screen "
+        "completion",
+        [] {
+          pending_text_exports_final_clean_revision_without_present_completion();
+        }},
+       {"analysis commits text, retains failures, waits for ROI handoff",
+        [] {
+          pending_text_exports_final_clean_revision_without_present_completion(
+              true);
+        }},
+       {"shared target lock and late session callbacks",
+        session_target_lock_and_stale_finish_are_shared},
+       {"locked initial editor never offers crosshair",
+        locked_initial_editor_does_not_offer_crosshair},
+       {"recovery consumes full gesture then next click selects",
+        recovery_press_drag_release_cannot_select_and_next_click_can},
+       {"recovery does not pair into completion double click",
+        next_system_double_click_is_ordinary_press_not_export},
+       {"multi-display recovery is consumed once and Esc cancels",
+        recovery_is_shared_across_screens_and_escape_remains_cancel},
+       {"recovery click cannot activate copy child control",
+        first_recovery_click_on_copy_button_does_not_fire_action},
+       {"internal focus transfers and dialogs do not consume normal click",
+        normal_leave_focus_transfer_and_save_dialog_do_not_arm_recovery},
+       {"application deactivation uses shared recovery gate",
+        application_deactivation_enters_same_recovery_gate},
+       {"recovery preserves pending text and discards interrupted drag",
+        recovery_preserves_pending_text_and_cancels_uncommitted_drawing},
+       {"candidate uses native renderer; release locks target",
+        candidate_uses_native_presenter_and_commits_target_only_on_release},
+       {"shared host owns completion lifecycle",
+        shared_host_snapshot_dialog_cancel_and_acceptance},
+       {"first capture reads current format and freezes it",
+        first_capture_uses_current_format_snapshot},
+       {"non-target display permits cancellation",
+        locked_non_target_host_still_allows_escape},
+       {"permission explanation from platform",
+        permission_error_uses_injected_guidance}});
 }

@@ -9,6 +9,8 @@
 #include <QStyleOptionToolButton>
 #include <QString>
 #include <QToolButton>
+#include <QEvent>
+#include <QFocusEvent>
 
 namespace hdrshot::analyzer_control_style {
 
@@ -70,17 +72,87 @@ inline void set_danger_text_button(QToolButton *button) {
   button->setFixedHeight(icon_button_side);
 }
 
+// Paint only the contents at the pressed scale: layout, hit targets, checked
+// borders and neighbouring controls never move. Qt still owns button input.
+class PressToolButton : public QToolButton {
+public:
+  using QToolButton::QToolButton;
+protected:
+  bool report_paint() const {
+    return window()->property("analyzerReportRender").toBool();
+  }
+  void prepare_option(QStyleOptionToolButton &option) const {
+    initStyleOption(&option);
+    if (report_paint()) {
+      option.state &= ~QStyle::State_Sunken;
+      option.activeSubControls = QStyle::SC_None;
+    }
+  }
+  static void press_transform(QPainter &painter, const QRect &area, bool down) {
+    if (!down) return;
+    const auto center = QRectF(area).center();
+    painter.translate(center + QPointF(2., 2.));
+    painter.scale(.85, .85);
+    painter.translate(-center);
+  }
+  bool event(QEvent *event) override {
+    if (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate ||
+        event->type() == QEvent::UngrabMouse ||
+        (event->type() == QEvent::EnabledChange && !isEnabled()) ||
+        (event->type() == QEvent::FocusOut &&
+         static_cast<QFocusEvent *>(event)->reason() != Qt::PopupFocusReason))
+      setDown(false);
+    return QToolButton::event(event);
+  }
+  void paintEvent(QPaintEvent *) override {
+    QStyleOptionToolButton option;
+    prepare_option(option);
+    const bool split = popupMode() == QToolButton::MenuButtonPopup && menu();
+    const QRect arrow = split ? style()->subControlRect(QStyle::CC_ToolButton, &option,
+                                                QStyle::SC_ToolButtonMenu, this) : QRect();
+    const bool down = isEnabled() && !report_paint() &&
+                      (isDown() || option.state.testFlag(QStyle::State_Sunken));
+    const bool menu_down = down && split &&
+                          option.activeSubControls.testFlag(QStyle::SC_ToolButtonMenu);
+    QPainter painter(this);
+    QStyleOptionToolButton background = option;
+    background.icon = {};
+    background.text.clear();
+    style()->drawComplexControl(QStyle::CC_ToolButton, &background, &painter, this);
+    QStyleOptionToolButton label = option;
+    if (split) label.rect.setRight(arrow.left() - 1);
+    // Prevent the style's own pressed label offset being added a second time.
+    label.state &= ~QStyle::State_Sunken;
+    painter.save();
+    painter.setClipRect(label.rect);
+    press_transform(painter, label.rect, down && !menu_down);
+    style()->drawControl(QStyle::CE_ToolButtonLabel, &label, &painter, this);
+    painter.restore();
+    if (split) {
+      painter.save();
+      painter.setClipRect(arrow);
+      press_transform(painter, arrow, menu_down);
+      painter.setRenderHint(QPainter::Antialiasing);
+      painter.setPen(QPen(isEnabled() ? QColor("#d6dbe3") : QColor("#747982"),
+                          1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      const QPointF c = QRectF(arrow).center();
+      painter.drawPolyline(QPolygonF{c + QPointF(-3, -1), c + QPointF(0, 2), c + QPointF(3, -1)});
+      painter.restore();
+    }
+  }
+};
+
 // Keep QToolButton's interaction, accessibility and styled panel, while laying
 // out its icon and text as one centered group. The default TextBesideIcon
 // drawing leaves the group at the left edge under this local QSS.
-class CenteredTextToolButton final : public QToolButton {
+class CenteredTextToolButton final : public PressToolButton {
 public:
-  using QToolButton::QToolButton;
+  using PressToolButton::PressToolButton;
 
 protected:
   void paintEvent(QPaintEvent *) override {
     QStyleOptionToolButton option;
-    initStyleOption(&option);
+    prepare_option(option);
     const QIcon content_icon = option.icon;
     const QString content_text = option.text;
     option.icon = QIcon();
@@ -88,6 +160,8 @@ protected:
 
     QPainter painter(this);
     style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
+    painter.setClipRect(rect());
+    press_transform(painter, rect(), isEnabled() && isDown() && !report_paint());
 
     const int icon_width = iconSize().width();
     const int icon_height = iconSize().height();

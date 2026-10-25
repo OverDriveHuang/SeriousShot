@@ -12,6 +12,81 @@
 
 namespace {
 
+void pinned_defaults_roundtrip_and_invalid_patch_is_atomic() {
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  const auto path = directory.filePath("settings.ini").toStdString();
+  hdrshot::QtSettingsStorePort store(path, "Command+Shift+2", "/Pictures");
+  HDRSHOT_CHECK(store.load().value().pinned_screenshot_defaults == hdrshot::PinnedScreenshotDefaults{});
+  HDRSHOT_CHECK(store.load().value().pinned_screenshot_defaults.short_edge == 500);
+  for (int edge = 450; edge <= 800; edge += 50) {
+    const hdrshot::PinnedScreenshotDefaults chosen{edge % 100 == 0, edge};
+    hdrshot::SettingsPatch patch;
+    patch.pinned_screenshot_defaults = chosen;
+    HDRSHOT_CHECK(store.save(patch).has_value());
+    hdrshot::QtSettingsStorePort reopened(path, "ignored", "ignored");
+    HDRSHOT_CHECK(reopened.load().value().pinned_screenshot_defaults == chosen);
+  }
+  const auto before = store.load().value();
+  for (const int bad : {-1, 399, 400, 425, 801}) {
+    hdrshot::SettingsPatch patch;
+    patch.pinned_screenshot_defaults = hdrshot::PinnedScreenshotDefaults{false, bad};
+    patch.default_save_folder = "/Changed";
+    HDRSHOT_CHECK(!store.save(patch));
+    HDRSHOT_CHECK(store.load().value() == before);
+  }
+  hdrshot::SettingsPatch unrelated;
+  unrelated.detailed_logging = true;
+  unrelated.analysis_defaults = hdrshot::AnalysisDefaults{};
+  HDRSHOT_CHECK(store.save(unrelated).has_value());
+  HDRSHOT_CHECK(store.load().value().pinned_screenshot_defaults == before.pinned_screenshot_defaults);
+}
+
+void pinned_defaults_migrate_missing_and_recover_corrupt_fields_independently() {
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  const auto path = directory.filePath("settings.ini");
+  QSettings raw(path, QSettings::IniFormat);
+  raw.setValue("schemaVersion", 1);
+  raw.setValue("globalCaptureHotkey", "Command+Option+9");
+  raw.sync();
+  hdrshot::QtSettingsStorePort store(path.toStdString(), "Command+Shift+2", "/Pictures");
+  HDRSHOT_CHECK(store.load().value().pinned_screenshot_defaults == hdrshot::PinnedScreenshotDefaults{});
+  HDRSHOT_CHECK(store.load().value().pinned_screenshot_defaults.short_edge == 500);
+  raw.setValue("pinnedScreenshotAlwaysOnTop", false);
+  raw.setValue("pinnedScreenshotShortEdge", 400);
+  raw.sync();
+  const auto legacy=store.load();
+  HDRSHOT_CHECK(legacy.has_value());
+  HDRSHOT_CHECK(!legacy.value().pinned_screenshot_defaults.always_on_top);
+  HDRSHOT_CHECK(legacy.value().pinned_screenshot_defaults.short_edge == 450);
+  HDRSHOT_CHECK(legacy.value().global_capture_hotkey == "Command+Option+9");
+  hdrshot::SettingsPatch persist_legacy;
+  persist_legacy.pinned_screenshot_defaults=legacy.value().pinned_screenshot_defaults;
+  HDRSHOT_CHECK(store.save(persist_legacy).has_value());
+  raw.sync();
+  HDRSHOT_CHECK(raw.value("pinnedScreenshotShortEdge").toInt() == 450);
+  for (const auto* malformed : {"", "true-ish", "0", "1", "2"}) {
+    raw.setValue("pinnedScreenshotAlwaysOnTop", malformed);
+    raw.setValue("pinnedScreenshotShortEdge", 650);
+    raw.sync();
+    const auto loaded = store.load();
+    HDRSHOT_CHECK(loaded.has_value());
+    HDRSHOT_CHECK(loaded.value().pinned_screenshot_defaults.always_on_top);
+    HDRSHOT_CHECK(loaded.value().pinned_screenshot_defaults.short_edge == 650);
+    HDRSHOT_CHECK(loaded.value().global_capture_hotkey == "Command+Option+9");
+  }
+  for (const auto* malformed : {"", "400.5", "NaN", "399", "425", "801", "9999999999999999999999"}) {
+    raw.setValue("pinnedScreenshotAlwaysOnTop", false);
+    raw.setValue("pinnedScreenshotShortEdge", malformed);
+    raw.sync();
+    const auto loaded = store.load();
+    HDRSHOT_CHECK(loaded.has_value());
+    HDRSHOT_CHECK(!loaded.value().pinned_screenshot_defaults.always_on_top);
+    HDRSHOT_CHECK(loaded.value().pinned_screenshot_defaults.short_edge == 500);
+  }
+}
+
 void defaults_and_patches_persist_across_instances() {
   QTemporaryDir directory;
   HDRSHOT_CHECK(directory.isValid());
@@ -491,6 +566,8 @@ void invalid_completion_action_fails_explicitly() {
 int main() {
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
+      {"pinned defaults roundtrip and invalid patches are atomic", pinned_defaults_roundtrip_and_invalid_patch_is_atomic},
+      {"pinned defaults migrate old config and recover corrupt fields independently", pinned_defaults_migrate_missing_and_recover_corrupt_fields_independently},
       {"scalar readings preserve precision, separate components, deduplicate I and reject nonfinite", scalar_readings_are_separate_precise_and_deduplicated},
       {"magnifier keeps all old storage IDs and maps 13 menu groups independently", magnifier_storage_ids_and_menu_order_are_compatible},
       {"defaults migrate once, persist independently and reject invalid patch", analysis_defaults_roundtrip_migration_and_local_isolation},

@@ -34,8 +34,21 @@ public:
                     std::array<float, 9> forward, std::array<float, 9> inverse);
 };
 
+// Standard sRGB independent of installed files.
+std::shared_ptr<const WindowsIccProfile> windows_srgb_icc_profile();
+
 Result<std::shared_ptr<const WindowsIccProfile>, Error>
 windows_load_icc_profile(const std::string &utf8_path);
+
+// Shared CPU preparation; the cache identity includes profile content, parsed
+// transform parameters, and the fixed table layout/algorithm revision. GPU
+// textures remain separately created on each caller's D3D device.
+struct WindowsIccLutTables {
+  std::string identity;
+  std::vector<float> decode, encode;
+};
+std::shared_ptr<const WindowsIccLutTables> windows_prepare_icc_tables(
+    const WindowsIccProfile& profile);
 
 // CPU reference for contract tests and small probes; rendering uses the GPU.
 std::array<float, 3> windows_icc_device_to_p3_cpu(
@@ -51,6 +64,7 @@ public:
   void bind_cs(ID3D11DeviceContext *context) const;
   void bind_ps(ID3D11DeviceContext *context) const;
   const WindowsIccProfile &profile() const { return *profile_; }
+  const std::shared_ptr<const WindowsIccLutTables>& cpu_tables() const { return cpu_tables_; }
 
   // Prepend this source before a CS/PS entry point. Functions only perform
   // ICC conversion; gain, sRGB OETF/EOTF and display white belong to callers.
@@ -58,10 +72,12 @@ public:
 
 private:
   WindowsIccGpuTransform(std::shared_ptr<const WindowsIccProfile> profile,
+                         std::shared_ptr<const WindowsIccLutTables> cpu_tables,
                          winrt::com_ptr<ID3D11Buffer> constants,
                          winrt::com_ptr<ID3D11ShaderResourceView> decode_table,
                          winrt::com_ptr<ID3D11ShaderResourceView> encode_table);
   std::shared_ptr<const WindowsIccProfile> profile_;
+  std::shared_ptr<const WindowsIccLutTables> cpu_tables_;
   winrt::com_ptr<ID3D11Buffer> constants_;
   winrt::com_ptr<ID3D11ShaderResourceView> decode_table_;
   winrt::com_ptr<ID3D11ShaderResourceView> encode_table_;

@@ -274,11 +274,11 @@ void six_k_dispatch_covers_every_pixel() {
   for (auto v : result.value()->histograms[0].counts)
     sum += v;
   HDRSHOT_CHECK(sum == count);
-  std::cout << "6K all-pixel native dispatch ms="
+  std::cout << "{\"analysis_6k_ms\":"
             << std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - started)
                    .count()
-            << " retained bytes=" << result.value()->retained_bytes << '\n';
+            << ",\"retained_bytes\":" << result.value()->retained_bytes << "}\n";
 }
 } // namespace
 

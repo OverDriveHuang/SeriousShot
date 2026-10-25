@@ -35,6 +35,7 @@ namespace {
     case UiCommand::undo:
     case UiCommand::redo:
     case UiCommand::analyze:
+    case UiCommand::pin_screenshot:
       return std::nullopt;
   }
   return std::nullopt;

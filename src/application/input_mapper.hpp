@@ -50,6 +50,7 @@ enum class UiCommand : std::uint8_t {
   undo,
   redo,
   analyze,
+  pin_screenshot,
 };
 
 class InputMapper {

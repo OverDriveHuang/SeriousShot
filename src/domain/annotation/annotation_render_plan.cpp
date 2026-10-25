@@ -487,29 +487,141 @@ Result<AnnotationCoverageLayer, Error> AnnotationRenderPlanner::rasterize_shape(
     rasterize_transformed_shape(layer, object, scan_bounds, half_width);
     return Result<AnnotationCoverageLayer, Error>::success(std::move(layer));
   }
-  for (std::int32_t y = scan_bounds.y; y < scan_bounds.bottom(); ++y) {
+
+  // Conservative row intervals around segments; evaluate the original coverage
+  // expression within their union. Intersections are evaluated exactly once.
+  struct Segment {
+    double ax, ay, bx, by;
+  };
+  std::vector<Segment> segments;
+  if (object.kind == AnnotationKind::arrow) {
+    const auto a = arrow_segments(object);
+    segments = {{a.start_x, a.start_y, a.end_x, a.end_y},
+                {a.end_x, a.end_y, a.first_x, a.first_y},
+                {a.end_x, a.end_y, a.second_x, a.second_y}};
+  } else if (object.kind == AnnotationKind::rectangle) {
+    const auto b = object.bounds;
+    const double l = b.x, t = b.y, rr = b.right(), bb = b.bottom();
+    segments = {{l, t, rr, t}, {rr, t, rr, bb}, {rr, bb, l, bb}, {l, bb, l, t}};
+  }
+  const double radius = half_width + 0.5;
+  for (int y = scan_bounds.y; y < scan_bounds.bottom(); ++y) {
     if (object.kind == AnnotationKind::ellipse) {
       append_ellipse_row(layer, object, scan_bounds, y, half_width);
       continue;
     }
-    std::vector<std::uint8_t> row(static_cast<std::size_t>(scan_bounds.width), 0U);
-    for (std::int32_t x = scan_bounds.x; x < scan_bounds.right(); ++x) {
-      const auto distance = distance_to_shape(
-          object, static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
-      const auto coverage = std::clamp(half_width + 0.5 - distance, 0.0, 1.0);
-      row[static_cast<std::size_t>(x - scan_bounds.x)] =
-          static_cast<std::uint8_t>(std::lround(coverage * 255.0));
+    std::vector<std::pair<int, int>> intervals;
+    const double py = y + 0.5;
+    for (const auto& a : segments) {
+      double low = 0, high = 1;
+      const double dy = a.by - a.ay;
+      if (dy == 0) {
+        if (std::abs(py - a.ay) > radius) continue;
+      } else {
+        double t0 = (py - radius - a.ay) / dy, t1 = (py + radius - a.ay) / dy;
+        if (t0 > t1) std::swap(t0, t1);
+        low = std::max(0.0, t0);
+        high = std::min(1.0, t1);
+        if (low > high) continue;
+      }
+      const double x0 = a.ax + (a.bx - a.ax) * low,
+                   x1 = a.ax + (a.bx - a.ax) * high;
+      const int left = std::max(
+          scan_bounds.x, int(std::floor(std::min(x0, x1) - radius - 0.5)) - 1);
+      const int right =
+          std::min(scan_bounds.right(),
+                   int(std::ceil(std::max(x0, x1) + radius - 0.5)) + 2);
+      if (left < right) intervals.emplace_back(left, right);
     }
-    append_row_spans(layer, y, scan_bounds.x, std::move(row));
+    std::sort(intervals.begin(), intervals.end());
+    std::vector<std::pair<int, int>> merged;
+    for (auto v : intervals) {
+      if (!merged.empty() && v.first <= merged.back().second)
+        merged.back().second = std::max(merged.back().second, v.second);
+      else
+        merged.push_back(v);
+    }
+    std::vector<std::pair<int, std::uint8_t>> samples;
+    for (auto [left, right] : merged)
+      for (int x = left; x < right; ++x) {
+        double distance = std::numeric_limits<double>::infinity();
+        for (const auto& a : segments)
+          distance = std::min(distance, distance_to_segment(x + 0.5, py, a.ax,
+                                                            a.ay, a.bx, a.by));
+        const auto amount = std::uint8_t(
+            std::lround(std::clamp(radius - distance, 0.0, 1.0) * 255.0));
+        if (amount) samples.emplace_back(x, amount);
+      }
+    append_sparse_row(layer, y, std::move(samples));
   }
   return Result<AnnotationCoverageLayer, Error>::success(std::move(layer));
 }
 
+Result<AnnotationCoverageLayer, Error> AnnotationCoverageCache::get(
+    const AnnotationObject& object, PixelSize output) {
+  // Bounded editor-owned geometry cache. Only integer translations with
+  // identical clipping footprints can reuse coverage; edits and edge clipping
+  // miss it.
+  auto& cache = entries_;
+  const bool valid =
+      output.width > 0 && output.height > 0 &&
+      object.kind != AnnotationKind::text &&
+      std::holds_alternative<ShapeStyle>(object.style) &&
+      valid_shape_transform(object) && !object.bounds.empty() &&
+      inside_output(
+          is_rotatable(object) ? shape_pixel_bounds(object) : object.bounds,
+          output) &&
+      (object.kind != AnnotationKind::arrow ||
+       (object.arrow_geometry &&
+        inside_output(object.arrow_geometry->start, output) &&
+        inside_output(object.arrow_geometry->end, output)));
+  if (!valid) return AnnotationRenderPlanner::rasterize_shape(object, output);
+  if (object.transform != ShapeTransform{})
+    return AnnotationRenderPlanner::rasterize_shape(object, output);
+  auto key = object;
+  const int x = key.bounds.x, y = key.bounds.y;
+  key.bounds.x = 0;
+  key.bounds.y = 0;
+  if (key.arrow_geometry) {
+    key.arrow_geometry->start.x -= x;
+    key.arrow_geometry->end.x -= x;
+    key.arrow_geometry->start.y -= y;
+    key.arrow_geometry->end.y -= y;
+  }
+  auto clip = shape_scan_bounds(object, output);
+  clip.x -= x;
+  clip.y -= y;
+  for (const auto& e : cache)
+    if (e.key == key && e.clip == clip) {
+      auto layer = e.layer;
+      const int dx = x - e.x, dy = y - e.y;
+      layer.bounds_px.x += dx;
+      layer.bounds_px.y += dy;
+      for (auto& span : layer.spans) {
+        span.x += dx;
+        span.y += dy;
+      }
+      return Result<AnnotationCoverageLayer, Error>::success(std::move(layer));
+    }
+  auto result = AnnotationRenderPlanner::rasterize_shape(object, output);
+  if (result) {
+    std::size_t bytes = 0;
+    for (const auto& span : result.value().spans)
+      bytes += span.coverage_u8.size() + sizeof(CoverageSpan);
+    if (bytes <= 1024 * 1024) {
+      std::erase_if(cache, [&](const Entry& e) { return e.key.id == key.id; });
+      if (cache.size() >= 8) cache.erase(cache.begin());
+      cache.push_back({std::move(key), clip, result.value(), x, y});
+    }
+  }
+  return result;
+}
+
 Result<AnnotationRenderPlan, Error> AnnotationRenderPlanner::build(
     const AnnotationDocumentSnapshot& annotations,
-    const PixelRect selection_rect_px,
-    const double pixels_per_point,
-    TextRasterizerPort* const text_rasterizer) {
+    const PixelRect selection_rect_px, const double pixels_per_point,
+    TextRasterizerPort* const text_rasterizer,
+    AnnotationCoverageCache* const coverage_cache) {
   const auto output_size_px = PixelSize{
       selection_rect_px.width, selection_rect_px.height};
   if (output_size_px.width <= 0 || output_size_px.height <= 0 ||
@@ -527,9 +639,12 @@ Result<AnnotationRenderPlan, Error> AnnotationRenderPlanner::build(
           plan_error(ErrorCode::invalid_input, "annotation_out_of_selection", object.id));
     }
     const auto local_object = selection_local_object(object, selection_rect_px);
-    auto layer = local_object.kind == AnnotationKind::text
-        ? rasterize_text(local_object, pixels_per_point, text_rasterizer)
-        : rasterize_shape(local_object, output_size_px);
+    auto layer =
+        local_object.kind == AnnotationKind::text
+            ? rasterize_text(local_object, pixels_per_point, text_rasterizer)
+            : (coverage_cache
+                   ? coverage_cache->get(local_object, output_size_px)
+                   : rasterize_shape(local_object, output_size_px));
     if (!layer) {
       return Result<AnnotationRenderPlan, Error>::failure(layer.error());
     }
@@ -629,9 +744,25 @@ Result<AnnotationPixelPlan, Error> AnnotationRenderPlanner::build_pixel_plan(
   for (const auto& layer : render_plan.ordered_layers)
     colors.push_back(ExtendedP3Mapper::annotation_linear_display_p3(layer.color_srgb_rgb));
   for (std::int32_t y = 0; y < size.height; ++y) {
-    std::fill(owners.begin(), owners.end(), kSourceOwner);
-    std::fill(samples.begin(), samples.end(), std::array<float, 4>{0, 0, 0, 1});
-    std::fill(edge.begin(), edge.end(), false);
+    std::vector<std::pair<int, int>> intervals;
+    for (const auto& c : spans_by_row[std::size_t(y)])
+      if (!c.span->coverage_u8.empty())
+        intervals.emplace_back(c.span->x,
+                               c.span->x + int(c.span->coverage_u8.size()));
+    std::sort(intervals.begin(), intervals.end());
+    std::vector<std::pair<int, int>> merged;
+    for (auto v : intervals) {
+      if (!merged.empty() && v.first <= merged.back().second)
+        merged.back().second = std::max(merged.back().second, v.second);
+      else
+        merged.push_back(v);
+    }
+    for (auto [left, right] : merged) {
+      std::fill(owners.begin() + left, owners.begin() + right, kSourceOwner);
+      std::fill(samples.begin() + left, samples.begin() + right,
+                std::array<float, 4>{0, 0, 0, 1});
+      std::fill(edge.begin() + left, edge.begin() + right, false);
+    }
     for (const auto& coverage : spans_by_row[static_cast<std::size_t>(y)]) {
       for (std::size_t offset = 0; offset < coverage.span->coverage_u8.size(); ++offset) {
         const auto amount = coverage.span->coverage_u8[offset];
@@ -647,28 +778,44 @@ Result<AnnotationPixelPlan, Error> AnnotationRenderPlanner::build_pixel_plan(
         owners[index] = coverage.layer_index;
       }
     }
-    std::int32_t x = 0;
-    while (x < size.width) {
-      const auto owner = owners[static_cast<std::size_t>(x)];
-      auto end = x + 1;
-      while (end < size.width && owners[static_cast<std::size_t>(end)] == owner &&
-             edge[static_cast<std::size_t>(end)] == edge[static_cast<std::size_t>(x)]) {
-        ++end;
-      }
-      if (owner == kSourceOwner) {
-        pixel_plan.source_visible_spans.push_back(
-            SourceVisibleSpan{y, x, end - x});
-      } else {
-        const auto& layer = render_plan.ordered_layers[owner];
-        pixel_plan.annotation_owned_spans.push_back(AnnotationOwnedSpan{
-            y, x, end - x, layer.object_id, layer.color_srgb_rgb});
-        if (edge[static_cast<std::size_t>(x)]) {
-          pixel_plan.annotation_owned_spans.back().edge_samples.assign(
-              samples.begin() + x, samples.begin() + end);
+
+    auto source_span = [&](int left, int length) {
+      if (length <= 0) return;
+      auto& spans = pixel_plan.source_visible_spans;
+      if (!spans.empty() && spans.back().y == y &&
+          spans.back().x + spans.back().length == left)
+        spans.back().length += length;
+      else
+        spans.push_back({y, left, length});
+    };
+    int cursor = 0;
+    for (auto [left, right] : merged) {
+      source_span(cursor, left - cursor);
+      int x = left;
+      while (x < right) {
+        const auto owner = owners[static_cast<std::size_t>(x)];
+        auto end = x + 1;
+        while (end < right && owners[static_cast<std::size_t>(end)] == owner &&
+               edge[static_cast<std::size_t>(end)] ==
+                   edge[static_cast<std::size_t>(x)]) {
+          ++end;
         }
+        if (owner == kSourceOwner) {
+          source_span(x, end - x);
+        } else {
+          const auto& layer = render_plan.ordered_layers[owner];
+          pixel_plan.annotation_owned_spans.push_back(AnnotationOwnedSpan{
+              y, x, end - x, layer.object_id, layer.color_srgb_rgb});
+          if (edge[static_cast<std::size_t>(x)]) {
+            pixel_plan.annotation_owned_spans.back().edge_samples.assign(
+                samples.begin() + x, samples.begin() + end);
+          }
+        }
+        x = end;
       }
-      x = end;
+      cursor = right;
     }
+    source_span(cursor, size.width - cursor);
   }
   return Result<AnnotationPixelPlan, Error>::success(std::move(pixel_plan));
 }

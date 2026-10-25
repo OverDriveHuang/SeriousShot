@@ -1,6 +1,8 @@
 #include "application/capture_interaction_session.hpp"
 #include "platform/windows/windows_d3d_presenter.hpp"
 #include "platform/windows/windows_gpu_source.hpp"
+#include "platform/windows/windows_d3d_export.hpp"
+#include "platform/qt/qt_export_task_executor.hpp"
 #include "platform/windows/windows_qt_ports.hpp"
 #include "test_support.hpp"
 #include "ui/qt/qt_overlay_host.hpp"
@@ -569,6 +571,137 @@ void trace_state(const char *step, const EventTrace &trace,
   native_trace.print_new();
 }
 
+// Exercise the actual Windows composition/executor/presenter wiring while the
+// pointer keeps moving, not just after release or an explicit worker drain.
+void continuous_annotation_preview() {
+  auto* screen = QGuiApplication::primaryScreen();
+  HDRSHOT_CHECK(screen);
+  const auto area = screen->availableGeometry();
+  const int width = std::min(1200, area.width() - 40);
+  const int height = std::min(800, area.height() - 40);
+  const double scale = screen->devicePixelRatio();
+  const PixelSize size{qRound(width * scale), qRound(height * scale)};
+  WindowsDisplayInfo display;
+  display.snapshot.id = {17};
+  display.snapshot.desktop_frame_points = {double(area.x() + 20), double(area.y() + 20), double(width), double(height)};
+  display.snapshot.point_pixel_scale = scale;
+  display.snapshot.capture_size_px = size;
+  display.advanced_color_mode = 1;
+  display.source_white = {false, 80};
+  MONITORINFO monitor{sizeof(monitor)};
+  HDRSHOT_CHECK(GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &monitor));
+  display.physical_x = monitor.rcMonitor.left + qRound((area.x() + 20 - screen->geometry().x()) * scale);
+  display.physical_y = monitor.rcMonitor.top + qRound((area.y() + 20 - screen->geometry().y()) * scale);
+  std::vector<std::uint16_t> pixels(std::size_t(size.width) * size.height * 4, 0x3800);
+  for (std::size_t i = 3; i < pixels.size(); i += 4) pixels[i] = 0x3c00;
+  auto normalized = windows_normalize_scrgb_source(size, std::move(pixels), 1, 1);
+  HDRSHOT_CHECK(normalized.has_value());
+  auto frozen = std::make_shared<FrozenDesktop>();
+  frozen->frame_id = {31}; frozen->display_generation = 9;
+  CanonicalFrameSegment segment;
+  segment.display_id = {17}; segment.size_px = size;
+  segment.encoding = WindowsColor::linear_p3_encoding();
+  segment.linear_source = normalized.value();
+  frozen->canonical_segments.push_back(std::move(segment));
+  WindowsQtInputPlatformAdapter input;
+  QtExportTaskExecutor tasks(*qApp);
+  auto host = std::make_unique<QtOverlayHost>(std::make_unique<WindowsQtOverlayWindow>(display),
+      DisplayId{17}, SelectionSnapshot{1, {0, 0, size.width, size.height}}, input);
+  host->setGeometry(area.x() + 20, area.y() + 20, width, height);
+  HDRSHOT_CHECK(host->prepare_hidden_native_surface().has_value());
+  host->windowHandle()->setScreen(screen);
+  host->set_background_clean_composition(tasks, windows_clean_composition());
+  host->set_annotation_preview_optimization(true);
+  auto native = WindowsD3DPreviewPresenter::create(host->native_surface(), display);
+  HDRSHOT_CHECK(native.has_value());
+  auto presenter = std::make_shared<Presenter>(native.value());
+  std::optional<ExportSnapshot> exported;
+  host->set_export_requested([&](UiCommand, ExportSnapshot snapshot, auto done, QWidget *) {
+    exported = std::move(snapshot);
+    ExportReceipt receipt; receipt.destination = UserCancelled{};
+    done(Result<ExportReceipt, Error>::success(receipt));
+    return false; // Inspect exact snapshot without modifying the clipboard.
+  }, SettingsSnapshot{});
+  host->activate_capture({frozen, {{1}, {1}, {31}, 9, 1, 0}, {}}, presenter,
+      std::make_shared<std::atomic<std::uint64_t>>(2));
+  auto* editor = dynamic_cast<OverlayEditorWidget*>(host->findChild<QWidget*>("overlayEditor"));
+  HDRSHOT_CHECK(editor && wait_until([&] { return presenter->completed->load() > 0; }));
+  const auto mouse = [&](QEvent::Type type, QPointF point, Qt::MouseButton button, Qt::MouseButtons buttons) {
+    QMouseEvent event(type, point, editor->mapToGlobal(point), button, buttons, Qt::NoModifier);
+    QApplication::sendEvent(editor, &event);
+  };
+  const QPointF start(90, 140), initial(width - 220, height - 220);
+  for (bool existing : {false, true}) {
+    host->findChild<QToolButton*>(existing ? "toolSelect" : "toolArrow")->click();
+    mouse(QEvent::MouseButtonPress, existing ? initial : start, Qt::LeftButton, Qt::LeftButton);
+    const int before = presenter->completed->load();
+    QElapsedTimer motion; motion.start();
+    int moves = 0;
+    while (motion.elapsed() < 1200) {
+      const double t = std::min(1.0, motion.elapsed() / 1200.0);
+      const QPointF end = existing ? initial + QPointF(90 * t, -70 * t)
+                                  : QPointF(250, 230) + (initial - QPointF(250, 230)) * t;
+      mouse(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+      QApplication::processEvents(QEventLoop::AllEvents, 2);
+      Sleep(4); ++moves;
+    }
+    const int during = presenter->completed->load() - before;
+    // Release is deliberately a different position from the last queued move.
+    const QPointF final = existing ? initial + QPointF(100, -80) : initial;
+    mouse(QEvent::MouseButtonRelease, final, Qt::LeftButton, Qt::NoButton);
+    HDRSHOT_CHECK(editor->annotations().objects.size() == 1);
+    const auto arrow = editor->annotations().objects.front().arrow_geometry;
+    HDRSHOT_CHECK(arrow && arrow->end == (PixelPoint{qRound(final.x() * scale), qRound(final.y() * scale)}));
+    const auto revision = editor->annotations().revision;
+    HDRSHOT_CHECK(wait_until([&] {
+      return presenter->last && presenter->last->model.annotation_document.revision == revision &&
+             presenter->last->model.clean_content && !presenter->last->model.clean_content->owned.empty();
+    }));
+    std::cout << "annotation native existing=" << existing << " size=" << size.width << 'x' << size.height
+              << " moves=" << moves << " completed_during_motion=" << during << '\n';
+    std::cout << "{\"" << (existing?"adjust":"create") << "\":{\"moves\":" << moves
+              << ",\"completed_during_motion\":" << during << ",\"motion_ms\":" << motion.elapsed()
+              << "},\"target_width\":" << size.width << ",\"target_height\":" << size.height
+              << ",\"active_dpr\":" << scale << "}\n";
+    HDRSHOT_CHECK(moves > 10 && during >= 3 && !presenter->failed->load());
+  }
+  // Exact copy must own the final release geometry and fully composed pixels.
+  host->findChild<QToolButton*>("actionCopy")->click();
+  HDRSHOT_CHECK(wait_until([&] { return exported.has_value(); }));
+  HDRSHOT_CHECK(exported->annotations == editor->annotations());
+  HDRSHOT_CHECK(exported->clean_document_revision == exported->annotations.revision);
+  HDRSHOT_CHECK(exported->clean_content && !exported->clean_content->owned.empty());
+  // Compare the actual Windows native-source composition with the shared CPU
+  // reference on explicit FP32 source pixels, including partial AA edges.
+  auto offscreen = WindowsD3DPreviewPresenter::create(nullptr, display);
+  HDRSHOT_CHECK(offscreen.has_value());
+  auto clean = *presenter->last;
+  clean.model.clean_content = exported->clean_content;
+  clean.model.annotation_document = exported->annotations;
+  clean.model.overlay_style.selection_border_width_px = 0;
+  auto cpu_pixels = normalized.value()->read_region({0, 0, size.width, size.height});
+  HDRSHOT_CHECK(cpu_pixels.has_value());
+  auto cpu_source = std::make_shared<FrozenDesktop>(*frozen);
+  cpu_source->canonical_segments[0].linear_source.reset();
+  cpu_source->canonical_segments[0].rgba_float = std::move(cpu_pixels.value());
+  CleanContentCache cpu_cache;
+  auto cpu_content = cpu_cache.get(cpu_source, DisplayId{17}, exported->annotation_render_plan);
+  HDRSHOT_CHECK(cpu_content.has_value());
+  auto reference_content = std::make_shared<CleanContentSnapshot>(*cpu_content.value());
+  reference_content->source = frozen;
+  auto reference = clean; reference.model.clean_content = reference_content;
+  auto actual = offscreen.value()->render_offscreen(clean);
+  auto expected = offscreen.value()->render_offscreen(reference);
+  HDRSHOT_CHECK(actual && expected && actual.value() == expected.value());
+  // Destruction with queued work must safely join the native worker and discard
+  // callbacks belonging to the closed host.
+  host->findChild<QToolButton*>("toolArrow")->click();
+  mouse(QEvent::MouseButtonPress, {140, 200}, Qt::LeftButton, Qt::LeftButton);
+  mouse(QEvent::MouseMove, {double(width - 160), 260}, Qt::NoButton, Qt::LeftButton);
+  host.reset(); tasks.drain();
+  presenter.reset(); native.value().reset();
+}
+
 // All input coordinates are inside our two windows. A desktop without a usable
 // interactive input queue is skipped in main, never reported as a passing test.
 void two_top_level_native_overlay_session(bool drag_selection,
@@ -700,7 +833,7 @@ void two_top_level_native_overlay_session(bool drag_selection,
     host->setProperty("testDisplayId", static_cast<qulonglong>(id.value));
     host->set_export_requested(
         [&](UiCommand command, ExportSnapshot snapshot,
-            QtOverlayHost::ExportCompleted) {
+            QtOverlayHost::ExportCompleted, QWidget *) {
           if (command != UiCommand::copy_and_close ||
               snapshot.target_display_id != selected_display)
             invalid_export = true;
@@ -1010,6 +1143,8 @@ int main(int argc, char **argv) {
       return 77;
     }
   }
+  if (argc > 1 && std::string(argv[1]) == "--annotation-performance")
+    return hdrshot::test::run({{"continuous Windows annotation preview, final geometry, exact pixels and close", continuous_annotation_preview}});
   if (visual_readings) {
     const auto available = QGuiApplication::primaryScreen()->availableGeometry();
     if (available.height() < 640 || available.width() < 460) {

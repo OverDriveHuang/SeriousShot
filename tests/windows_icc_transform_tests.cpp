@@ -18,6 +18,24 @@
 
 using namespace hdrshot;
 namespace {
+void builtin_srgb_has_standard_transfer_and_matrix() {
+  const auto profile = windows_srgb_icc_profile();
+  HDRSHOT_CHECK(profile == windows_srgb_icc_profile());
+  for (float x : {0.0f, 0.02f, 0.04044f, 0.04046f, 0.18f, 0.5f, 1.0f}) {
+    const float linear = x <= 0.04045f ? x / 12.92f : std::pow((x + 0.055f) / 1.055f, 2.4f);
+    const auto decoded = windows_icc_device_to_p3_cpu(*profile, {x, x, x});
+    const auto encoded = windows_icc_p3_to_device_cpu(*profile, decoded);
+    for (int c = 0; c < 3; ++c) {
+      HDRSHOT_CHECK(std::abs(decoded[c] - linear) < 2e-6f);
+      HDRSHOT_CHECK(std::abs(encoded[c] - x) < 2e-6f);
+    }
+  }
+  const auto red = windows_icc_device_to_p3_cpu(*profile, {1, 0, 0});
+  HDRSHOT_CHECK(std::abs(red[0] - 0.82246197f) < 1e-7f);
+  HDRSHOT_CHECK(std::abs(red[1] - 0.03319420f) < 1e-7f);
+  HDRSHOT_CHECK(std::abs(red[2] - 0.01708263f) < 1e-7f);
+}
+
 // Project-owned, purpose-built matrix/TRC parser fixtures, not ICC certification
 // samples. Fixed big-endian fields avoid any installed-profile dependency.
 using Bytes=std::vector<std::uint8_t>;
@@ -417,13 +435,41 @@ void sampled_curve_forms_and_plateau_policy() {
   for(float x:restored) HDRSHOT_CHECK(x>=1.0f/3.0f-1e-4f&&x<=2.0f/3.0f+1e-4f);
   HDRSHOT_CHECK(!make("curv-descending.icc",{0,65535,100}).has_value());
 }
+void shared_content_cache_and_lut_identity() {
+  const auto path=fixtures().write("cache-replaced.icc",make_sampled_profile(256));
+  auto first=windows_load_icc_profile(path);
+  auto same=windows_load_icc_profile(fixtures().sampled256);
+  HDRSHOT_CHECK(first.has_value() && same.has_value());
+  HDRSHOT_CHECK(first.value()==same.value());
+  auto tables=windows_prepare_icc_tables(*first.value());
+  auto shared=windows_prepare_icc_tables(*same.value());
+  HDRSHOT_CHECK(tables==shared);
+  HDRSHOT_CHECK(tables->decode.size()==65536*3 && tables->encode.size()==65536*3);
+  // A valid new profile replaces the same path; old frozen captures retain the
+  // old content while new queries obtain new bytes and preparation identity.
+  fixtures().write("cache-replaced.icc",make_sampled_profile(1024));
+  auto replaced=windows_load_icc_profile(path);
+  HDRSHOT_CHECK(replaced.has_value() && replaced.value()!=first.value());
+  HDRSHOT_CHECK(first.value()->sha256==sampled256_hash);
+  HDRSHOT_CHECK(replaced.value()->sha256==sampled1024_hash);
+  HDRSHOT_CHECK(windows_prepare_icc_tables(*replaced.value())->identity!=tables->identity);
+  auto curves=first.value()->decode_curves;
+  curves[0].samples[100]+=0.00001f;
+  const WindowsIccProfile changed_parameters(first.value()->sha256,curves,
+      first.value()->device_to_p3,first.value()->p3_to_device);
+  HDRSHOT_CHECK(windows_prepare_icc_tables(changed_parameters)->identity!=tables->identity);
+  // No D3D device is involved in this shared data. Each GPU transform still
+  // uploads its own buffers/SRVs on the device supplied to create().
+}
 } // namespace
 int main() {
-  return test::run({{"synthetic parametric ICC and independent float oracle",parametric_profile_and_independent_oracle},
+  return test::run({{"built-in sRGB standard transfer and matrix",builtin_srgb_has_standard_transfer_and_matrix},
+                    {"synthetic parametric ICC and independent float oracle",parametric_profile_and_independent_oracle},
                     {"compatibility states preserve Legacy ICC order",compatibility_states_preserve_legacy_icc_order},
                     {"ICC GPU gain, chroma and 10-bit steps",gpu_gain_color_and_10bit_steps},
                     {"doubled capture with manual half gain",doubled_capture_with_manual_half_gain},
                     {"synthetic v2 sampled curve tables on GPU",sampled_v2_curve_tables_and_gpu},
                     {"curv identity, gamma, plateau and nonmonotone",sampled_curve_forms_and_plateau_policy},
+                    {"ICC content and transform-specific shared CPU cache",shared_content_cache_and_lut_identity},
                     {"bad curve, LUT and file rejection",reject_bad_curves_and_luts}});
 }

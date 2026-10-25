@@ -20,6 +20,14 @@ macos_analysis_presentation_status(const AnalysisPresenterPort &presenter);
 // actions and retain only weak ownership of its window/controller.
 void set_macos_analysis_presenter_error_callback(
     AnalysisPresenterPort &presenter, std::function<void(Error)> callback);
+// Recovery is offered only after a visible presentation failure and an actual
+// GPU completion. Marshal to the GUI, then acknowledge the generation before
+// clearing display-only UI state. A stale acknowledgement leaves recovery armed.
+void set_macos_analysis_presenter_recovery_callback(
+    AnalysisPresenterPort &presenter,
+    std::function<void(std::uint64_t)> callback);
+bool acknowledge_macos_analysis_presenter_recovery(
+    AnalysisPresenterPort &presenter, std::uint64_t generation);
 // Same Source renderer as the on-screen CAMetalLayer, with an explicit float
 // readback boundary through the returned immutable LinearSource.
 Result<LinearSourceRef, Error>

@@ -118,6 +118,9 @@ SettingsWindow::SettingsWindow(
   auto* analysis_page=new QWidget(tabs);
   tabs->addTab(analysis_page,"分析");
   build_analysis_tab(analysis_page);
+  auto* pinned_page = new QWidget(tabs);
+  tabs->addTab(pinned_page, QStringLiteral("贴图"));
+  build_pinned_screenshot_tab(pinned_page);
   const auto analysis_margins = analysis_page->layout()->contentsMargins();
   general_root->setContentsMargins(analysis_margins);
   auto* general_section = new QVBoxLayout();
@@ -485,6 +488,11 @@ void SettingsWindow::restore_controls_from_snapshot() {
   analyzer_readings_->set_selected(d.analyzer.selected);
 
   loading_controls_ = true;
+  const QSignalBlocker pinned_topmost_blocker{pinned_always_on_top_check_};
+  const QSignalBlocker pinned_edge_blocker{pinned_short_edge_combo_};
+  pinned_always_on_top_check_->setChecked(snapshot_.pinned_screenshot_defaults.always_on_top);
+  pinned_short_edge_combo_->setCurrentIndex(std::max(
+      0, pinned_short_edge_combo_->findData(snapshot_.pinned_screenshot_defaults.short_edge)));
   const QSignalBlocker log_blocker{detailed_logging_check_};
   detailed_logging_check_->setChecked(snapshot_.detailed_logging);
   const QSignalBlocker hotkey_blocker{hotkey_edit_};
@@ -633,6 +641,86 @@ bool SettingsWindow::eventFilter(QObject* watched, QEvent* event) {
   return QWidget::eventFilter(watched, event);
 }
 
+
+void SettingsWindow::build_pinned_screenshot_tab(QWidget* page) {
+  auto* root = new QVBoxLayout(page);
+  auto* scroll = new QScrollArea(page);
+  scroll->setObjectName(QStringLiteral("pinnedScreenshotSettingsScrollArea"));
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  scroll->setAutoFillBackground(false);
+  scroll->viewport()->setAutoFillBackground(false);
+  root->addWidget(scroll);
+
+  auto* content = new QWidget(scroll);
+  auto* layout = new QVBoxLayout(content);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(12);
+  auto* section = new QVBoxLayout();
+  section->setContentsMargins(0, 0, 0, 0);
+  section->setSpacing(6);
+  auto* title = new QLabel(QStringLiteral("新建贴图默认行为"), content);
+  title->setObjectName(QStringLiteral("pinnedScreenshotSectionTitle"));
+  section->addWidget(title);
+  auto* group = new QGroupBox(content);
+  group->setObjectName(QStringLiteral("pinnedScreenshotSettingsContainer"));
+  auto* form = new QFormLayout(group);
+  form->setHorizontalSpacing(18);
+  form->setVerticalSpacing(14);
+  form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+  pinned_always_on_top_check_ = new QCheckBox(group);
+  pinned_always_on_top_check_->setAccessibleName(QStringLiteral("默认置顶"));
+  pinned_always_on_top_check_->setObjectName(QStringLiteral("pinnedScreenshotAlwaysOnTopCheckBox"));
+  form->addRow(QStringLiteral("默认置顶"), pinned_always_on_top_check_);
+  pinned_short_edge_combo_ = new QComboBox(group);
+  pinned_short_edge_combo_->setObjectName(QStringLiteral("pinnedScreenshotShortEdgeCombo"));
+  for (int edge = minimum_pinned_screenshot_short_edge; edge <= 800; edge += 50) {
+    pinned_short_edge_combo_->addItem(edge == PinnedScreenshotDefaults{}.short_edge
+        ? QStringLiteral("%1 px（默认）").arg(edge) : QStringLiteral("%1 px").arg(edge), edge);
+  }
+  form->addRow(QStringLiteral("默认窗口短边"), pinned_short_edge_combo_);
+  auto* hint = new QLabel(QStringLiteral("窗口尺寸使用逻辑像素，适应屏幕缩放。"), group);
+  hint->setObjectName(QStringLiteral("pinnedScreenshotLogicalPixelHint"));
+  hint->setWordWrap(true);
+  form->addRow(QString(), hint);
+  for (int row = 0; row < form->rowCount(); ++row) {
+    auto* label = form->itemAt(row, QFormLayout::LabelRole);
+    if (label && label->widget()) label->widget()->setMinimumWidth(140);
+  }
+  section->addWidget(group);
+  layout->addLayout(section);
+  auto* note = new QLabel(
+      QStringLiteral("每张贴图创建后可单独调整大小和置顶状态。"), content);
+  note->setObjectName(QStringLiteral("pinnedScreenshotDefaultsNote"));
+  note->setWordWrap(true);
+  layout->addWidget(note);
+  layout->addStretch(1);
+  scroll->setWidget(content);
+  // QScrollArea::setWidget enables auto-fill; keep the native tab surface visible.
+  content->setAutoFillBackground(false);
+  connect(pinned_always_on_top_check_, &QCheckBox::toggled, this,
+      [this] { persist_pinned_screenshot_defaults(); });
+  connect(pinned_short_edge_combo_, &QComboBox::currentIndexChanged, this,
+      [this] { persist_pinned_screenshot_defaults(); });
+}
+
+void SettingsWindow::persist_pinned_screenshot_defaults() {
+  if (loading_controls_) return;
+  const PinnedScreenshotDefaults requested{
+      pinned_always_on_top_check_->isChecked(),
+      pinned_short_edge_combo_->currentData().toInt()};
+  if (requested == snapshot_.pinned_screenshot_defaults) return;
+  const auto changed = SettingsWorkflow::change_pinned_screenshot_defaults(
+      requested, settings_store_);
+  if (!changed) {
+    restore_controls_from_snapshot();
+    show_status(QStringLiteral("贴图设置保存失败，已恢复。"), true);
+    return;
+  }
+  finish_saved_change(QStringLiteral("贴图默认设置已更新，将应用于之后新建的贴图。"));
+}
 
 void SettingsWindow::build_analysis_tab(QWidget* page) {
   auto* root=new QVBoxLayout(page);auto* scroll=new QScrollArea(page);scroll->setObjectName("analysisSettingsScrollArea");scroll->setWidgetResizable(true);

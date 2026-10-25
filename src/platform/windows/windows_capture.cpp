@@ -12,6 +12,7 @@
 #include <d3d11.h>
 #include <dxgi1_6.h>
 #include <shellscalingapi.h>
+#include <icm.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Foundation.h>
@@ -26,6 +27,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <future>
+#include <filesystem>
 #include <iomanip>
 #include <map>
 #include <mutex>
@@ -187,7 +189,87 @@ Result<WindowsCaptureCapabilityPlan, Error> windows_check_capture_runtime_capabi
   }
 }
 
-Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(DiagnosticsPort* diagnostics) {
+namespace {
+Result<std::string, Error> configured_icc_path(const std::string& device_name) {
+  using Out = Result<std::string, Error>;
+  const auto name = winrt::to_hstring(device_name);
+  DISPLAY_DEVICEW monitor{};
+  monitor.cb = sizeof(monitor);
+  // WCS identifies a monitor by its device key, not the GDI source name.
+  if (!EnumDisplayDevicesW(name.c_str(), 0, &monitor, EDD_GET_DEVICE_INTERFACE_NAME)) {
+    auto error = capture_error("legacy_profile_device_missing");
+    error.safe_context["api"] = "EnumDisplayDevicesW";
+    return Out::failure(std::move(error));
+  }
+  const auto failed = [](const char* api, DWORD code,
+      std::source_location origin = std::source_location::current()) {
+    auto error = capture_error("legacy_profile_unavailable", HRESULT_FROM_WIN32(code), origin);
+    error.safe_context["api"] = api;
+    error.safe_context["nativeCode"] = std::to_string(code);
+    return Out::failure(std::move(error));
+  };
+  BOOL per_user = FALSE;
+  if (!WcsGetUsePerUserProfiles(monitor.DeviceKey, CLASS_MONITOR, &per_user))
+    return failed("WcsGetUsePerUserProfiles", GetLastError());
+  const auto scope = per_user ? WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER
+                             : WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE;
+  DWORD bytes = 0;
+  // This is a device default, not the device-independent RGB working space.
+  if (!WcsGetDefaultColorProfileSize(scope, monitor.DeviceKey, CPT_ICC,
+      CPST_NONE, 0, &bytes))
+    return failed("WcsGetDefaultColorProfileSize", GetLastError());
+  if (bytes < sizeof(wchar_t) || bytes > 1024 * 1024 || bytes % sizeof(wchar_t))
+    return Out::failure(capture_error("legacy_profile_name_invalid"));
+  std::vector<wchar_t> profile(bytes / sizeof(wchar_t) + 1);
+  if (!WcsGetDefaultColorProfile(scope, monitor.DeviceKey, CPT_ICC,
+      CPST_NONE, 0, bytes, profile.data()))
+    return failed("WcsGetDefaultColorProfile", GetLastError());
+  std::filesystem::path path(profile.data());
+  if (path.is_relative()) {
+    DWORD directory_bytes = 32768 * sizeof(wchar_t);
+    std::vector<wchar_t> directory(directory_bytes / sizeof(wchar_t));
+    if (!GetColorDirectoryW(nullptr, directory.data(), &directory_bytes))
+      return failed("GetColorDirectoryW", GetLastError());
+    path = std::filesystem::path(directory.data()) / path;
+  }
+  return Out::success(utf8(path.c_str()));
+}
+
+Result<std::string, Error> dc_default_icc_path(const std::string& device_name) {
+  using Out = Result<std::string, Error>;
+  const auto failed = [](const char* api, DWORD code,
+      std::source_location origin = std::source_location::current()) {
+    auto error = capture_error("legacy_profile_unavailable",
+        code ? std::optional<HRESULT>{HRESULT_FROM_WIN32(code)} : std::nullopt, origin);
+    error.safe_context["api"] = api;
+    if (code) error.safe_context["nativeCode"] = std::to_string(code);
+    return Out::failure(std::move(error));
+  };
+  const auto name = winrt::to_hstring(device_name);
+  const auto dc = CreateDCW(L"DISPLAY", name.c_str(), nullptr, nullptr);
+  if (!dc) {
+    // CreateDCW does not promise an extended error code.
+    auto error = capture_error("legacy_profile_dc_unavailable");
+    error.safe_context["api"] = "CreateDCW";
+    return Out::failure(std::move(error));
+  }
+  struct DcOwner { HDC value; ~DcOwner() { DeleteDC(value); } } owner{dc};
+  DWORD characters = 0;
+  if (!GetICMProfileW(dc, &characters, nullptr)) {
+    const auto code = GetLastError();
+    if (code != ERROR_INSUFFICIENT_BUFFER) return failed("GetICMProfileW.size", code);
+  }
+  if (characters < 2 || characters > 1024 * 1024)
+    return Out::failure(capture_error("legacy_profile_name_invalid"));
+  std::vector<wchar_t> profile(characters + 1);
+  if (!GetICMProfileW(dc, &characters, profile.data()))
+    return failed("GetICMProfileW", GetLastError());
+  if (!profile.front()) return Out::failure(capture_error("legacy_profile_name_invalid"));
+  return Out::success(utf8(profile.data()));
+}
+
+Result<std::vector<WindowsDisplayInfo>, Error> enumerate_display_state(
+    DiagnosticsPort* diagnostics, std::uintptr_t only_monitor) {
   try {
     winrt::com_ptr<IDXGIFactory1> factory;
     windows_capture_call("CreateDXGIFactory1", [&] {
@@ -215,6 +297,7 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(Diagno
         DXGI_OUTPUT_DESC1 desc{};
         windows_capture_call("IDXGIOutput6.GetDesc1", [&] { winrt::check_hresult(advanced->GetDesc1(&desc)); });
         if (!desc.AttachedToDesktop) continue;
+        if (only_monitor && reinterpret_cast<std::uintptr_t>(desc.Monitor) != only_monitor) continue;
         WindowsDisplayInfo info;
         info.monitor = reinterpret_cast<std::uintptr_t>(desc.Monitor);
         info.snapshot.id = DisplayId{static_cast<std::uint64_t>(info.monitor)};
@@ -325,7 +408,10 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(Diagno
         white.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, sizeof(white), path.targetInfo.adapterId, path.targetInfo.id};
         const auto white_result = windows_capture_status("DisplayConfigGetDeviceInfo.SDR_WHITE_LEVEL", [&] {
           return DisplayConfigGetDeviceInfo(&white.header); });
-        if (white_result.value == ERROR_SUCCESS) info.source_white.sdr_white_nits = white.SDRWhiteLevel * 80.0 / 1000.0;
+        if (white_result.value == ERROR_SUCCESS) {
+          info.sdr_white_level = white.SDRWhiteLevel;
+          info.source_white.sdr_white_nits = white.SDRWhiteLevel * 80.0 / 1000.0;
+        }
         else if (info.source_white.hdr_active) {
           auto error = white_result.error("sdr_white_unavailable", HRESULT_FROM_WIN32(white_result.value));
           error.safe_context["displayId"] = std::to_string(info.snapshot.id.value);
@@ -345,46 +431,8 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(Diagno
         record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.white", "success",
             {{"displayId", std::to_string(info.snapshot.id.value)}, {"scale", "1"}});
       }
-      const auto name = winrt::to_hstring(info.device_name);
-      const auto dc_result = windows_capture_status("CreateDCW", [&] {
-        return CreateDCW(L"DISPLAY", name.c_str(), nullptr, nullptr); });
-      const HDC dc = dc_result.value;
-      std::optional<Error> profile_query_error;
-      if (dc) {
-        DWORD chars = 32768;
-        std::vector<wchar_t> profile(chars);
-        const auto queried = windows_capture_status("GetICMProfileW", [&] {
-          const bool success = GetICMProfileW(dc, &chars, profile.data()) != FALSE;
-          const DWORD code = success ? ERROR_SUCCESS : GetLastError();
-          return std::pair{success, code};
-        });
-        if (queried.value.first) info.icc_path = utf8(profile.data());
-        else {
-          const auto native_error = queried.value.second;
-          profile_query_error = queried.error("legacy_profile_unavailable",
-              native_error ? std::optional<HRESULT>{HRESULT_FROM_WIN32(native_error)} : std::nullopt);
-        }
-        DeleteDC(dc);
-      } else {
-        // CreateDCW does not promise a meaningful GetLastError on failure.
-        profile_query_error = dc_result.error("legacy_profile_unavailable");
-      }
       if (info.advanced_color_mode == 0) {
-        if (info.icc_path.empty()) {
-          auto error = profile_query_error.value_or(capture_error("legacy_profile_unavailable"));
-          error.safe_context["displayId"] = std::to_string(info.snapshot.id.value);
-          return Result<std::vector<WindowsDisplayInfo>, Error>::failure(std::move(error));
-        }
-        auto profile = windows_load_icc_profile(info.icc_path);
-        if (!profile) {
-          auto error = profile.error();
-          error.safe_context["displayId"] = std::to_string(info.snapshot.id.value);
-          return Result<std::vector<WindowsDisplayInfo>, Error>::failure(std::move(error));
-        }
-        info.icc_profile = std::move(profile.value());
-        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.profile", "success",
-            {{"displayId", std::to_string(info.snapshot.id.value)},
-             {"source", info.icc_profile->sha256}, {"reason", "loaded"}});
+        windows_resolve_display_icc(info, diagnostics);
       }
     }
     if (displays.empty()) return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("no_displays"));
@@ -396,6 +444,65 @@ Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(Diagno
     // Only non-native conversion code should reach this fallback.
     return Result<std::vector<WindowsDisplayInfo>, Error>::failure(capture_error("enumerate_displays", e.code()));
   }
+}
+}  // namespace
+
+Result<std::string, Error> windows_effective_icc_path(const std::string& device_name,
+    const WindowsIccPathQuery& configured_query, const WindowsIccPathQuery& dc_default_query) {
+  auto configured = configured_query(device_name);
+  if (configured) return configured;
+  const auto& context = configured.error().safe_context;
+  const auto api = context.find("api");
+  const auto code = context.find("nativeCode");
+  // Only these two WCS calls use ERROR_FILE_NOT_FOUND to report that no
+  // explicit profile is configured. Never hide scope, access or I/O failures.
+  if (api == context.end() || code == context.end() || code->second != "2" ||
+      (api->second != "WcsGetDefaultColorProfileSize" && api->second != "WcsGetDefaultColorProfile"))
+    return configured;
+  return dc_default_query(device_name);
+}
+
+Result<std::string, Error> windows_effective_icc_path(
+    const std::string& device_name, DiagnosticsPort* diagnostics) {
+  return windows_effective_icc_path(device_name, configured_icc_path,
+      [diagnostics](const std::string& name) {
+        auto result = dc_default_icc_path(name);
+        if (result) record_diagnostic_stage(diagnostics, {}, {}, "windows.color",
+            "capture.profile_default", "success", {{"api", "GetICMProfileW"},
+            {"nativeCode", "2"}, {"reason", "no_explicit_profile"}});
+        return result;
+      });
+}
+
+void windows_resolve_display_icc(WindowsDisplayInfo& display,
+    DiagnosticsPort* diagnostics, const WindowsIccPathQuery& query,
+    const WindowsIccProfileLoader& loader) {
+  auto path = query ? query(display.device_name) :
+      windows_effective_icc_path(display.device_name, diagnostics);
+  display.icc_path = path ? path.value() : std::string{};
+  auto profile = path ? (loader ? loader(display.icc_path) :
+      windows_load_icc_profile(display.icc_path)) :
+      Result<std::shared_ptr<const WindowsIccProfile>, Error>::failure(path.error());
+  display.icc_profile_assumed_srgb = !profile;
+  display.icc_profile = profile ? std::move(profile.value()) : windows_srgb_icc_profile();
+  record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.profile",
+      profile ? "success" : "fallback",
+      {{"displayId", std::to_string(display.snapshot.id.value)},
+       {"source", profile ? display.icc_profile->sha256 : "assumed_srgb"}},
+      profile ? nullptr : &profile.error());
+}
+
+Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(DiagnosticsPort* diagnostics) {
+  return enumerate_display_state(diagnostics, 0);
+}
+
+Result<WindowsDisplayInfo, Error> windows_query_display_state(
+    std::uintptr_t monitor, DiagnosticsPort* diagnostics) {
+  using Out = Result<WindowsDisplayInfo, Error>;
+  if (!monitor) return Out::failure(capture_error("invalid_display_monitor"));
+  auto displays = enumerate_display_state(diagnostics, monitor);
+  if (!displays) return Out::failure(displays.error());
+  return Out::success(std::move(displays.value().front()));
 }
 
 Result<WindowsRawCapture, Error> windows_capture_display(

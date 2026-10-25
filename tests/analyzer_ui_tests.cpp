@@ -516,6 +516,392 @@ void report_keeps_visible_geometry_and_source_hole() {
                             [](std::uint8_t c) { return c != 0; }));
 }
 
+void display_errors_stay_on_screen_without_changing_reports() {
+  Fixture f;
+  f.add_samples();
+  auto *source = f.window.source_widget();
+  source->zoom_at(source->rect().center(), 2);
+  source->setFocus();
+  wait_events(220);
+  auto *status = child<QLabel>(f.window, "analyzerStatus");
+  HDRSHOT_CHECK(status->isHidden());
+  const QString error = "Display target query failed\n"
+                        "Controlled non-ICC failure; frozen analysis remains valid";
+  f.window.show_display_error(error);
+  wait_events(220);
+  HDRSHOT_CHECK(status->isVisible());
+  // Compare reports of the same completed analysis and view: the live error
+  // row can itself resize plots before export, so settle that work first.
+  status->hide();
+  events();
+  const auto baseline = f.window.report_plan();
+  HDRSHOT_CHECK(status->isHidden());
+  HDRSHOT_CHECK(status->property("displayError").toBool());
+  status->show();
+  events();
+  int exported = 0;
+  f.window.set_export_handler([&](analysis::ExportAction action,
+                                 analysis::ReportPlan plan) {
+    ++exported;
+    HDRSHOT_CHECK(action == analysis::ExportAction::save_analysis ||
+                  action == analysis::ExportAction::copy_analysis);
+    HDRSHOT_CHECK(plan.underlay.size == baseline.underlay.size);
+    HDRSHOT_CHECK(plan.underlay.rgba == baseline.underlay.rgba);
+    HDRSHOT_CHECK(plan.overlay.rgba == baseline.overlay.rgba);
+    HDRSHOT_CHECK(plan.source_rect == baseline.source_rect);
+    HDRSHOT_CHECK(plan.source_view.scale == baseline.source_view.scale);
+    HDRSHOT_CHECK(plan.source_view.offset_x == baseline.source_view.offset_x);
+    HDRSHOT_CHECK(plan.source_view.offset_y == baseline.source_view.offset_y);
+  });
+  HDRSHOT_CHECK(status->isVisible());
+  const QRect live_geometry = source->geometry();
+  const auto live_view = f.window.source_view();
+  const auto transform = source->transform();
+  const auto revision = f.window.current_request().revision;
+  const int requests = f.requests;
+  const auto check_live_state = [&] {
+    HDRSHOT_CHECK(status->isVisible());
+    HDRSHOT_CHECK(status->text() == error);
+    HDRSHOT_CHECK(status->property("displayError").toBool());
+    HDRSHOT_CHECK(status->property("error").toBool());
+    HDRSHOT_CHECK(source->geometry() == live_geometry);
+    HDRSHOT_CHECK(source->transform().pan == transform.pan);
+    HDRSHOT_CHECK(source->transform().scale == transform.scale);
+    HDRSHOT_CHECK(source->transform().fit == transform.fit);
+    HDRSHOT_CHECK(f.window.source_view().scale == live_view.scale);
+    HDRSHOT_CHECK(f.window.current_request().revision == revision);
+    HDRSHOT_CHECK(f.requests == requests);
+  };
+  for (const auto *name : {"analyzerSave", "analyzerCopy"}) {
+    child<QToolButton>(f.window, name)->click();
+    check_live_state();
+    // Catch a delayed refinement caused by temporary report-only resizing.
+    wait_events(220);
+    check_live_state();
+    f.window.set_export_busy(true);
+    f.window.set_export_busy(false);
+    check_live_state();
+  }
+  HDRSHOT_CHECK(exported == 2);
+
+  // Explicitly hidden display errors must remain hidden after direct callers.
+  status->hide();
+  events();
+  const auto hidden = f.window.report_plan();
+  HDRSHOT_CHECK(hidden.underlay.rgba == baseline.underlay.rgba);
+  HDRSHOT_CHECK(status->isHidden());
+  HDRSHOT_CHECK(status->property("displayError").toBool());
+  f.window.clear_display_error();
+  HDRSHOT_CHECK(status->isHidden());
+  HDRSHOT_CHECK(!status->property("error").toBool());
+}
+
+void report_export_keeps_control_styles() {
+  Fixture f;
+  wait_events(250);
+  struct Probe final : QObject {
+    int changes{};
+    bool eventFilter(QObject *object, QEvent *event) override {
+      if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange) {
+        ++changes;
+        std::cout << "export-control-change " << object->objectName().toStdString()
+                  << " event=" << int(event->type()) << '\n';
+      }
+      return false;
+    }
+  } probe;
+  for (auto *control : f.window.findChildren<QToolButton *>())
+    control->installEventFilter(&probe);
+  for (auto *control : f.window.findChildren<QComboBox *>())
+    control->installEventFilter(&probe);
+  int exported = 0;
+  f.window.set_export_handler([&](auto, auto) { ++exported; f.window.set_export_busy(true); });
+  for (const auto *name : {"analyzerSave", "analyzerCopy"}) {
+    const int previous = exported;
+    child<QToolButton>(f.window, name)->click();
+    events();
+    HDRSHOT_CHECK(exported == previous + 1);
+    HDRSHOT_CHECK(child<QToolButton>(f.window, "analyzerSave")->isEnabled());
+    HDRSHOT_CHECK(child<QToolButton>(f.window, "analyzerCopy")->isEnabled());
+    for (const auto *other : {"analyzerSave", "analyzerCopy"}) {
+      auto *button = child<QToolButton>(f.window, other);
+      button->click();
+      for (auto *action : button->menu()->actions()) action->trigger();
+    }
+    HDRSHOT_CHECK(exported == previous + 1);
+    HDRSHOT_CHECK(child<QToolButton>(f.window, "analyzerSave")->text() == "保存分析图");
+    f.window.set_export_busy(false);
+  }
+  HDRSHOT_CHECK(exported == 2);
+  HDRSHOT_CHECK(probe.changes == 0);
+}
+
+int press_content_pixels(const QImage &image) {
+  int count = 0;
+  for (int y = 0; y < image.height(); ++y)
+    for (int x = 0; x < image.width(); ++x) {
+      const QColor c = image.pixelColor(x, y);
+      if ((c.red() > 180 && c.green() > 180 && c.blue() > 180) ||
+          (c.red() > 180 && c.green() < 120 && c.blue() < 130)) ++count;
+    }
+  return count;
+}
+void analyzer_press_feedback_contract() {
+  Fixture f;
+  auto *button = child<QToolButton>(f.window, "analyzerSourceFit");
+  const auto geometry = button->geometry();
+  const QImage before = button->grab().toImage();
+  mouse(button, QEvent::MouseButtonPress, button->rect().center(), Qt::LeftButton, Qt::LeftButton);
+  HDRSHOT_CHECK(button->isDown());
+  const QImage down = button->grab().toImage();
+  std::cout << "press-content before=" << press_content_pixels(before)
+            << " down=" << press_content_pixels(down) << '\n';
+  HDRSHOT_CHECK(press_content_pixels(down) < press_content_pixels(before) * .9);
+  HDRSHOT_CHECK(button->geometry() == geometry);
+  mouse(button, QEvent::MouseButtonRelease, button->rect().center(), Qt::LeftButton, Qt::NoButton);
+  HDRSHOT_CHECK(!button->isDown());
+  HDRSHOT_CHECK(button->grab().toImage() == before);
+
+  f.add_samples();
+  const QString artifact_folder = qEnvironmentVariable("HDRSHOT_ANALYZER_PRESS_ARTIFACTS");
+  if (!artifact_folder.isEmpty()) HDRSHOT_CHECK(QDir().mkpath(artifact_folder));
+  for (const auto *name : {"analyzerSave", "analyzerCopy", "analyzerTool0", "analyzerTool1",
+       "analyzerTool2", "analyzerTool3", "analyzerSourceFit", "analyzerScopeFit0",
+       "analyzerScopeFit1", "analyzerScopeFit2", "analyzerReferences0", "analyzerReferences1",
+       "analyzerClearSwatches", "analyzerCopySwatch1", "analyzerRemoveSwatch1",
+       "analyzerSwatchPairHandle1"}) {
+    auto *control = child<QToolButton>(f.window, name);
+    HDRSHOT_CHECK(dynamic_cast<analyzer_control_style::PressToolButton *>(control));
+    const auto rect = control->geometry();
+    const auto normal = control->grab().toImage();
+    const bool checked = control->isChecked();
+    std::cout << "press-check " << name << " visible=" << control->isVisible() << '\n';
+    if (!control->isEnabled()) {
+      mouse(control, QEvent::MouseButtonPress, control->rect().center(), Qt::LeftButton, Qt::LeftButton);
+      HDRSHOT_CHECK(!control->isDown() && control->grab().toImage() == normal);
+      continue;
+    }
+    mouse(control, QEvent::MouseButtonPress, control->rect().center(), Qt::LeftButton, Qt::LeftButton);
+    HDRSHOT_CHECK(control->isDown());
+    const auto pressed = control->grab().toImage();
+    if (!artifact_folder.isEmpty()) {
+      HDRSHOT_CHECK(normal.save(artifact_folder + "/" + name + "_before.png"));
+      HDRSHOT_CHECK(pressed.save(artifact_folder + "/" + name + "_pressed.png"));
+    }
+    HDRSHOT_CHECK(pressed != normal);
+    HDRSHOT_CHECK(control->geometry() == rect && control->isChecked() == checked);
+    QEvent cancel(QEvent::UngrabMouse); QApplication::sendEvent(control, &cancel);
+    mouse(control, QEvent::MouseButtonRelease, control->rect().center(), Qt::LeftButton, Qt::NoButton);
+    HDRSHOT_CHECK(!control->isDown());
+    HDRSHOT_CHECK(control->grab().toImage() == normal);
+  }
+  for (const auto *name : {"analyzerSave", "analyzerCopy", "analyzerTool1", "analyzerTool2"}) {
+    auto *control = child<QToolButton>(f.window, name);
+    QStyleOptionToolButton option; option.initFrom(control); option.rect = control->rect();
+    option.features = QStyleOptionToolButton::MenuButtonPopup | QStyleOptionToolButton::HasMenu;
+    const auto arrow = control->style()->subControlRect(QStyle::CC_ToolButton, &option,
+                                                       QStyle::SC_ToolButtonMenu, control);
+    const auto normal = control->grab().toImage();
+    QImage pressed;
+    QTimer::singleShot(30, control, [&] { pressed = control->grab().toImage(); control->menu()->hide(); });
+    mouse(control, QEvent::MouseButtonPress, arrow.center(), Qt::LeftButton, Qt::LeftButton);
+    mouse(control, QEvent::MouseButtonRelease, arrow.center(), Qt::LeftButton, Qt::NoButton);
+    HDRSHOT_CHECK(!pressed.isNull());
+    const auto dpr = control->devicePixelRatioF();
+    const QRect arrow_pixels(int(arrow.x()*dpr), int(arrow.y()*dpr), int(arrow.width()*dpr), int(arrow.height()*dpr));
+    const QRect main_pixels(0, 0, int(arrow.x()*dpr), normal.height());
+    std::cout << "arrow-check " << name << " content=" << press_content_pixels(normal.copy(arrow_pixels))
+              << "->" << press_content_pixels(pressed.copy(arrow_pixels)) << '\n';
+    HDRSHOT_CHECK(pressed.copy(arrow_pixels) != normal.copy(arrow_pixels));
+    HDRSHOT_CHECK(press_content_pixels(pressed.copy(main_pixels)) == press_content_pixels(normal.copy(main_pixels)));
+    HDRSHOT_CHECK(!control->isDown());
+    if (!artifact_folder.isEmpty()) HDRSHOT_CHECK(pressed.save(artifact_folder + "/" + name + "_arrow_pressed.png"));
+  }
+  const auto check_dynamic_press = [&](QToolButton *control) {
+    HDRSHOT_CHECK(control && dynamic_cast<analyzer_control_style::PressToolButton *>(control));
+    std::cout << "dynamic-press " << control->objectName().toStdString()
+              << " enabled=" << control->isEnabled() << " visible=" << control->isVisible() << '\n';
+    const auto normal = control->grab().toImage();
+    const auto geometry = control->geometry();
+    mouse(control, QEvent::MouseButtonPress, control->rect().center(), Qt::LeftButton, Qt::LeftButton);
+    HDRSHOT_CHECK(control->isDown());
+    HDRSHOT_CHECK(control->grab().toImage() != normal);
+    QEvent cancel(QEvent::UngrabMouse); QApplication::sendEvent(control, &cancel);
+    mouse(control, QEvent::MouseButtonRelease, control->rect().center(), Qt::LeftButton, Qt::NoButton);
+    HDRSHOT_CHECK(!control->isDown() && control->geometry() == geometry);
+    HDRSHOT_CHECK(control->grab().toImage() == normal);
+  };
+  click(child<QToolButton>(f.window, "analyzerSwatchPairHandle1"),
+        child<QToolButton>(f.window, "analyzerSwatchPairHandle1")->rect().center());
+  click(child<QToolButton>(f.window, "analyzerSwatchPairHandle2"),
+        child<QToolButton>(f.window, "analyzerSwatchPairHandle2")->rect().center());
+  wait_events(500);
+  check_dynamic_press(child<QToolButton>(f.window, "analyzerUnlinkSwatchPair1_2"));
+  for (int i = 0; i < 2; ++i) {
+    const auto suffix = QString::number(i);
+    auto *entry = f.window.findChild<QToolButton *>("analyzerReferences" + suffix);
+    entry->click(); events();
+    auto *add = f.window.findChild<QToolButton *>("analyzerAddReference" + suffix);
+    auto *clear = f.window.findChild<QToolButton *>("analyzerClearRefs" + suffix);
+    check_dynamic_press(add); check_dynamic_press(clear);
+    for (int n = 0; n < 6; ++n) {
+      f.window.findChild<QLineEdit *>("analyzerRefValue" + suffix)->setText(QString::number(100 + n * 10));
+      add->click(); events();
+    }
+    auto *panel = add->parentWidget();
+    check_dynamic_press(panel->findChild<QToolButton *>("analyzerDeleteReference"));
+    auto *previous = panel->findChild<QToolButton *>("analyzerRefPrevious");
+    check_dynamic_press(previous);
+    previous->click(); events();
+    check_dynamic_press(panel->findChild<QToolButton *>("analyzerRefNext"));
+    check_dynamic_press(panel->findChild<QToolButton *>("analyzerDeleteReference"));
+    entry->click(); events();
+  }
+  // Held feedback is screen-only: reporting does not mutate live down state.
+  button->setFocus(); events();
+  const auto baseline = f.window.report_plan();
+  mouse(button, QEvent::MouseButtonPress, button->rect().center(), Qt::LeftButton, Qt::LeftButton);
+  const auto held_report = f.window.report_plan();
+  HDRSHOT_CHECK(button->isDown());
+  HDRSHOT_CHECK(held_report.underlay.rgba == baseline.underlay.rgba);
+  QEvent cancel(QEvent::UngrabMouse); QApplication::sendEvent(button, &cancel);
+  QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+  QApplication::sendEvent(button, &press); events();
+  HDRSHOT_CHECK(button->isDown());
+  button->setEnabled(false); HDRSHOT_CHECK(!button->isDown());
+  button->setEnabled(true);
+  QKeyEvent release(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier);
+  QApplication::sendEvent(button, &release); events();
+}
+
+void native_analyzer_press_feedback() {
+  const QString folder = qEnvironmentVariable("HDRSHOT_ANALYZER_PRESS_NATIVE");
+  HDRSHOT_CHECK(QDir().mkpath(folder));
+  Fixture f;
+  f.window.setWindowFlag(Qt::WindowStaysOnTopHint); f.window.show();
+  f.add_samples();
+  child<QToolButton>(f.window, "analyzerTool1")->click();
+  int index = 0;
+  for (auto *screen : QGuiApplication::screens()) {
+    f.window.move(screen->availableGeometry().topLeft() + QPoint(25, 25));
+    f.window.raise(); f.window.activateWindow();
+    QCursor::setPos(screen->availableGeometry().bottomRight() - QPoint(5, 5));
+    wait_events(500);
+    for (const auto *name : {"analyzerSave", "analyzerCopy", "analyzerSourceFit", "analyzerTool1",
+                            "analyzerClearSwatches", "analyzerSwatchPairHandle1"}) {
+      auto *control = child<QToolButton>(f.window, name);
+      const auto capture = [&] {
+        const auto pos = control->mapToGlobal(QPoint()) - screen->geometry().topLeft();
+        return screen->grabWindow(0, pos.x(), pos.y(), control->width(), control->height()).toImage();
+      };
+      const auto before = capture();
+      const auto prefix = folder + QString("/%1_%2").arg(++index).arg(name);
+      HDRSHOT_CHECK(before.save(prefix + "_before.png"));
+      mouse(control, QEvent::MouseButtonPress, control->rect().center(), Qt::LeftButton, Qt::LeftButton);
+      wait_events(60);
+      HDRSHOT_CHECK(control->isDown());
+      const auto pressed = capture();
+      HDRSHOT_CHECK(pressed.save(prefix + "_pressed.png"));
+      HDRSHOT_CHECK(pressed != before);
+      // Split-button arrow and static border remain untouched; visible content shrinks.
+      std::cout << "native-press screen=" << screen->name().toStdString()
+                << " dpr=" << screen->devicePixelRatio() << " button=" << name
+                << " content=" << press_content_pixels(before) << "->" << press_content_pixels(pressed) << '\n';
+      QEvent cancel(QEvent::UngrabMouse); QApplication::sendEvent(control, &cancel);
+      mouse(control, QEvent::MouseButtonRelease, control->rect().center(), Qt::LeftButton, Qt::NoButton);
+      wait_events(60);
+      const auto restored = capture();
+      HDRSHOT_CHECK(restored.save(prefix + "_restored.png"));
+      HDRSHOT_CHECK(restored == before);
+    }
+    for (const auto *name : {"analyzerSave", "analyzerTool1"}) {
+      auto *control = child<QToolButton>(f.window, name);
+      QStyleOptionToolButton option; option.initFrom(control); option.rect = control->rect();
+      option.features = QStyleOptionToolButton::MenuButtonPopup | QStyleOptionToolButton::HasMenu;
+      const auto arrow = control->style()->subControlRect(QStyle::CC_ToolButton, &option,
+                                                         QStyle::SC_ToolButtonMenu, control);
+      const auto capture = [&] {
+        const auto pos = control->mapToGlobal(QPoint()) - screen->geometry().topLeft();
+        return screen->grabWindow(0, pos.x(), pos.y(), control->width(), control->height()).toImage();
+      };
+      const auto normal = capture();
+      QImage pressed;
+      QTimer::singleShot(80, control, [&] { pressed = capture(); control->menu()->hide(); });
+      mouse(control, QEvent::MouseButtonPress, arrow.center(), Qt::LeftButton, Qt::LeftButton);
+      mouse(control, QEvent::MouseButtonRelease, arrow.center(), Qt::LeftButton, Qt::NoButton);
+      wait_events(60);
+      HDRSHOT_CHECK(!pressed.isNull() && pressed != normal);
+      HDRSHOT_CHECK(!control->isDown() && capture() == normal);
+      const auto prefix = folder + QString("/%1_%2_arrow").arg(++index).arg(name);
+      HDRSHOT_CHECK(normal.save(prefix + "_before.png"));
+      HDRSHOT_CHECK(pressed.save(prefix + "_pressed.png"));
+      std::cout << "native-arrow screen=" << screen->name().toStdString()
+                << " dpr=" << screen->devicePixelRatio() << " button=" << name << '\n';
+    }
+  }
+}
+
+void native_export_buttons_stay_stable() {
+  const QString folder = qEnvironmentVariable("HDRSHOT_ANALYZER_EXPORT_NATIVE");
+  HDRSHOT_CHECK(QDir().mkpath(folder));
+  Fixture f;
+  // Keep the test surface visible even when another desktop app is topmost.
+  f.window.setWindowFlag(Qt::WindowStaysOnTopHint);
+  f.window.show();
+  int exported = 0;
+  f.window.set_export_handler([&](auto, auto) { ++exported; f.window.set_export_busy(true); });
+  int index = 0;
+  for (auto *screen : QGuiApplication::screens()) {
+    f.window.move(screen->availableGeometry().topLeft() + QPoint(25, 25));
+    f.window.raise();
+    f.window.activateWindow();
+    QCursor::setPos(screen->availableGeometry().bottomRight() - QPoint(5, 5));
+    wait_events(500);
+    const auto window_rect = f.window.frameGeometry();
+    std::cout << "native-window " << window_rect.x() << ',' << window_rect.y()
+              << ' ' << window_rect.width() << 'x' << window_rect.height()
+              << " active=" << f.window.isActiveWindow() << '\n';
+    screen->grabWindow(0).save(folder + QString("/screen_%1.png").arg(index));
+    QList<QToolButton *> controls;
+    for (auto *control : f.window.findChildren<QToolButton *>())
+      if (control->isVisible()) controls.push_back(control);
+    const auto capture = [&](QWidget *control) {
+      const auto pos = control->mapToGlobal(QPoint()) - screen->geometry().topLeft();
+      return screen->grabWindow(0, pos.x(), pos.y(), control->width(), control->height()).toImage();
+    };
+    for (const auto *name : {"analyzerSave", "analyzerCopy"}) {
+      QList<QImage> baseline;
+      for (auto *control : controls) baseline.push_back(capture(control));
+      auto *button = child<QToolButton>(f.window, name);
+      HDRSHOT_CHECK(capture(button).save(folder + QString("/%1_before.png").arg(++index)));
+      button->click();
+      // Screen reads do not call QWidget::render/grab or request repaint.
+      for (int frame = 0; frame < 12; ++frame) {
+        wait_events(16);
+        for (int i = 0; i < controls.size(); ++i) {
+          const auto current = capture(controls[i]);
+          if (current != baseline[i]) {
+            std::cout << "changed-control=" << controls[i]->objectName().toStdString()
+                      << " frame=" << frame << '\n';
+            baseline[i].save(folder + "/changed-before.png");
+            current.save(folder + "/changed-after.png");
+          }
+          HDRSHOT_CHECK(current == baseline[i]);
+        }
+      }
+      HDRSHOT_CHECK(capture(button).save(folder + QString("/%1_busy.png").arg(index)));
+      f.window.set_export_busy(false);
+      wait_events(50);
+      for (int i = 0; i < controls.size(); ++i)
+        HDRSHOT_CHECK(capture(controls[i]) == baseline[i]);
+      std::cout << "native-export-stable screen=" << screen->name().toStdString()
+                << " dpr=" << screen->devicePixelRatio() << " action=" << name
+                << " controls=" << controls.size() << " frames=12\n";
+    }
+  }
+  HDRSHOT_CHECK(exported == index);
+}
+
 void stale_results_and_close_confirmation() {
   Fixture f;
   const auto original = f.last_result;
@@ -1487,11 +1873,36 @@ void operation_overlay_is_transparent_and_tracks_tools() {
     for (int x=0; x<empty.width(); ++x)
       HDRSHOT_CHECK(empty.pixelColor(x,y).alpha()==0);
   HDRSHOT_CHECK(empty.cacheKey() == source->presentation_overlay(dpr).cacheKey());
+  analysis::SourceView presented;
+  f.window.set_present_handler([&](auto view, auto surface) {
+    HDRSHOT_CHECK(surface != 0);
+    presented = std::move(view);
+  });
+  wait_events(70);
   child<QToolButton>(f.window,"analyzerTool1")->click();
   mouse(source,QEvent::MouseMove,source->local_at({60,40}),Qt::NoButton,Qt::NoButton);
   auto hover = source->presentation_overlay(dpr);
   HDRSHOT_CHECK(hover != empty);
   HDRSHOT_CHECK(source->retained_overlay(dpr) == empty);
+  wait_events(70);
+  HDRSHOT_CHECK(bool(presented.operation_overlay));
+  const auto has_marks = [](const analysis::UiImage &image) {
+    for (std::size_t i = 3; i < image.rgba.size(); i += 4)
+      if (image.rgba[i]) return true;
+    return false;
+  };
+  HDRSHOT_CHECK(has_marks(*presented.operation_overlay));
+  HDRSHOT_CHECK(!f.window.source_view().operation_overlay);
+  const auto report = f.window.report_plan();
+  HDRSHOT_CHECK(!report.source_view.operation_overlay);
+  HDRSHOT_CHECK(!has_marks(report.overlay));
+  HDRSHOT_CHECK(report.source_view.target_size == presented.target_size);
+  HDRSHOT_CHECK(report.source_view.scale == presented.scale);
+  // Report rasterization temporarily changes overlay mode. The next display
+  // frame restores the live picker while the report remains retained-only.
+  wait_events(70);
+  HDRSHOT_CHECK(presented.operation_overlay && has_marks(*presented.operation_overlay));
+  f.window.set_present_handler({});
   QApplication::sendEvent(source,&leave);
   HDRSHOT_CHECK(source->presentation_overlay(dpr) == empty);
   f.window.add_swatch({60,40},1);
@@ -2469,10 +2880,16 @@ int main(int argc, char **argv) {
   platform_config.flush();
   // Qt splits platform arguments on ':'. A Windows drive prefix would be
   // interpreted as another option, so use a same-directory relative filename.
-  qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" +
-      QDir::current().relativeFilePath(platform_config.fileName()).toUtf8());
+  if (!qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_EXPORT_NATIVE") &&
+      !qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_PRESS_NATIVE"))
+    qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" +
+        QDir::current().relativeFilePath(platform_config.fileName()).toUtf8());
   QApplication app(argc, argv);
   app.setFont(QFont("Arial", 10));
+  if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_PRESS_NATIVE"))
+    return hdrshot::test::run({{"native analyzer local press feedback", native_analyzer_press_feedback}});
+  if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_EXPORT_NATIVE"))
+    return hdrshot::test::run({{"native export buttons stay stable", native_export_buttons_stay_stable}});
   if(qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_VISUAL_ONLY")){
     if(qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_DARK")){auto pal=app.palette();pal.setColor(QPalette::Window,QColor("#25272c"));pal.setColor(QPalette::WindowText,Qt::white);app.setPalette(pal);}
     return hdrshot::test::run({{"native production-window visual artifacts",visual_artifacts}});
@@ -2480,6 +2897,14 @@ int main(int argc, char **argv) {
   std::cout << "TEST_SCREEN logical=" << app.primaryScreen()->size().width()
             << 'x' << app.primaryScreen()->size().height()
             << " dpr=" << app.primaryScreen()->devicePixelRatio() << '\n';
+  if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_DISPLAY_ERROR_ONLY"))
+    return hdrshot::test::run(
+        {{"display errors stay on screen without changing reports",
+          display_errors_stay_on_screen_without_changing_reports}});
+  if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_EXPORT_STYLE_ONLY"))
+    return hdrshot::test::run({{"export preserves live control styles", report_export_keeps_control_styles}});
+  if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_PRESS_ONLY"))
+    return hdrshot::test::run({{"analyzer press shrinks content and restores", analyzer_press_feedback_contract}});
   if (qEnvironmentVariableIsSet("HDRSHOT_SWATCH_PAIR_ONLY"))
     return hdrshot::test::run(
         {{"swatch pairing uses real click events and local updates",
@@ -2515,7 +2940,11 @@ int main(int argc, char **argv) {
         references_validate_enter_and_stay_open},
        {"visible report geometry and transparent source hole",
         report_keeps_visible_geometry_and_source_hole},
+       {"display errors stay on screen without changing reports",
+        display_errors_stay_on_screen_without_changing_reports},
        {"perceptual gamut report matches current visible scope", gamut_report_matches_visible_scope},
+       {"export preserves live control styles", report_export_keeps_control_styles},
+       {"analyzer press shrinks content and restores", analyzer_press_feedback_contract},
        {"stale result and independent close confirmation",
         stale_results_and_close_confirmation},
        {"close dialog stays dark without leaking into system windows",

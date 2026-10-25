@@ -1,6 +1,6 @@
 # 从源码构建 SeriousShot
 
-最后更新：2026-10-14 00:00:38 CST
+最后更新：2026-10-25 13:05:40 CST
 
 [返回产品介绍](../README.md)
 
@@ -13,14 +13,14 @@
 ```sh
 ./scripts/bootstrap_macos_dependencies.sh
 python3 scripts/build_update_dependencies.py
-.build-tools/cmake-venv/bin/cmake --preset mac-qt-release
-.build-tools/cmake-venv/bin/cmake --build --preset mac-qt-release -j 6
-.build-tools/cmake-venv/bin/ctest --preset mac-qt-release --output-on-failure
+python3 scripts/build-macos.py
 ```
 
 应用产物为 `build-qt/SeriousShot.app`。首次运行需要屏幕录制授权。使用自己的稳定开发签名；`scripts/sign_macos_development_app.sh` 接受 `HDRSHOT_CODESIGN_SHA1` 和 `HDRSHOT_CODESIGN_NAME`，默认身份仅属于原开发环境，不包含私钥，不能在其他机器直接使用。更新前正常退出旧实例：重建磁盘上的 App 不会替换正在运行的进程。
 
-不启用 Qt 宿主可使用 `mac-release` preset。原生和图形测试有相应环境要求；部分样图回归依赖外部 fixture，缺失时跳过不代表通过。macOS 15.5 外接 HDR 截图不受支持，详见首页系统支持。
+统一脚本固定执行配置、完整构建和串行CTest，并将每次的日志、JUnit与`summary.json`保存到`.agent/logs/macos-<日期时间>-<标识>/`。可用`--build-dir <目录>`选择独立构建目录；构建与测试使用同一目录。退出码0表示已注册的必需检查完成，1表示失败，2表示必需检查未完成；可选外部样图缺失与最终屏幕像素未验会另行列出，不能把退出码0扩大解释为所有人工／设备矩阵均已验证。脚本不启动App。原始`cmake --build`仍只编译；日常验证使用上述统一入口。
+
+不启用 Qt 宿主可使用 `mac-release` preset。原生和图形测试有相应环境要求；固定PQ图片的libuhdr误差专项按已验证输入决定是否运行；需要执行时路径未配置或不可读会报告未完成。macOS 15.5 外接 HDR 截图不受支持，详见首页系统支持。
 
 ## Windows
 
@@ -51,3 +51,14 @@ Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR �
 更新器构建选项：正式渠道使用 `HDRSHOT_UPDATE_CHANNEL=stable` 与正式 `HDRSHOT_UPDATE_PUBLIC_KEY`、`HDRSHOT_UPDATE_KEY_ID`；测试渠道须显式启用 `HDRSHOT_UPDATE_TESTING` 并配置独立测试公钥。私钥不得编入客户端。`HDRSHOT_WINDOWS_UPDATE_NATIVE_VALIDATED` 默认关闭，只有完成 Windows 原生更新事务验收后才启用自动覆盖；macOS 当前使用 DMG 安装路径。Windows 构建脚本已调用更新依赖准备脚本。
 
 更新清单签名、版本规则及平台启用条件见 [软件更新协议](UPDATES.md)。
+
+## 默认测试范围
+
+核心颜色管理、元数据传递、显示参数／刷新、保存复制、设置实际生效及产品性能回归每次执行。自动更新测试允许复用同一构建目录中已验证的输入；文件内容／公共依赖／配置／实际测试程序／Qt动态库变化或依据缺失时仍运行。Mac使用`--force-updates`、Windows使用`-ForceUpdateTests`强制复跑；两端打包均强制更新测试。结果汇总会列出本次运行与已验证输入复用，不能混称本次全跑。
+
+Mac的生产性能命令已接入默认CTest，原始输出、结构化测量和固定基线比较保存在构建目录`performance/`，每次使用独立时间戳；既有断言仍生效，首次测量和无既定阈值的变化不等于性能无退化。Windows保留现有连续标注性能门禁。原始CTest仍运行全部已注册测试，不做自动更新复用；正常构建入口统一使用选择和结果汇总脚本。
+
+未采用的macOS ImageIO PNG编码候选方案不在默认测试中；只有评估该方案时，用独立构建目录配置`-DHDRSHOT_TEST_IMAGEIO_PNG_CANDIDATE=ON`，再运行`ctest -R '^hdrshot_macos_imageio_png_contract$'`。生产PNG编码／压缩测试保持必测，UHDR真实图片专项缺失依然明确记录。
+
+
+固定 PQ 图片的 libuhdr 编码误差专项：Mac 使用 `--uhdr-fixture /absolute/path/to/sample.PNG` 指定图片并运行，通过后路径记在该构建目录；以后依赖／实际测试程序、配置、系统或样图变化自动复跑，同输入通过则省略。`--force-uhdr-fixture` 强制复跑已配置的图片；也支持 `HDRSHOT_ULTRAHDR_FIXTURE` 环境变量提供路径。首次或记录损坏时需完成一次，不把未配置路径写成图片不存在。上述参数适用于 `scripts/build-macos.py` 以及已完成构建后的 `scripts/test_execution_policy.py`。原始 CTest 命令不使用这些复用规则。

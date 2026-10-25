@@ -36,6 +36,14 @@ class OverlayEditorWidget final : public QWidget {
   [[nodiscard]] bool magnifier_applicable() const {return !interaction_locked_ && (selection_.desktop_rect.empty() || dragging_selection_ || selection_adjustment_.has_value());}
   void set_clean_content_presented(bool enabled) { clean_content_presented_ = enabled; update(); }
 
+  // Enabled by the shell after its native presentation path is validated.
+  void set_annotation_preview_coalescing(bool enabled) {
+    coalesce_annotation_moves_ = enabled;
+  }
+  [[nodiscard]] std::uint64_t annotation_preview_epoch() const {
+    return annotation_preview_epoch_;
+  }
+
   using PreviewChanged =
       std::function<void(
           const SelectionSnapshot&,
@@ -57,6 +65,7 @@ class OverlayEditorWidget final : public QWidget {
   void set_preview_changed(PreviewChanged callback);
   void set_action_requested(ActionRequested callback);
   void set_analysis_available(bool available);
+  void set_pin_available(bool available);
   void set_interaction_started(InteractionStarted callback);
   void set_interaction_locked(bool locked);
   void set_completion_bindings(CompletionBindings bindings);
@@ -91,6 +100,13 @@ class OverlayEditorWidget final : public QWidget {
   void enterEvent(QEnterEvent* event) override;
 
  private:
+  void flush_pending_annotation_move();
+  bool coalesce_annotation_moves_{false};
+  bool processing_annotation_move_{false};
+  bool annotation_move_scheduled_{false};
+  std::optional<QPointF> pending_annotation_move_;
+  std::uint64_t annotation_preview_epoch_{};
+  AnnotationCoverageCache annotation_coverage_cache_;
   QRect magnifier_exclusion_{};
   bool clean_content_presented_{};
   std::optional<AnnotationObject> draft_annotation_;
