@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-27T08:38:10+08:00",
+  "timestamp": "2026-10-27T09:14:16+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "7a3a4d23d998f036e3c8e145322e71c70c870ec7984867fbf1c6f3dc08a46c49",
+      "sha256": "2813fba5a81217a19d040c4226b2cfc80e4484c2664b42ff380f14cd8ca7d940",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -790,6 +790,14 @@
       "sha256": "69c958e5cf200ec5413bf026827a6de16ee088a943fc0f5cd74fe31119331fd9",
       "mode": 420
     },
+    "src/platform/macos/macos_qt_save_feedback_window.hpp": {
+      "sha256": "481f3f3167e981602d6d403187a38d62e7f76e6617d8b55d0a86030db2c5aba4",
+      "mode": 420
+    },
+    "src/platform/macos/macos_qt_save_feedback_window.mm": {
+      "sha256": "19576c59a5d6d9cbc7f8a73ddb352bd709b5902a114526fae495a77d56c7b12a",
+      "mode": 420
+    },
     "src/platform/macos/macos_qt_window_activation.hpp": {
       "sha256": "764fc5c333df363c5f445aff7726ba253afc3a54a4e5cc225d6163d781018d58",
       "mode": 420
@@ -1299,11 +1307,11 @@
       "mode": 420
     },
     "src/ui/qt/save_success_feedback.cpp": {
-      "sha256": "2cb3bd711f494b034f79a41713b84f436ec169f2c3acc4c342e84e1474c40c45",
+      "sha256": "110c007dda65781c5ff3661c0d604ddb9efe417b6491ea5c9d4959ef987eb01f",
       "mode": 420
     },
     "src/ui/qt/save_success_feedback.hpp": {
-      "sha256": "4b60f4f21f9ff43aae052c8e0988c032442dd3521b04695c52d14efe1a5ca730",
+      "sha256": "b5c712465e964950a40724974f6a974b79aa3eb06e9d9519f7625dfb4ede45f1",
       "mode": 420
     },
     "src/ui/qt/settings_window.cpp": {
@@ -1511,11 +1519,11 @@
       "mode": 420
     },
     "tests/macos_native_ui_test_support.hpp": {
-      "sha256": "e8b67a5094e6aee97ff7fad59aa9cc41605c37c24cf80ec38bedb56b01ea4a06",
+      "sha256": "9456959d138da6a145792c02cfdafe39f41a0da377eeeb1d8fca3ab30b0aa2b6",
       "mode": 420
     },
     "tests/macos_native_ui_test_support.mm": {
-      "sha256": "3e0c4777b88de6ef5c0e32c8436d4470a83dfd232d3ef428216b463fe1b396e4",
+      "sha256": "5d9834465ccdaa751fa715bc0e78f2e4307350788e37478a459386f5d5a3d200",
       "mode": 420
     },
     "tests/macos_pinned_screenshot_tests.mm": {
@@ -1611,7 +1619,7 @@
       "mode": 420
     },
     "tests/save_success_feedback_tests.cpp": {
-      "sha256": "b18c80ee5052828b5d8fe080279ee700a3e85119337151e40452d6eedda5dc66",
+      "sha256": "541440e1107279be148a2a80c63f7c51b6c894fb5ce9c8a4c68475cf3e20414e",
       "mode": 420
     },
     "tests/selection_model_tests.cpp": {
@@ -1863,7 +1871,7 @@
       "mode": 420
     },
     "tools/macos_qt_overlay_poc.mm": {
-      "sha256": "196c28031f03029419f615dd48857f2d623edccf06ae7a934646ee46c1c91788",
+      "sha256": "dabe56cd2b5d0eaa6b3584655302ded840bcf64e7aeb9defa6f731e4e027728a",
       "mode": 420
     },
     "tools/macos_window_catalog_probe.mm": {

@@ -63,7 +63,8 @@ NativeWindowContract native_window_contract(QWidget &widget) {
     return {reinterpret_cast<std::uintptr_t>((__bridge void *)view)};
   return {reinterpret_cast<std::uintptr_t>((__bridge void *)view),
           reinterpret_cast<std::uintptr_t>((__bridge void *)window),
-          bool(window.hidesOnDeactivate),bool(window.canBecomeKeyWindow)};
+          bool(window.hidesOnDeactivate),bool(window.canBecomeKeyWindow),
+          window.animationBehavior==NSWindowAnimationBehaviorNone};
 }
 bool native_desktop_ready() {
   CFDictionaryRef session=CGSessionCopyCurrentDictionary();

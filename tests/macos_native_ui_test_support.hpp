@@ -21,6 +21,7 @@ NativeWindowState native_window_state(QWidget &window);
 struct NativeWindowContract {
   std::uintptr_t view{}, window{};
   bool hides_on_deactivate{}, can_become_key{};
+  bool animation_none{};
 };
 // Reads an already-created native host; no activation, ordering or mutation.
 NativeWindowContract native_window_contract(QWidget &window);

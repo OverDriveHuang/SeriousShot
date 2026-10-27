@@ -7,6 +7,7 @@
 #include <QScreen>
 #include <QTimer>
 #include <deque>
+#include <functional>
 
 class QLabel;
 class QWidget;
@@ -21,7 +22,8 @@ struct SaveFeedbackAnchor {
 };
 class SaveSuccessFeedback final : public QObject {
 public:
-  explicit SaveSuccessFeedback(QObject *parent = nullptr);
+  using ConfigureWindow = std::function<void(QWidget &)>;
+  explicit SaveSuccessFeedback(QObject *parent = nullptr, ConfigureWindow configure = {});
   ~SaveSuccessFeedback() override;
   static SaveFeedbackAnchor capture(QWidget *source);
   void completed(const Result<ExportReceipt, Error> &, SaveFeedbackAnchor);
@@ -35,6 +37,7 @@ private:
   Message current_;
   QPointer<QLabel> label_;
   QTimer timer_;
+  ConfigureWindow configure_window_;
   bool scheduled_{};
   bool capture_active_{};
 };

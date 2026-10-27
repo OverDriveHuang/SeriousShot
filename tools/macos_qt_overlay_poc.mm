@@ -3,6 +3,7 @@
 #include "application/export_completion_coordinator.hpp"
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
 #include "platform/macos/macos_qt_pinned_screenshot.hpp"
+#include "platform/macos/macos_qt_save_feedback_window.hpp"
 #include "platform/macos/macos_capture_cli.hpp"
 #include "platform/macos/macos_qt_overlay_window.hpp"
 #include "ui/qt/qt_overlay_host.hpp"
@@ -115,6 +116,7 @@ class MacApplicationShell final {
       : app_(app),
         hotkey_(std::make_unique<hdrshot::MacGlobalHotkeyPort>()),
         export_executor_(app),
+        save_feedback_(nullptr, hdrshot::configure_macos_save_feedback_window),
         clipboard_(std::make_shared<hdrshot::MacClipboardPort>()),
         file_store_(std::make_shared<hdrshot::PosixFileStorePort>()),
         file_dialog_(std::make_shared<hdrshot::MacFileDialogPort>()),

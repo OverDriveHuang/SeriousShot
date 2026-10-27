@@ -832,6 +832,18 @@ if(APPLE)
     target_include_directories(hdrshot_macos_qt_input_platform_adapter PUBLIC src)
     hdrshot_enable_warnings(hdrshot_macos_qt_input_platform_adapter)
 
+    add_library(hdrshot_macos_save_feedback_window STATIC
+      src/platform/macos/macos_qt_save_feedback_window.mm)
+    target_include_directories(hdrshot_macos_save_feedback_window PUBLIC src)
+    target_link_libraries(hdrshot_macos_save_feedback_window PUBLIC Qt6::Widgets "-framework AppKit")
+    target_compile_options(hdrshot_macos_save_feedback_window PRIVATE -fobjc-arc)
+    set_target_properties(hdrshot_macos_save_feedback_window PROPERTIES
+      OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON OSX_DEPLOYMENT_TARGET 15.5)
+    hdrshot_enable_warnings(hdrshot_macos_save_feedback_window)
+    if(BUILD_TESTING)
+      target_link_libraries(hdrshot_save_success_feedback_tests PRIVATE hdrshot_macos_save_feedback_window)
+    endif()
+
     add_library(hdrshot_macos_qt_pinned_screenshot STATIC
       src/platform/macos/macos_qt_pinned_screenshot.mm)
     target_compile_options(hdrshot_macos_qt_pinned_screenshot PRIVATE -fobjc-arc)
@@ -900,6 +912,7 @@ if(APPLE)
       hdrshot_capture_session
       hdrshot_macos_qt_analyzer
       hdrshot_macos_qt_pinned_screenshot
+      hdrshot_macos_save_feedback_window
       hdrshot_headless_capture
       hdrshot_interaction_controller
       hdrshot_multi_display_preview

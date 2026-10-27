@@ -9,9 +9,11 @@
 #include <QVBoxLayout>
 #include <QWindow>
 #include <algorithm>
+#include <utility>
 
 namespace hdrshot {
-SaveSuccessFeedback::SaveSuccessFeedback(QObject *parent) : QObject(parent) {
+SaveSuccessFeedback::SaveSuccessFeedback(QObject *parent, ConfigureWindow configure)
+    : QObject(parent), configure_window_(std::move(configure)) {
   timer_.setSingleShot(true);
   timer_.setInterval(save_success_duration_ms);
   connect(&timer_, &QTimer::timeout, this, [this] {
@@ -96,6 +98,7 @@ void SaveSuccessFeedback::show_next() {
   label_->setStyleSheet(status_message_style(current_.anchor.palette, false));
   label_->setText(QStringLiteral("成功保存到：\n%1").arg(current_.path));
   place_current();
+  if (configure_window_) configure_window_(*label_->window());
   label_->window()->show();
   timer_.start(); // One owned timer; no stale singleShot can hide a later file.
 }

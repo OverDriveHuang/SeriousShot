@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #ifdef __APPLE__
 #include "macos_native_ui_test_support.hpp"
+#include "platform/macos/macos_qt_save_feedback_window.hpp"
 #endif
 #include <QDir>
 #include <QElapsedTimer>
@@ -90,7 +91,11 @@ ExportSnapshot shot(const QString &directory) {
 }
 struct Fixture {
   Executor executor; Files files; Dialog dialog; Clipboard clipboard; Clock clock;
+#ifdef __APPLE__
+  SaveSuccessFeedback notice{nullptr, configure_macos_save_feedback_window};
+#else
   SaveSuccessFeedback notice;
+#endif
   ExportCompletionCoordinator coordinator{{files,dialog,clipboard,clock,executor}};
   bool submit(UiCommand command,const QString &folder,SaveFeedbackAnchor anchor) {
     return coordinator.submit(command,shot(folder),[this,anchor=std::move(anchor)](auto result) {
@@ -169,12 +174,14 @@ int native_window_contract() {
   std::cout << "native-window-contract platform=cocoa host=" << host->objectName().toStdString()
             << " view=" << native.view << " window=" << native.window
             << " hides-on-deactivate=" << native.hides_on_deactivate
-            << " can-become-key=" << native.can_become_key << std::endl;
+            << " can-become-key=" << native.can_become_key
+            << " animation-none=" << native.animation_none << std::endl;
   if(!native.view || !native.window) {
     std::cerr << "[INCOMPLETE] Production host has no valid NSView/NSWindow\n"; return 77;
   }
   HDRSHOT_CHECK(!native.hides_on_deactivate);
   HDRSHOT_CHECK(!native.can_become_key);
+  HDRSHOT_CHECK(native.animation_none);
   HDRSHOT_CHECK(host->windowFlags().testFlag(Qt::Tool));
   HDRSHOT_CHECK(host->windowFlags().testFlag(Qt::WindowDoesNotAcceptFocus));
   HDRSHOT_CHECK(host->testAttribute(Qt::WA_ShowWithoutActivating) && host->focusPolicy()==Qt::NoFocus);
