@@ -3,6 +3,14 @@
 #include "application/export_completion_coordinator.hpp"
 #include "test_support.hpp"
 #include <QApplication>
+#include <QClipboard>
+#include <QMimeData>
+#include <QMenu>
+#include <QTimer>
+#include <QFileInfo>
+#ifdef __APPLE__
+#include "macos_native_ui_test_support.hpp"
+#endif
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -141,9 +149,102 @@ void cancelled_failed_and_clipboard() {
   HDRSHOT_CHECK(feedback() && feedback()->isVisible());
   HDRSHOT_CHECK(!QImage(f.dialog.path).isNull());
 }
+#ifdef __APPLE__
+int native_window_contract() {
+  if(QGuiApplication::platformName()!="cocoa") {
+    std::cerr << "[INCOMPLETE] Native window contract requires Cocoa\n"; return 77;
+  }
+  QTemporaryDir temp; HDRSHOT_CHECK(temp.isValid());
+  Fixture f; QWidget source;
+  const auto anchor=SaveSuccessFeedback::capture(&source);
+  f.dialog.path=temp.path()+QStringLiteral("/原生配置合同_真实保存.png");
+  HDRSHOT_CHECK(f.submit(UiCommand::save_as,temp.path(),anchor));
+  f.executor.finish(); wait(30);
+  auto *label=feedback(); HDRSHOT_CHECK(label);
+  auto *host=label->window();
+  HDRSHOT_CHECK(host && host->objectName()=="saveSuccessFeedbackHost" && host->isWindow() && !host->parentWidget());
+  HDRSHOT_CHECK(label->parentWidget()==host && label->text().contains(f.dialog.path));
+  HDRSHOT_CHECK(!QImage(f.dialog.path).isNull());
+  const auto native=test::native_window_contract(*host);
+  std::cout << "native-window-contract platform=cocoa host=" << host->objectName().toStdString()
+            << " view=" << native.view << " window=" << native.window
+            << " hides-on-deactivate=" << native.hides_on_deactivate
+            << " can-become-key=" << native.can_become_key << std::endl;
+  if(!native.view || !native.window) {
+    std::cerr << "[INCOMPLETE] Production host has no valid NSView/NSWindow\n"; return 77;
+  }
+  HDRSHOT_CHECK(!native.hides_on_deactivate);
+  HDRSHOT_CHECK(!native.can_become_key);
+  HDRSHOT_CHECK(host->windowFlags().testFlag(Qt::Tool));
+  HDRSHOT_CHECK(host->windowFlags().testFlag(Qt::WindowDoesNotAcceptFocus));
+  HDRSHOT_CHECK(host->testAttribute(Qt::WA_ShowWithoutActivating) && host->focusPolicy()==Qt::NoFocus);
+  return 0;
+}
+int native_background_demo(const QString &folder) {
+  if(!test::native_desktop_ready()) return 77;
+  HDRSHOT_CHECK(QDir::isAbsolutePath(folder) && QDir().mkpath(folder));
+  test::NativeBackgroundScope foreground_restore;
+  QWidget baseline; baseline.resize(500,250); baseline.show();
+  if(!test::native_make_key(baseline)) return 77;
+  QWidget source; source.resize(450,80);
+  auto *screen=QGuiApplication::primaryScreen();
+  if(!screen) { std::cerr << "[INCOMPLETE] No primary screen\n"; return 77; }
+  source.move(screen->availableGeometry().center()-QPoint(225,40));
+  bool passed=true;
+  for(bool background_completion:{false,true}) {
+    Fixture f;
+    if(!test::native_make_key(baseline)) return 77;
+    const auto anchor=SaveSuccessFeedback::capture(&source);
+    const QString scenario=background_completion?"background_completion":"switch_after_show";
+    f.dialog.path=folder+"/"+scenario+QStringLiteral("_中文实际保存.png");
+    HDRSHOT_CHECK(f.submit(UiCommand::save_as,folder,anchor));
+    if(background_completion && !foreground_restore.activate()) return 77;
+    QElapsedTimer elapsed; elapsed.start();
+    f.executor.finish(); wait(100);
+    auto *label=feedback(); HDRSHOT_CHECK(label && label->isVisible());
+    HDRSHOT_CHECK(!QImage(f.dialog.path).isNull() && label->text().contains(f.dialog.path));
+    if(!background_completion && !foreground_restore.activate()) return 77;
+    wait(150);
+    const auto expected_pid=foreground_restore.process();
+    std::cout << "background-focus established-external=" << expected_pid
+              << " after-completion-and-switch=" << test::native_focus().process << std::endl;
+    HDRSHOT_CHECK(test::native_focus().process==expected_pid);
+    const auto rect=label->window()->frameGeometry().adjusted(-8,-8,8,8).translated(-screen->geometry().topLeft());
+    auto sample=[&](const QString &phase) {
+      const auto state=test::native_window_state(*label->window());
+      const auto pixels=screen->grabWindow(0,rect.x(),rect.y(),rect.width(),rect.height()).toImage();
+      HDRSHOT_CHECK(!pixels.isNull() && pixels.save(folder+"/"+scenario+"_"+phase+".png"));
+      std::cout << "background-feedback scenario=" << scenario.toStdString() << " phase=" << phase.toStdString()
+        << " elapsed-ms=" << elapsed.elapsed() << " front-pid=" << test::native_focus().process
+        << " expected-external-pid=" << expected_pid << " window=" << state.number
+        << " ns-visible=" << state.visible << " ws-onscreen=" << state.on_screen
+        << " hides-on-deactivate=" << state.hides_on_deactivate << " qt-visible=" << label->isVisible() << std::endl;
+      HDRSHOT_CHECK(test::native_focus().process==expected_pid);
+      return std::pair{state,pixels};
+    };
+    const auto early=sample("early");
+    wait(qMax(0,1200-int(elapsed.elapsed())));
+    const auto late=sample("1200ms");
+    wait(qMax(0,1700-int(elapsed.elapsed())));
+    const auto expired=sample("1700ms");
+    const bool visible=early.first.visible && early.first.on_screen && late.first.visible && late.first.on_screen;
+    const bool expired_ok=!label->isVisible() && !expired.first.visible && !expired.first.on_screen;
+    const bool pixels_changed=early.second!=expired.second && late.second!=expired.second;
+    std::cout << "background-result scenario=" << scenario.toStdString() << " visible=" << visible
+      << " expired=" << expired_ok << " actual-desktop-difference=" << pixels_changed << std::endl;
+    passed &= visible && expired_ok && pixels_changed;
+  }
+  return passed?0:1;
+}
+#endif
 int native_demo(const QString &folder) {
+#ifdef __APPLE__
+  if(!test::native_desktop_ready()) return 77;
+#endif
   HDRSHOT_CHECK(QDir().mkpath(folder));
+  HDRSHOT_CHECK(QDir::isAbsolutePath(folder));
   Fixture f;
+  QWidget baseline; baseline.setWindowTitle("Save feedback focus baseline"); baseline.resize(500, 250);
   QWidget source; source.setWindowTitle("SeriousShot 保存提示实屏验收"); source.resize(450,80);
   int index=0;
   for(auto *screen:QGuiApplication::screens()) for(bool dark:{false,true}) {
@@ -154,11 +255,24 @@ int native_demo(const QString &folder) {
     const auto name=QStringLiteral("/保存成功验收_%1_中文完整路径及实际输出_abcdefghijklmnopqrstuvwxyz_0123456789.png").arg(++index);
     f.dialog.path=folder+name;
     HDRSHOT_CHECK(f.submit(UiCommand::save_as,folder,anchor)); source.hide(); wait(50);
+#ifdef __APPLE__
+    baseline.show(); baseline.raise(); baseline.activateWindow();
+    if(!test::native_make_key(baseline)) { std::cerr << "[INCOMPLETE] Cannot establish valid native foreground/key-window baseline\n"; return 77; }
+    wait(100);
+    const auto focus_before=test::native_focus();
+    HDRSHOT_CHECK(focus_before.process != 0 && focus_before.key_window != 0);
+#endif
 #ifdef _WIN32
     const auto foreground_before=GetForegroundWindow();
 #endif
     f.executor.finish(); wait(200);
     auto *label=feedback();HDRSHOT_CHECK(label && label->isVisible());
+    HDRSHOT_CHECK(QFileInfo(f.dialog.path).isAbsolute() && !QImage(f.dialog.path).isNull());
+    HDRSHOT_CHECK(label->text().contains(f.dialog.path));
+#ifdef __APPLE__
+    HDRSHOT_CHECK(test::native_focus()==focus_before);
+    std::cout << "native-focus process=" << focus_before.process << " key=" << focus_before.key_window << " unchanged-on-show=1\n";
+#endif
     HDRSHOT_CHECK(screen->availableGeometry().contains(label->window()->frameGeometry()));
     std::cout<<"native-feedback screen="<<screen->name().toStdString()<<" dpr="<<screen->devicePixelRatio()<<" file="<<f.dialog.path.toStdString()<<'\n';
 #ifdef _WIN32
@@ -167,14 +281,61 @@ int native_demo(const QString &folder) {
 #endif
     const auto rect=label->window()->frameGeometry().adjusted(-8,-8,8,8).translated(-screen->geometry().topLeft());
     HDRSHOT_CHECK(screen->grabWindow(0,rect.x(),rect.y(),rect.width(),rect.height()).save(folder+QString("/feedback_%1.png").arg(index)));
-    wait(1450);HDRSHOT_CHECK(!label->isVisible());
+    const auto visible_pixels=screen->grabWindow(0,rect.x(),rect.y(),rect.width(),rect.height()).toImage();
+    HDRSHOT_CHECK(!visible_pixels.isNull());
+#ifdef __APPLE__
+    if(index==1) {
+      // Restore every advertised clipboard format after the real context-menu sample.
+      auto saved=std::make_unique<QMimeData>();
+      const auto *clipboard=QApplication::clipboard()->mimeData();
+      if(clipboard) for(const auto &format:clipboard->formats()) saved->setData(format,clipboard->data(format));
+      struct Restore { std::unique_ptr<QMimeData> data; ~Restore(){QApplication::clipboard()->setMimeData(data.release());} } restore{std::move(saved)};
+      bool sampled=false;
+      QTimer::singleShot(1700,label,[&] {
+        auto *menu=qobject_cast<QMenu *>(QApplication::activePopupWidget());
+        if(!menu || !menu->isVisible() || !label->isVisible()) { if(menu) menu->close(); return; }
+        sampled=true;
+        const auto point=menu->actionGeometry(menu->actions().front()).center();
+        // Keep failures outside the native callback, so clipboard RAII can run.
+        try { test::native_mouse(*menu,point,true); test::native_mouse(*menu,point,false); }
+        catch(...) { sampled=false; menu->close(); }
+      });
+      test::native_mouse(*label,label->rect().center(),true,true);
+      test::native_mouse(*label,label->rect().center(),false,true);
+      HDRSHOT_CHECK(sampled && QApplication::clipboard()->text()==f.dialog.path);
+      HDRSHOT_CHECK(label->isVisible());
+      std::cout << "native-context-menu held=1700ms copied-full-path=1 clipboard-restored=1\n";
+      wait(1600);
+    } else
+#endif
+    { wait(1100); HDRSHOT_CHECK(label->isVisible()); wait(350); }
+    HDRSHOT_CHECK(!label->isVisible());
+    const auto hidden_pixels=screen->grabWindow(0,rect.x(),rect.y(),rect.width(),rect.height()).toImage();
+    HDRSHOT_CHECK(!hidden_pixels.isNull() && hidden_pixels!=visible_pixels);
+#ifdef __APPLE__
+    HDRSHOT_CHECK(test::native_focus()==focus_before);
+    std::cout << "native-focus unchanged-on-hide=1\n";
+#endif
   }
   return 0;
 }
 }
 int main(int argc,char **argv) {
   QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
-  if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-demo") return native_demo(QString::fromLocal8Bit(argv[2]));
+#ifdef __APPLE__
+  if(argc==2 && QString::fromLocal8Bit(argv[1])=="--native-window-contract") {
+    try { return native_window_contract(); }
+    catch(const std::exception &error) { std::cerr << "[FAIL] native window contract: " << error.what() << '\n'; return 1; }
+  }
+  if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-background-demo") {
+    try { return native_background_demo(QString::fromLocal8Bit(argv[2])); }
+    catch(const std::exception &error) { std::cerr << "[FAIL] native background feedback: " << error.what() << '\n'; return 1; }
+  }
+#endif
+  if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-demo") {
+    try { return native_demo(QString::fromLocal8Bit(argv[2])); }
+    catch(const std::exception &error) { std::cerr << "[FAIL] native feedback: " << error.what() << '\n'; return 1; }
+  }
   return test::run({{"real save completion survives source destruction and queues safely",pipeline_and_lifecycle},
                     {"cancel failure and clipboard produce no save success",cancelled_failed_and_clipboard}});
 }

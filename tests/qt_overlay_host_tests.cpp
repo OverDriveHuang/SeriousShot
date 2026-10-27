@@ -614,7 +614,8 @@ void shared_host_snapshot_dialog_cancel_and_acceptance() {
   int finishes = 0, exports = 0;
   host.set_finished([&] { ++finishes; });
   bool accept = false;
-  host.set_export_requested([&](UiCommand command, ExportSnapshot snapshot, auto done, QWidget *) {
+  host.set_export_requested([&](UiCommand command, ExportSnapshot snapshot, auto done, QWidget *source) {
+    HDRSHOT_CHECK(source == &host);
     ++exports;
     HDRSHOT_CHECK(command == UiCommand::save_as);
     HDRSHOT_CHECK(snapshot.frozen_desktop == frozen);

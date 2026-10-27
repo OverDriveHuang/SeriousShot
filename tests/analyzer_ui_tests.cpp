@@ -8,6 +8,9 @@
 #include "ui/qt/analyzer_window.hpp"
 
 #include <QApplication>
+#ifdef __APPLE__
+#include "macos_native_ui_test_support.hpp"
+#endif
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QClipboard>
@@ -21,6 +24,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QEventLoop>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QTemporaryFile>
 #include <QScreen>
@@ -795,6 +799,7 @@ void native_analyzer_press_feedback() {
         return screen->grabWindow(0, pos.x(), pos.y(), control->width(), control->height()).toImage();
       };
       const auto before = capture();
+      HDRSHOT_CHECK(!before.isNull() && press_content_pixels(before)>40);
       const auto prefix = folder + QString("/%1_%2").arg(++index).arg(name);
       HDRSHOT_CHECK(before.save(prefix + "_before.png"));
       mouse(control, QEvent::MouseButtonPress, control->rect().center(), Qt::LeftButton, Qt::LeftButton);
@@ -814,6 +819,45 @@ void native_analyzer_press_feedback() {
       HDRSHOT_CHECK(restored.save(prefix + "_restored.png"));
       HDRSHOT_CHECK(restored == before);
     }
+#ifdef __APPLE__
+    QWidget other; other.setWindowTitle("Native focus cancellation baseline"); other.resize(300,100);
+    for (const auto *name : {"analyzerSourceFit", "analyzerSave"}) {
+      auto *control=child<QToolButton>(f.window,name);
+      HDRSHOT_CHECK(test::native_make_key(f.window)); wait_events(80);
+      int actions=0;
+      const auto connection=QObject::connect(control,&QToolButton::clicked,[&]{++actions;});
+      const auto point=QPoint(8,control->height()/2);
+      const auto capture_native=[&] {
+        const auto pos=control->mapToGlobal(QPoint())-screen->geometry().topLeft();
+        return screen->grabWindow(0,pos.x(),pos.y(),control->width(),control->height()).toImage();
+      };
+      const auto native_before=capture_native();
+      HDRSHOT_CHECK(!native_before.isNull() && press_content_pixels(native_before)>40);
+      test::native_mouse(*control,point,true); wait_events(60);
+      HDRSHOT_CHECK(control->isDown() && actions==0);
+      const auto native_held=capture_native();
+      HDRSHOT_CHECK(!native_held.isNull() && native_held!=native_before);
+      HDRSHOT_CHECK(native_before.save(folder+"/appkit_"+name+"_before.png"));
+      HDRSHOT_CHECK(native_held.save(folder+"/appkit_"+name+"_held.png"));
+      test::native_mouse(*control,point,false); wait_events(60);
+      HDRSHOT_CHECK(!control->isDown() && actions==1);
+      control->setFocus(); events();
+      test::native_space(*control,true); wait_events(60);
+      HDRSHOT_CHECK(control->isDown() && actions==1);
+      test::native_space(*control,false); wait_events(60);
+      HDRSHOT_CHECK(!control->isDown() && actions==2);
+      test::native_mouse(*control,point,true); HDRSHOT_CHECK(control->isDown());
+      other.show(); HDRSHOT_CHECK(test::native_make_key(other)); wait_events(60);
+      HDRSHOT_CHECK(!control->isDown());
+      HDRSHOT_CHECK(test::native_make_key(f.window));
+      test::native_mouse(*control,point,false); wait_events(60);
+      HDRSHOT_CHECK(!control->isDown() && actions==2);
+      other.hide();
+      QObject::disconnect(connection);
+      std::cout << "appkit-input button=" << name << " mouse/space/deactivate-cancel=pass" << std::endl;
+    }
+    QCursor::setPos(screen->availableGeometry().bottomRight()-QPoint(5,5)); wait_events(80);
+#endif
     for (const auto *name : {"analyzerSave", "analyzerTool1"}) {
       auto *control = child<QToolButton>(f.window, name);
       QStyleOptionToolButton option; option.initFrom(control); option.rect = control->rect();
@@ -825,13 +869,48 @@ void native_analyzer_press_feedback() {
         return screen->grabWindow(0, pos.x(), pos.y(), control->width(), control->height()).toImage();
       };
       const auto normal = capture();
+      HDRSHOT_CHECK(!normal.isNull() && press_content_pixels(normal)>40);
+      std::cout << "arrow-before button=" << name << " focus=" << control->hasFocus()
+                << " underMouse=" << control->underMouse() << " focusWidget=" << QApplication::focusWidget() << std::endl;
       QImage pressed;
       QTimer::singleShot(80, control, [&] { pressed = capture(); control->menu()->hide(); });
       mouse(control, QEvent::MouseButtonPress, arrow.center(), Qt::LeftButton, Qt::LeftButton);
       mouse(control, QEvent::MouseButtonRelease, arrow.center(), Qt::LeftButton, Qt::NoButton);
+      QElapsedTimer restoration; restoration.start();
       wait_events(60);
       HDRSHOT_CHECK(!pressed.isNull() && pressed != normal);
-      HDRSHOT_CHECK(!control->isDown() && capture() == normal);
+      const auto restored = capture();
+      HDRSHOT_CHECK(!restored.isNull() && restored.size()==normal.size());
+      const auto diagnostic = folder + QString("/%1_%2_arrow").arg(index + 1).arg(name);
+      normal.save(diagnostic + "_before.png"); pressed.save(diagnostic + "_pressed.png");
+      restored.save(diagnostic + "_restored.png");
+      std::cout << "arrow-restore button=" << name << " down=" << control->isDown()
+                << " menu=" << control->menu()->isVisible() << " focus=" << control->hasFocus()
+                << " active=" << f.window.isActiveWindow() << " equal=" << (restored == normal)
+                << " activePopup=" << QApplication::activePopupWidget() << std::endl;
+      HDRSHOT_CHECK(!control->isDown());
+      HDRSHOT_CHECK(!control->menu()->isVisible());
+      QRect difference; int different = 0;
+      for (int y=0;y<normal.height();++y) for(int x=0;x<normal.width();++x)
+        if(normal.pixel(x,y)!=restored.pixel(x,y)) { difference |= QRect(x,y,1,1); ++different; }
+      std::cout << "arrow-pixels count=" << different << " bounds=" << difference.x() << ',' << difference.y()
+                << ',' << difference.width() << ',' << difference.height() << " underMouse=" << control->underMouse() << std::endl;
+#ifdef __APPLE__
+      // Cocoa's menu shadow fades after QMenu::hide(): the button is already
+      // up while desktop pixels below its midpoint still contain that shadow.
+      // Demand the exact baseline for two consecutive samples, within 400 ms.
+      int stable=restored==normal ? 1 : 0;
+      while(stable<2 && restoration.elapsed()<400) {
+        wait_events(20);
+        const auto later=capture();
+        stable=later==normal ? stable+1 : 0;
+        if(stable==2) later.save(diagnostic+QString("_stable_%1ms.png").arg(restoration.elapsed()));
+      }
+      std::cout << "arrow-exact-restoration ms=" << restoration.elapsed() << " stable=" << stable << std::endl;
+      HDRSHOT_CHECK(stable==2 && restoration.elapsed()<400);
+#else
+      HDRSHOT_CHECK(restored==normal);
+#endif
       const auto prefix = folder + QString("/%1_%2_arrow").arg(++index).arg(name);
       HDRSHOT_CHECK(normal.save(prefix + "_before.png"));
       HDRSHOT_CHECK(pressed.save(prefix + "_pressed.png"));
@@ -2886,6 +2965,10 @@ int main(int argc, char **argv) {
         QDir::current().relativeFilePath(platform_config.fileName()).toUtf8());
   QApplication app(argc, argv);
   app.setFont(QFont("Arial", 10));
+#ifdef __APPLE__
+  if((qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_PRESS_NATIVE") ||
+      qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_EXPORT_NATIVE")) && !hdrshot::test::native_desktop_ready()) return 77;
+#endif
   if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_PRESS_NATIVE"))
     return hdrshot::test::run({{"native analyzer local press feedback", native_analyzer_press_feedback}});
   if (qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_EXPORT_NATIVE"))

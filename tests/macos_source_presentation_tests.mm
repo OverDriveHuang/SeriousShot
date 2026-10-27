@@ -18,6 +18,7 @@
 #include <QImage>
 #include <QPlatformSurfaceEvent>
 #include <QProcess>
+#include <QScreen>
 #include <QThread>
 #include <QWindow>
 #include <algorithm>
@@ -261,6 +262,16 @@ void native_mixed_hosts() {
   auto analyzer = std::make_unique<AnalyzerWindow>(analyzer_fixture.input);
   auto first = std::make_unique<PinnedScreenshotWindow>(first_fixture.input, PinnedScreenshotDefaults{});
   auto second = std::make_unique<PinnedScreenshotWindow>(second_fixture.input, PinnedScreenshotDefaults{false, 400});
+  // Establish visible, separate fixtures before any presentation is observed.
+  // Default cascading positions can fully cover a pin when another owner shows.
+  const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+  analyzer->resize(std::min(1280, available.width() - 560),
+                   std::min(780, available.height() - 60));
+  analyzer->move(available.topLeft() + QPoint(20, 30));
+  first->resize(450, 300);
+  second->resize(450, 300);
+  first->move(available.topLeft() + QPoint(available.width() - 480, 30));
+  second->move(available.topLeft() + QPoint(available.width() - 480, 400));
   Observation analyzer_output{analyzer_fixture, *analyzer->source_widget()};
   Observation first_output{first_fixture, *first->source_view()};
   Observation second_output{second_fixture, *second->source_view()};
@@ -328,11 +339,14 @@ void native_mixed_hosts() {
     owner->show();
     observed->arrived(count);
     (void)observed->layer();
+    // Inspect the restored pin before the next test owner can cover it.
+    // The probe must not raise/repaint an occluded window to obtain evidence.
+    if (observed == &first_output)
+      windowserver_pixels(*first, first_output, "pin_hidden_restore");
   }
   pump(250);
   HDRSHOT_CHECK(analyses == analyses_before);
   HDRSHOT_CHECK(analyzer->current_request().revision == revision_before);
-  windowserver_pixels(*first, first_output, "pin_hidden_restore");
 
   // Persistent pins are display-only marks here: no new sample/analysis is
   // requested. The live operation overlay has ink; report SourceView stays clean.

@@ -783,13 +783,15 @@ void collapse_actions_and_lifetime(QApplication &app) {
   std::vector<std::function<void(Error)>> errors;
   std::vector<std::function<void()>> recoveries;
   auto native=std::make_shared<Native>();
+  QPointer<PinnedScreenshotWindow> expected_source;
   QtPinnedScreenshotController c(app,[&](const ExportSnapshot &s) {
     auto snapshot=s;snapshot.selection={1,{0,0,1200,800}};
     PreparedPinnedScreenshot p{{image,snapshot},std::make_shared<Presenter>(),{}, {}};
     p.observe_errors=[&](auto cb){errors.push_back(std::move(cb));};
     p.observe_recovered=[&](auto cb){recoveries.push_back(std::move(cb));};
     return Result<PreparedPinnedScreenshot,Error>::success(std::move(p));
-  },native,[&](UiCommand command,ExportSnapshot snapshot,auto completed,QWidget *) {
+  },native,[&](UiCommand command,ExportSnapshot snapshot,auto completed,QWidget *source) {
+    HDRSHOT_CHECK(source && source == expected_source);
     HDRSHOT_CHECK(snapshot.selection.desktop_rect.width==1200 && snapshot.selection.desktop_rect.height==800);
     commands.push_back(command);pending_exports.push_back(std::move(completed));return true;
   },[&](ExportSnapshot snapshot,auto completed) {
@@ -806,6 +808,7 @@ void collapse_actions_and_lifetime(QApplication &app) {
   if(second==first) for(auto *w:QApplication::topLevelWidgets())
     if(auto *p=dynamic_cast<PinnedScreenshotWindow *>(w);p && p!=first && !p->is_closed()) second=p;
   HDRSHOT_CHECK(second && first!=second);
+  expected_source=first;
   first->source_view()->set_transform({false,1.5,{41.,-23.}});
   const auto original=first->size();button(*first,"pinCollapse")->click();
   HDRSHOT_CHECK(first->source_view()->isHidden() && second->source_view()->isVisible());

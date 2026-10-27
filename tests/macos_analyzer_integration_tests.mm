@@ -241,7 +241,8 @@ void production_controller_window_export_and_close() {
   std::vector<ExportSnapshot> exports;
   MacQtAnalyzerController controller(
       *qApp,
-      [&](UiCommand, ExportSnapshot snapshot, auto done, QWidget *) {
+      [&](UiCommand, ExportSnapshot snapshot, auto done, QWidget *source) {
+        HDRSHOT_CHECK(source && source == latest_window());
         exports.push_back(std::move(snapshot));
         ExportReceipt receipt;
         receipt.destination = UserCancelled{};

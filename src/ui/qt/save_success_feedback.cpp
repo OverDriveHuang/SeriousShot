@@ -70,6 +70,10 @@ void SaveSuccessFeedback::show_next() {
     auto *host = new QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint |
                             Qt::WindowStaysOnTopHint | Qt::WindowDoesNotAcceptFocus);
     host->setObjectName(QStringLiteral("saveSuccessFeedbackHost"));
+#ifdef __APPLE__
+    // Keep save feedback present when another application is in front.
+    host->setAttribute(Qt::WA_MacAlwaysShowToolWindow);
+#endif
     host->setAttribute(Qt::WA_ShowWithoutActivating);
     host->setAttribute(Qt::WA_TranslucentBackground);
     host->setAttribute(Qt::WA_QuitOnClose, false);
