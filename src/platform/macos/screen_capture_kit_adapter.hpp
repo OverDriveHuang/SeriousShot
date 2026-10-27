@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <memory>
+#include <optional>
 #include <vector>
 
 namespace hdrshot {
@@ -53,6 +55,14 @@ struct MacCapturedFrame {
   std::vector<std::uint16_t> rgba_half_extended_p3;
 };
 
+struct MacCaptureHooks {
+  std::function<bool(const char*)> try_begin_step;
+  std::function<bool()> cancelled;
+  std::function<void()> image_received;
+  std::function<void(const Error&)> failed;
+  std::function<void()> drained;
+  std::function<void(const char*, const char*)> stage;
+};
 class MacScreenCaptureKitAdapter {
  public:
   using DisplayListCompletion =
@@ -60,10 +70,11 @@ class MacScreenCaptureKitAdapter {
   using CaptureCompletion = std::function<void(Result<MacCapturedFrame, Error>)>;
 
   [[nodiscard]] static bool has_capture_access() noexcept;
-  static void enumerate_displays(DisplayListCompletion completion);
-  static void capture_display(std::uint32_t display_id, CaptureCompletion completion);
+  static void enumerate_displays(DisplayListCompletion completion, std::function<bool()> cancelled = {},
+      std::function<void(const char*, const char*)> stage = {});
+  static void capture_display(std::uint32_t display_id, CaptureCompletion completion, MacCaptureHooks hooks = {});
   [[nodiscard]] static Result<MacCapturedFrame, Error> copy_image(
-      CGImageRef image, std::uint32_t display_id);
+      CGImageRef image, std::uint32_t display_id, std::function<bool()> cancelled = {});
 
   [[nodiscard]] static Result<MacCaptureFrameDescriptor, Error> validate_descriptor(
       MacCaptureFrameDescriptor descriptor);

@@ -1,5 +1,10 @@
 #include "platform/macos/macos_capture_ports.hpp"
 #include "platform/macos/macos_gpu_source.hpp"
+#include "ports/capture_progress_port.hpp"
+#include "application/capture_inflight_diagnostics.hpp"
+#include <cstdio>
+#include <dispatch/dispatch.h>
+#include <atomic>
 
 #include <algorithm>
 #include <chrono>
@@ -14,12 +19,6 @@
 
 namespace hdrshot {
 namespace {
-
-using OperationKey = std::pair<std::uint64_t, std::uint64_t>;
-
-OperationKey operation_key(const SessionId session, const OperationId operation) {
-  return {session.value, operation.value};
-}
 
 Error adapter_error(
     const ErrorCode code,
@@ -103,26 +102,48 @@ NativeCaptureFrame map_frame(MacCapturedFrame frame) {
 
 }  // namespace
 
-struct MacCapturePort::CancellationRegistry {
-  std::mutex mutex;
-  std::set<OperationKey> cancelled;
-
-  bool is_cancelled(const OperationKey key) {
-    const std::scoped_lock lock(mutex);
-    return cancelled.contains(key);
-  }
+struct MacDisplayCatalogPort::State {
+  std::mutex mutex; bool cancelled{}; bool completed{}; SnapshotDisplaysRequest request{}; Completion completion;
+  std::shared_ptr<CaptureInFlightDiagnostics> diagnostics;
 };
-
+MacDisplayCatalogPort::MacDisplayCatalogPort(std::shared_ptr<DiagnosticsPort> diagnostics, Enumerate enumerate)
+    : state_(std::make_shared<State>()), enumerate_(enumerate ? std::move(enumerate) : MacScreenCaptureKitAdapter::enumerate_displays),
+      diagnostics_(std::move(diagnostics)) {}
+MacDisplayCatalogPort::~MacDisplayCatalogPort() {
+  std::lock_guard lock(state_->mutex); state_->cancelled = true; state_->completion = {};
+}
+void MacDisplayCatalogPort::cancel(SessionId session, OperationId operation) {
+  std::lock_guard lock(state_->mutex);
+  if (state_->request.session_id == session && state_->request.operation_id == operation) {
+    state_->cancelled = true; state_->completion = {};
+  }
+}
 void MacDisplayCatalogPort::snapshot_displays(
     const SnapshotDisplaysRequest& request,
     Completion completion) {
-  MacScreenCaptureKitAdapter::enumerate_displays(
-      [request, log = diagnostics_, completion = std::move(completion)](
+  { std::lock_guard lock(state_->mutex); state_->cancelled = true; state_->completion = {}; }
+  state_ = std::make_shared<State>(); // each operation keeps its own cancellation and completion claim
+  auto state = state_;
+  auto facts = std::make_shared<CaptureInFlightDiagnostics>(CaptureOperationKey{request.session_id, request.operation_id, 0}, diagnostics_);
+  facts->stage({}, "getShareableContent", "enumerate_queued");
+  { std::lock_guard lock(state->mutex); state->request = request; state->completed = false;
+    state->cancelled = false; state->completion = std::move(completion); state->diagnostics = facts; }
+  auto deliver = [state](Result<DisplaySnapshotSet, Error> result) {
+    Completion done;
+    { std::lock_guard lock(state->mutex);
+      if (state->cancelled || state->completed) return;
+      state->completed = true; done = std::move(state->completion);
+    }
+    if (done) done(std::move(result));
+  };
+  enumerate_(
+      [request, facts, log = diagnostics_, completion = std::move(deliver)](
           Result<std::vector<MacDisplayInfo>, Error> result) mutable {
+    facts->stage({}, "getShareableContent", "enumerate_callback");
     record_diagnostic_stage(log.get(), request.session_id, request.operation_id,
         "display", "enumerate", result ? "success" : "failure",
         result ? std::map<std::string, std::string>{{"displayCount", std::to_string(result.value().size())}}
-               : std::map<std::string, std::string>{}, result ? nullptr : &result.error());
+               : std::map<std::string, std::string>{}, result ? nullptr : &result.error(), true);
     if (!result) {
       completion(Result<DisplaySnapshotSet, Error>::failure(result.error()));
       return;
@@ -158,116 +179,197 @@ void MacDisplayCatalogPort::snapshot_displays(
         generation_for(native_displays),
         std::move(displays),
     }));
-  });
+  }, [state] { std::lock_guard lock(state->mutex); return state->cancelled; },
+      [facts](const char* api, const char* stage) { facts->stage({}, api, stage); });
 }
 
-MacCapturePort::MacCapturePort(std::shared_ptr<DiagnosticsPort> diagnostics)
-    : cancellations_(std::make_shared<CancellationRegistry>()), diagnostics_(std::move(diagnostics)) {}
-MacCapturePort::~MacCapturePort() = default;
+void MacDisplayCatalogPort::diagnostic_snapshot() const {
+  std::shared_ptr<CaptureInFlightDiagnostics> facts;
+  { std::lock_guard lock(state_->mutex); if (!state_->completed && !state_->cancelled) facts = state_->diagnostics; }
+  if (facts) facts->snapshot();
+}
 
-void MacCapturePort::capture(const CaptureBatchRequest& request, Completion completion) {
-  if (request.desired_format != PixelFormat::rgba16_float || request.targets.empty()) {
-    completion(Result<NativeFrameBatch, Error>::failure(adapter_error(
-        ErrorCode::unsupported_pixel_format, Retryability::never)));
-    return;
-  }
-  std::set<DisplayId> unique_targets(request.targets.begin(), request.targets.end());
-  if (unique_targets.size() != request.targets.size()) {
-    completion(Result<NativeFrameBatch, Error>::failure(adapter_error(
-        ErrorCode::invalid_input,
-        Retryability::never,
-        {{"reason", "duplicate_display_target"}})));
-    return;
-  }
-
-  struct BatchState {
-    std::mutex mutex;
-    CaptureBatchRequest request;
-    Completion completion;
-    std::vector<NativeCaptureFrame> frames;
-    std::size_t remaining{};
-    bool completed{};
+struct MacCapturePort::State {
+  struct Batch {
+    struct Screen { bool result{}, drained{}, task_returned{}; };
+    std::mutex mutex; CaptureBatchRequest request; Completion completion;
+    std::vector<NativeCaptureFrame> frames; std::vector<Screen> screens;
+    std::shared_ptr<CaptureInFlightDiagnostics> diagnostics;
+    bool cancelled{}, delivered{}; std::size_t results{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
   };
-  auto state = std::make_shared<BatchState>();
-  state->request = request;
-  state->completion = std::move(completion);
-  state->remaining = request.targets.size();
-  const auto key = operation_key(request.session_id, request.operation_id);
-  const auto registry = cancellations_;
-
-  for (const auto target : request.targets) {
-    const auto started = std::chrono::steady_clock::now();
-    record_diagnostic_stage(diagnostics_.get(), request.session_id, request.operation_id,
-        "capture", "native_begin", "started", {{"displayId", std::to_string(target.value)},
-        {"api", "captureImageWithFilter"}, {"requestedSpace", "ExtendedDisplayP3"},
-        {"requestedFormat", "RGhA"}, {"preset", "HDRCanonical"}, {"opaque", "yes"}, {"cursor", "no"}});
-    MacScreenCaptureKitAdapter::capture_display(
-        static_cast<std::uint32_t>(target.value),
-        [state, registry, key, target, started, log = diagnostics_](Result<MacCapturedFrame, Error> result) mutable {
+  mutable std::mutex mutex; bool shutdown{}; std::shared_ptr<Batch> active;
+  void release_if_drained(const std::shared_ptr<Batch>& batch) {
+    bool drained{};
+    { std::lock_guard lock(batch->mutex);
+      drained = std::all_of(batch->screens.begin(), batch->screens.end(), [](const auto& screen) {
+        return screen.drained && screen.task_returned;
+      });
+    }
+    if (drained) { std::lock_guard lock(mutex); if (active == batch) active.reset(); }
+  }
+};
+MacCapturePort::MacCapturePort(std::shared_ptr<DiagnosticsPort> diagnostics,
+    CaptureDisplay capture_display, NativeSubmit submit)
+    : state_(std::make_shared<State>()),
+      capture_display_(capture_display ? std::move(capture_display) : MacScreenCaptureKitAdapter::capture_display),
+      submit_(submit ? std::move(submit) : NativeSubmit{[](std::function<void()> task) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ task(); });
+      }}), diagnostics_(std::move(diagnostics)) {}
+MacCapturePort::~MacCapturePort() { shutdown(); }
+bool MacCapturePort::busy() const { std::lock_guard lock(state_->mutex); return bool(state_->active); }
+void MacCapturePort::shutdown() {
+  std::shared_ptr<State::Batch> batch;
+  { std::lock_guard lock(state_->mutex); state_->shutdown = true; batch = state_->active; }
+  if (batch) { std::lock_guard lock(batch->mutex); batch->cancelled = true; batch->completion = {}; batch->frames.clear(); }
+}
+void MacCapturePort::cancel(SessionId session, OperationId operation) {
+  std::shared_ptr<State::Batch> batch;
+  { std::lock_guard lock(state_->mutex); batch = state_->active; }
+  if (!batch) return;
+  {
+    std::lock_guard lock(batch->mutex);
+    if (batch->request.session_id != session || batch->request.operation_id != operation) return;
+    batch->cancelled = true; batch->frames.clear();
+  }
+  for (auto target : batch->request.targets) batch->diagnostics->stage(target, "cancel", "cancel_requested");
+}
+void MacCapturePort::diagnostic_snapshot() const {
+  std::shared_ptr<State::Batch> batch;
+  { std::lock_guard lock(state_->mutex); batch = state_->active; }
+  if (!batch) return;
+  batch->diagnostics->snapshot();
+  if (batch->diagnostics->write_failed()) std::fputs("Capture diagnostic write failed\n", stderr);
+}
+void MacCapturePort::capture(const CaptureBatchRequest& request, Completion completion) {
+  auto reject = [&](const char* reason, ErrorCode code = ErrorCode::precondition_failed) {
+    completion(Result<NativeFrameBatch, Error>::failure(adapter_error(code,
+        Retryability::after_user_action, {{"reason", reason}})));
+  };
+  if (request.desired_format != PixelFormat::rgba16_float || request.targets.empty()) {
+    reject("invalid_capture_request", ErrorCode::unsupported_pixel_format); return;
+  }
+  if (std::set<DisplayId>(request.targets.begin(), request.targets.end()).size() != request.targets.size()) {
+    reject("duplicate_display_target", ErrorCode::invalid_input); return;
+  }
+  auto batch = std::make_shared<State::Batch>(); batch->request = request;
+  batch->diagnostics = std::make_shared<CaptureInFlightDiagnostics>(CaptureOperationKey{request.session_id, request.operation_id, request.display_generation}, diagnostics_, request.targets);
+  batch->screens.resize(request.targets.size());
+  bool rejected{};
+  { std::lock_guard lock(state_->mutex); rejected = state_->shutdown || bool(state_->active);
+    if (!rejected) { batch->completion = std::move(completion); state_->active = batch; }
+  }
+  if (rejected) { reject("capture_draining"); return; }
+  const auto owner = state_;
+  for (std::size_t index = 0; index < request.targets.size(); ++index) {
+    const auto target = request.targets[index];
+    const CaptureOperationKey key{request.session_id, request.operation_id, request.display_generation};
+    auto stopped = [batch] {
+      std::lock_guard lock(batch->mutex);
+      return batch->cancelled || (batch->request.progress && batch->request.progress->stop_requested());
+    };
+    auto event = [batch, key, target](CaptureNativeEventKind kind, std::optional<Error> error = {}) {
+      if (batch->request.progress) batch->request.progress->native_event({key, target, kind, std::move(error)});
+    };
+    auto result = [batch, index, event, log = diagnostics_](Result<MacCapturedFrame, Error> result) mutable {
+      if (!result && result.error().code != ErrorCode::operation_cancelled) event(CaptureNativeEventKind::failed, result.error());
       std::map<std::string, std::string> context{
-          {"displayId", std::to_string(target.value)}, {"api", "captureImageWithFilter"},
-          {"elapsedMs", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - started).count())}};
+          {"displayId", std::to_string(batch->request.targets[index].value)}, {"api", "captureImageWithFilter"},
+          {"elapsedMs", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - batch->started).count())}};
       if (result) {
-        const auto& d = result.value().descriptor;
-        context.insert({{"width", std::to_string(d.width_px)}, {"height", std::to_string(d.height_px)},
-            {"stride", std::to_string(d.source_bytes_per_row)}, {"bitmapInfo", std::to_string(d.bitmap_info)},
+        const auto& descriptor = result.value().descriptor;
+        context.insert({{"width", std::to_string(descriptor.width_px)}, {"height", std::to_string(descriptor.height_px)},
+            {"stride", std::to_string(descriptor.source_bytes_per_row)}, {"bitmapInfo", std::to_string(descriptor.bitmap_info)},
             {"bitsPerComponent", "16"}, {"bitsPerPixel", "64"}, {"transfer", "extended_srgb"},
-            {"returnedSpace", d.returned_space}});
+            {"returnedSpace", descriptor.returned_space}});
       }
-      record_diagnostic_stage(log.get(), state->request.session_id, state->request.operation_id,
-          "capture", "native_return", result ? "success" : "failure", std::move(context),
-          result ? nullptr : &result.error());
-      Completion finished;
-      std::optional<Result<NativeFrameBatch, Error>> outcome;
-      {
-        const std::scoped_lock lock(state->mutex);
-        if (state->completed) {
-          return;
+      record_diagnostic_stage(log.get(), batch->request.session_id, batch->request.operation_id,
+          "capture", "native_return", result ? "success" : "failure", std::move(context), result ? nullptr : &result.error(), true);
+      bool map_success{};
+      { std::lock_guard lock(batch->mutex);
+        auto& screen = batch->screens[index]; if (screen.result) return;
+        screen.result = true;
+        if (batch->delivered) return;
+        map_success = result && !batch->cancelled &&
+            !(batch->request.progress && batch->request.progress->stop_requested());
+      }
+      // Attaching the source normalizer may initialize Metal; never hold the cancel lock across it.
+      std::optional<NativeCaptureFrame> mapped;
+      if (map_success) {
+        try { mapped = map_frame(std::move(result.value())); }
+        catch (...) {
+          result = Result<MacCapturedFrame, Error>::failure(adapter_error(ErrorCode::capture_failed,
+              Retryability::after_user_action, {{"reason", "source_prepare_exception"}}));
+          event(CaptureNativeEventKind::failed, result.error());
         }
-        if (registry->is_cancelled(key)) {
-          state->completed = true;
-          finished = std::move(state->completion);
-          outcome = Result<NativeFrameBatch, Error>::failure(adapter_error(
-              ErrorCode::operation_cancelled, Retryability::never));
-        } else if (!result) {
-          state->completed = true;
-          finished = std::move(state->completion);
-          outcome = Result<NativeFrameBatch, Error>::failure(result.error());
-        } else {
-          state->frames.push_back(map_frame(std::move(result.value())));
-          --state->remaining;
-          if (state->remaining == 0) {
-            std::sort(
-                state->frames.begin(), state->frames.end(),
-                [&state](const NativeCaptureFrame& left, const NativeCaptureFrame& right) {
-                  const auto left_index = std::find(
-                      state->request.targets.begin(), state->request.targets.end(), left.display_id);
-                  const auto right_index = std::find(
-                      state->request.targets.begin(), state->request.targets.end(), right.display_id);
-                  return left_index < right_index;
-                });
-            state->completed = true;
-            finished = std::move(state->completion);
-            outcome = Result<NativeFrameBatch, Error>::success(NativeFrameBatch{
-                state->request.session_id,
-                state->request.operation_id,
-                state->request.display_generation,
-                std::move(state->frames),
+      }
+      Completion done; std::optional<Result<NativeFrameBatch, Error>> outcome;
+      { std::lock_guard lock(batch->mutex);
+        ++batch->results;
+        if (batch->delivered) return;
+        if (batch->cancelled || (batch->request.progress && batch->request.progress->stop_requested())) {
+          outcome = Result<NativeFrameBatch, Error>::failure(adapter_error(ErrorCode::operation_cancelled, Retryability::never));
+        } else if (!result) outcome = Result<NativeFrameBatch, Error>::failure(result.error());
+        else {
+          batch->frames.push_back(std::move(*mapped));
+          if (batch->results == batch->screens.size()) {
+            std::sort(batch->frames.begin(), batch->frames.end(), [&batch](const auto& a, const auto& b) {
+              return std::find(batch->request.targets.begin(), batch->request.targets.end(), a.display_id) <
+                  std::find(batch->request.targets.begin(), batch->request.targets.end(), b.display_id);
             });
+            outcome = Result<NativeFrameBatch, Error>::success({batch->request.session_id,
+                batch->request.operation_id, batch->request.display_generation, std::move(batch->frames)});
           }
         }
+        if (outcome) { batch->delivered = true; done = std::move(batch->completion); }
       }
-      if (outcome.has_value()) {
-        finished(std::move(*outcome));
-      }
-    });
+      if (done) done(std::move(*outcome));
+    };
+    auto drained = [batch, index, owner] {
+      { std::lock_guard lock(batch->mutex); batch->screens[index].drained = true; }
+      batch->diagnostics->stage(batch->request.targets[index], "cleanup", "drained");
+      owner->release_if_drained(batch);
+    };
+    MacCaptureHooks hooks;
+    hooks.cancelled = stopped;
+    hooks.try_begin_step = [batch](const char*) {
+      std::lock_guard lock(batch->mutex);
+      // The queued/outer-call ticket already holds this screen. The final atomic
+      // stop read is the permission linearization point; no API runs under this lock.
+      return !batch->cancelled && (!batch->request.progress || !batch->request.progress->stop_requested());
+    };
+    hooks.image_received = [event, batch, target] { event(CaptureNativeEventKind::image_received); batch->diagnostics->image_received(target); };
+    hooks.failed = [event, batch, target](const Error& error) { event(CaptureNativeEventKind::failed, error); batch->diagnostics->failure(target, error, "native_error"); };
+    hooks.drained = drained;
+    hooks.stage = [batch, index](const char* api, const char* stage) {
+      batch->diagnostics->stage(batch->request.targets[index], api, stage);
+    };
+    batch->diagnostics->stage(target, "capture", "native_queued");
+    record_diagnostic_stage(diagnostics_.get(), request.session_id, request.operation_id,
+        "capture", "native_begin", "queued", {{"displayId", std::to_string(target.value)},
+        {"api", "captureImageWithFilter"}, {"requestedSpace", "ExtendedDisplayP3"},
+        {"requestedFormat", "RGhA"}, {"preset", "HDRCanonical"}, {"opaque", "yes"}, {"cursor", "no"}}, nullptr, true);
+    auto task_returned = [batch, index, owner] {
+      { std::lock_guard lock(batch->mutex); batch->screens[index].task_returned = true; }
+      owner->release_if_drained(batch);
+    };
+    try {
+      submit_([target, stopped, result, drained, hooks, task_returned, capture = capture_display_]() mutable {
+        try {
+          if (stopped()) { result(Result<MacCapturedFrame, Error>::failure(adapter_error(ErrorCode::operation_cancelled, Retryability::never))); drained(); }
+          else capture(static_cast<std::uint32_t>(target.value), result, std::move(hooks));
+        } catch (...) {
+          result(Result<MacCapturedFrame, Error>::failure(adapter_error(ErrorCode::capture_failed,
+              Retryability::after_user_action, {{"reason", "native_submit_exception"}}))); drained();
+        }
+        // Includes the queued task and outer adapter call even for synchronous callbacks.
+        task_returned();
+      });
+    } catch (...) {
+      result(Result<MacCapturedFrame, Error>::failure(adapter_error(ErrorCode::capture_failed,
+          Retryability::after_user_action, {{"reason", "native_enqueue_exception"}})));
+      drained(); task_returned();
+    }
   }
 }
-
-void MacCapturePort::cancel(const SessionId session_id, const OperationId operation_id) {
-  const std::scoped_lock lock(cancellations_->mutex);
-  cancellations_->cancelled.insert(operation_key(session_id, operation_id));
-}
-
 }  // namespace hdrshot

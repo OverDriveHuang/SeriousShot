@@ -1,4 +1,7 @@
 #include "platform/qt/update/qt_update_runtime.hpp"
+#include "platform/windows/windows_capture_preparation.hpp"
+#include "platform/qt/qt_capture_runtime.hpp"
+#include "ui/qt/capture_error_message.hpp"
 #include "platform/qt/update/application_paths.hpp"
 #include "platform/windows/update/windows_update_native.hpp"
 #include "application/capture_interaction_session.hpp"
@@ -76,6 +79,10 @@ class WindowsApplicationShell {
        clipboard_(smoke_folder_.isEmpty()?std::string{}:(smoke_folder_+QStringLiteral("/clipboard")).toStdString()),dialog_(&exit_),executor_(app){}
   ~WindowsApplicationShell() {
     exit_.finish_after_event_loop();
+    capture_delivery_->shell=nullptr;
+    if(capture_runtime_)capture_runtime_->shutdown();
+    if(preparation_)preparation_->shutdown();
+    if(capture_)capture_->shutdown();
     delete settings_window_;
     delete tray_menu_;
     rasterizer_.reset();
@@ -96,11 +103,15 @@ class WindowsApplicationShell {
     const auto log_started=session_log->start(std::string(build_timestamp()),"Windows");
     if(!log_started) print_error(log_started.error());
     diagnostics_=std::move(session_log);
+    capture_runtime_=std::make_unique<QtCaptureRuntime>();
+    preparation_=std::make_unique<WindowsCapturePreparationOwner>(diagnostics_);
+    capture_=std::make_shared<WindowsCapturePort>(nullptr,WindowsCaptureOptions{},diagnostics_);
     displays_=std::make_shared<WindowsDisplayStateService>(nullptr,diagnostics_);
     store_=std::make_unique<QtSettingsStorePort>(paths.config.toStdString(),default_hotkey,paths.pictures.toStdString());
     const auto loaded=store_->load();
     if(!loaded) { record_diagnostic_failure(diagnostics_.get(),"startup",loaded.error());print_error(loaded.error());return false; }
     settings_=loaded.value();
+    capture_->set_capture_options(windows_capture_options_from_settings(settings_));
     diagnostics_->set_detailed_logging(settings_.detailed_logging);
     const auto capability=windows_check_capture_runtime_capabilities(diagnostics_.get());
     if(!capability) {
@@ -239,6 +250,10 @@ class WindowsApplicationShell {
     (void)hotkey_.unregister_hotkey();
     if(tray_) tray_->hide();
     finish_capture();
+    capture_delivery_->shell=nullptr;
+    if(capture_runtime_)capture_runtime_->shutdown();
+    if(preparation_)preparation_->shutdown();
+    if(capture_)capture_->shutdown();
     if(analyzer_) analyzer_->shutdown();
     if(displays_) displays_->shutdown();
     app_.exit(code);
@@ -266,31 +281,47 @@ class WindowsApplicationShell {
       settings_window_=new SettingsWindow(*store_,hotkey_,folders_,input_,default_hotkey,diagnostics_folder_);
       settings_window_->set_window_activation_port(&activation_);
       settings_window_->set_applied([this](const SettingsSnapshot& settings){
+        const bool enable_detail=!settings_.detailed_logging && settings.detailed_logging;
         settings_=settings;
         if(capture_) capture_->set_capture_options(windows_capture_options_from_settings(settings_));
         diagnostics_->set_detailed_logging(settings_.detailed_logging);
+        if(enable_detail){capture_->diagnostic_snapshot();preparation_->diagnostic_snapshot();}
         update_capture_action_text();
       });
     }
     if(updater_)updater_->attach(*settings_window_);
     settings_window_->reload_and_show();
   }
-  void report(const Error& error, bool log = true) {
+  void report(const Error& error, bool log = true, bool capture_failure = false) {
     print_error(error);
     if(log) record_diagnostic_failure(diagnostics_.get(),"capture",error);
-    tray_->showMessage(QStringLiteral("SeriousShot 操作失败"),QString::fromStdString(to_string(error.code)),QSystemTrayIcon::Critical);
+    tray_->showMessage(capture_failure ? QStringLiteral("SeriousShot 截图失败") : QStringLiteral("SeriousShot 操作失败"),capture_failure ? capture_error_message(error,
+        QStringLiteral("请在 Windows 设置中允许屏幕截图后重试。"),QString::fromStdString(settings_.global_capture_hotkey)) :
+        QString::fromStdString(to_string(error.code)),QSystemTrayIcon::Critical);
     if(!smoke_folder_.isEmpty()) QTimer::singleShot(0,&app_,[this]{shutdown(1);});
   }
   void start_capture() {
     if(!accepts_new_work())return;
-    if(lifecycle_.active()) return;
-    const auto native=windows_enumerate_displays(diagnostics_.get());
-    if(!native) {report(native.error());return;}
-    auto displays=std::make_shared<const std::vector<WindowsDisplayInfo>>(native.value());
-    window_catalog_->set_displays(displays);
+    if(lifecycle_.active() || capture_->busy() || preparation_->busy()) {
+      tray_->showMessage(QStringLiteral("SeriousShot"),capture_busy_message(lifecycle_.phase(),!lifecycle_.active() && (capture_->busy() || preparation_->busy())),QSystemTrayIcon::Information);return;
+    }
     const SessionId session{next_session_++};
     if(!lifecycle_.begin(session)) return;
     save_feedback_.set_capture_active(true);
+    const auto runtime=capture_runtime_->handle();
+    preparation_->prepare(session,[delivery=capture_delivery_,runtime,session](Result<WindowsPreparedCapture,Error> result) mutable {
+      runtime->post([delivery,session,result=std::move(result)]() mutable {
+        auto* shell=delivery->shell; // GUI thread only; background never reads UI pointers.
+        if(!shell || !shell->lifecycle_.accepts(session) || !shell->accepts_new_work())return;
+        if(!result){shell->report(result.error(),true,true);shell->finish_capture(session);return;}
+        shell->prepared_capture_ready(session,std::move(result.value()));
+      });
+    });
+  }
+  void prepared_capture_ready(SessionId session,WindowsPreparedCapture prepared_capture) {
+    auto displays=std::move(prepared_capture.displays);
+    window_catalog_->set_displays(displays);
+    capture_->set_displays(displays,std::move(prepared_capture.borderless));
     const SelectionSnapshot initial{1,{}};
     std::vector<DisplayId> targets;
     std::vector<DisplayPreviewEndpoint> endpoints;
@@ -301,11 +332,11 @@ class WindowsApplicationShell {
           const auto* native_screen=screen->nativeInterface<QNativeInterface::QWindowsScreen>();
           if(native_screen && reinterpret_cast<std::uintptr_t>(native_screen->handle())==display.monitor) {qt_screen=screen;break;}
         }
-      if(!qt_screen) {report({ErrorCode::display_configuration_changed,"WindowsShell",Retryability::after_recreate,{{"reason","qt_screen_not_found"}}});finish_capture();return;}
+      if(!qt_screen) {report({ErrorCode::display_configuration_changed,"WindowsShell",Retryability::after_recreate,{{"reason","qt_screen_not_found"}}},true,true);finish_capture();return;}
       auto* host=new QtOverlayHost(std::make_unique<WindowsQtOverlayWindow>(display),display.snapshot.id,initial,input_,input_recovery);
       host->setGeometry(qt_screen->geometry());
       const auto prepared=host->prepare_hidden_native_surface();
-      if(!prepared) {host->deleteLater();report(prepared.error());finish_capture();return;}
+      if(!prepared) {host->deleteLater();report(prepared.error(),true,true);finish_capture();return;}
       host->windowHandle()->setScreen(qt_screen);
       host->set_text_rasterizer(rasterizer_,font_family_);
       host->set_background_clean_composition(executor_,windows_clean_composition());
@@ -350,27 +381,26 @@ class WindowsApplicationShell {
         });
       });
       auto presenter=WindowsD3DPreviewPresenter::create(host->native_surface(),display,diagnostics_,host->native_magnifier_surface());
-      if(!presenter) {host->deleteLater();report(presenter.error());finish_capture();return;}
+      if(!presenter) {host->deleteLater();report(presenter.error(),true,true);finish_capture();return;}
       host->set_magnifier_card(presenter.value());
       targets.push_back(display.snapshot.id);
       endpoints.push_back({display.snapshot.id,presenter.value()});
       overlays_.push_back({display.snapshot.id,host,presenter.value()});
     }
     catalog_=std::make_shared<WindowsDisplayCatalogPort>(displays);
-    capture_=std::make_shared<WindowsCapturePort>(displays,windows_capture_options_from_settings(settings_),diagnostics_);
-    preview_=std::make_shared<MultiDisplayPreviewPresenterPort>(std::move(endpoints));
-    session_=std::make_shared<CaptureSession>(catalog_,capture_,preview_,window_catalog_,diagnostics_);
+    preview_=std::make_shared<MultiDisplayPreviewPresenterPort>(std::move(endpoints),capture_runtime_->handle());
+    session_=std::make_shared<CaptureSession>(catalog_,capture_,preview_,window_catalog_,diagnostics_,capture_runtime_->handle());
     session_->begin({session,OperationId{1},FrameId{session.value},std::move(targets),initial},
         [this,session](Result<CaptureReadyPayload,Error> result) mutable {
-      QMetaObject::invokeMethod(&app_,[this,session,result=std::move(result)]() mutable {
+      capture_runtime_->handle()->post([this,session,result=std::move(result)]() mutable {
         if(!lifecycle_.accepts(session)) return;
-        if(!result) {report(result.error());finish_capture(session);return;}
+        if(!result) {report(result.error(),false,true);finish_capture(session);return;}
         if(!lifecycle_.ready(result.value().present_receipt)) {finish_capture(session);return;}
         auto sequence=std::make_shared<std::atomic_uint64_t>(result.value().present_receipt.operation_id.value+1U);
         for(auto& overlay:overlays_) if(overlay.host) overlay.host->activate_capture(result.value(),overlay.presenter,sequence);
         std::cout<<"captureReady=1 displays="<<overlays_.size()<<'\n';
         if(!smoke_folder_.isEmpty()) QTimer::singleShot(150,&app_,[this]{smoke_check_magnifier();});
-      },Qt::QueuedConnection);
+      });
     });
   }
   // Explicit diagnostic mode only. Exercise PNG save -> JPEG copy -> PNG copy
@@ -489,9 +519,10 @@ class WindowsApplicationShell {
   void finish_capture(SessionId expected={}) {
     if(expected.value==0) expected=lifecycle_.id();
     if(!lifecycle_.finish(expected)) return;
+    if(preparation_)preparation_->cancel(expected);
     if(session_) session_->cancel(expected,OperationId{1});
     for(auto& overlay:overlays_) if(overlay.host) {overlay.host->hide();overlay.host->deleteLater();}
-    session_.reset();preview_.reset();overlays_.clear();capture_.reset();catalog_.reset();
+    session_.reset();preview_.reset();overlays_.clear();catalog_.reset();
     save_feedback_.set_capture_active(false);
     std::cout<<"captureSessionReturnedToResident=1\n";
   }
@@ -532,6 +563,10 @@ class WindowsApplicationShell {
   SaveSuccessFeedback save_feedback_;
   std::unique_ptr<WindowsQtAnalyzerController> analyzer_;
   std::unique_ptr<QtPinnedScreenshotController> pinned_;
+  std::unique_ptr<QtCaptureRuntime> capture_runtime_;
+  struct CaptureDelivery {WindowsApplicationShell* shell;};
+  std::shared_ptr<CaptureDelivery> capture_delivery_=std::make_shared<CaptureDelivery>(CaptureDelivery{this});
+  std::unique_ptr<WindowsCapturePreparationOwner> preparation_;
   CaptureInteractionSession lifecycle_;
   std::uint64_t next_session_{1};
   std::vector<Overlay> overlays_;

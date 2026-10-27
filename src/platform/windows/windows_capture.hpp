@@ -3,6 +3,8 @@
 #include "platform/windows/windows_capture_policy.hpp"
 #include "platform/windows/windows_display_mode.hpp"
 #include "ports/capture_preview_ports.hpp"
+#include "ports/capture_progress_port.hpp"
+#include "platform/windows/windows_capture_work.hpp"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -11,6 +13,27 @@
 namespace hdrshot {
 class DiagnosticsPort;
 class WindowsIccProfile;
+class CaptureInFlightDiagnostics;
+struct WindowsCaptureNativeCalls;
+struct WindowsBorderlessAccess {
+  bool allowed{};
+  std::uint32_t native_code{};
+  const char* reason{"bordered_fallback"};
+  std::optional<Error> error;
+};
+WindowsBorderlessAccess windows_prepare_borderless_access();
+struct WindowsCaptureHooks {
+  CaptureOperationKey key{};
+  DisplayId display{};
+  std::shared_ptr<CaptureProgressObserver> observer;
+  std::shared_ptr<CaptureInFlightDiagnostics> facts;
+  std::shared_ptr<WindowsCaptureWork> work;
+  std::shared_ptr<WindowsCaptureNativeCalls> native;
+  std::function<void(const Error&)> failed;
+  std::function<void(const char*,bool)> observe_call;
+  std::optional<WindowsBorderlessAccess> borderless;
+  std::optional<std::uint32_t> frame_timeout;
+};
 [[nodiscard]] inline WindowsCaptureOptions windows_capture_options_from_settings(
     const SettingsSnapshot& settings) noexcept {
   return {settings.windows_capture_gain_enabled,
@@ -70,7 +93,8 @@ void windows_resolve_display_icc(WindowsDisplayInfo& display,
     const WindowsIccProfileLoader& loader = {});
 Result<WindowsRawCapture, Error> windows_capture_display(
     const WindowsDisplayInfo& display, const std::atomic_bool* cancelled = nullptr,
-    std::uint32_t timeout_ms = 5000, DiagnosticsPort* diagnostics = nullptr);
+    std::uint32_t timeout_ms = 5000, DiagnosticsPort* diagnostics = nullptr,
+    const WindowsCaptureHooks* hooks = nullptr);
 std::uint32_t windows_build_number();
 
 class WindowsDisplayCatalogPort final : public DisplayCatalogPort {
@@ -92,8 +116,17 @@ class WindowsCapturePort final : public CapturePort {
   void set_capture_options(WindowsCaptureOptions options);
   void capture(const CaptureBatchRequest& request, Completion completion) override;
   void cancel(SessionId session_id, OperationId operation_id) override;
+  bool busy() const;
+  void shutdown();
+  void diagnostic_snapshot();
+  void set_displays(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
+      WindowsBorderlessAccess access = {});
+  using CaptureDisplay = std::function<Result<WindowsRawCapture, Error>(
+      const WindowsDisplayInfo&, const std::atomic_bool*, const WindowsCaptureHooks&)>;
+  void set_test_seams(WindowsNativeSubmit submit, CaptureDisplay capture = {},
+      std::shared_ptr<WindowsCaptureNativeCalls> native = {});
  private:
   struct Impl;
-  std::unique_ptr<Impl> impl_;
+  std::shared_ptr<Impl> impl_;
 };
 }  // namespace hdrshot

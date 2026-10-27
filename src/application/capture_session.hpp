@@ -6,6 +6,7 @@
 #include "ports/capture_preview_ports.hpp"
 #include "ports/window_catalog_port.hpp"
 #include "ports/diagnostics_port.hpp"
+#include "ports/capture_progress_port.hpp"
 
 #include <functional>
 #include <memory>
@@ -41,7 +42,8 @@ class CaptureSession {
                  std::shared_ptr<CapturePort> capture_port,
                  std::shared_ptr<PreviewPresenterPort> presenter,
                  std::shared_ptr<WindowCatalogPort> window_catalog = {},
-                 std::shared_ptr<DiagnosticsPort> diagnostics = {});
+                 std::shared_ptr<DiagnosticsPort> diagnostics = {},
+                 std::shared_ptr<CaptureRuntimePort> runtime = {});
   ~CaptureSession();
   CaptureSession(const CaptureSession&) = delete;
   CaptureSession& operator=(const CaptureSession&) = delete;

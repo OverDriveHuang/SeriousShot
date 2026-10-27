@@ -13,6 +13,7 @@
 #include <vector>
 
 namespace hdrshot {
+class CaptureProgressObserver;
 
 struct SnapshotDisplaysRequest {
   SessionId session_id{};
@@ -23,6 +24,7 @@ class DisplayCatalogPort {
  public:
   using Completion = std::function<void(Result<DisplaySnapshotSet, Error>)>;
   virtual ~DisplayCatalogPort() = default;
+  virtual void cancel(SessionId, OperationId) {}
   virtual void snapshot_displays(const SnapshotDisplaysRequest& request, Completion completion) = 0;
 };
 
@@ -33,6 +35,7 @@ struct CaptureBatchRequest {
   std::vector<DisplayId> targets;
   PixelFormat desired_format{PixelFormat::rgba16_float};
   bool exclude_own_windows{true};
+  std::shared_ptr<CaptureProgressObserver> progress{};
 };
 
 class CapturePort {

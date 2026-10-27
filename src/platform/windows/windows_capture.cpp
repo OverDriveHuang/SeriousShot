@@ -26,7 +26,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
-#include <future>
+#include "application/capture_inflight_diagnostics.hpp"
+#include "platform/windows/windows_capture_native_calls.hpp"
 #include <filesystem>
 #include <iomanip>
 #include <map>
@@ -40,32 +41,33 @@ namespace {
 namespace capture = winrt::Windows::Graphics::Capture;
 namespace directx = winrt::Windows::Graphics::DirectX;
 namespace metadata = winrt::Windows::Foundation::Metadata;
+// Projected static methods and get_activation_factory<Class, Interface>() cache
+// agile factories beyond a worker's final CoUninitialize. Obtain an owned local
+// factory instead, and release it inside the apartment that made the call.
+template<class Class, class Interface>
+auto windows_uncached_capture_factory() {
+  winrt::hresult_error error;
+  auto factory=winrt::try_get_activation_factory<Class,Interface>(error);
+  if(!factory) throw error;
+  return factory;
+}
 Error capture_error(const char* reason, std::optional<HRESULT> hr = {},
     std::source_location origin = std::source_location::current()) {
   return windows_capture_error(reason, hr, origin);
 }
 std::string utf8(const wchar_t* s) { return winrt::to_string(s); }
-struct Apartment {
-  explicit Apartment(std::source_location call_origin = std::source_location::current())
-      : hr(CoInitializeEx(nullptr, COINIT_MULTITHREADED)), origin(call_origin) {}
-  HRESULT hr;
-  std::source_location origin;
-  ~Apartment() { if (SUCCEEDED(hr)) CoUninitialize(); }
-};
+using Apartment = WindowsCaptureApartment;
 using OperationKey = std::pair<std::uint64_t, std::uint64_t>;
-struct BorderlessAccess {
-  bool allowed{};
-  std::uint32_t native_code{};
-  const char* reason{"bordered_fallback"};
-  std::optional<Error> error;
-};
+using BorderlessAccess = WindowsBorderlessAccess;
 BorderlessAccess borderless_capture_access() {
   // The optional access prompt is made once per process only when the method
   // exists. A denial or absent API never blocks capture.
   static const BorderlessAccess result=[] {
     try {
-      auto access=windows_capture_call("GraphicsCaptureAccess.RequestAccessAsync", [] {
-        return capture::GraphicsCaptureAccess::RequestAccessAsync(capture::GraphicsCaptureAccessKind::Borderless); });
+      const auto factory=windows_capture_call("GraphicsCaptureAccess.GetActivationFactory", [] {
+        return windows_uncached_capture_factory<capture::GraphicsCaptureAccess,capture::IGraphicsCaptureAccessStatics>(); });
+      auto access=windows_capture_call("GraphicsCaptureAccess.RequestAccessAsync", [&] {
+        return factory.RequestAccessAsync(capture::GraphicsCaptureAccessKind::Borderless); });
       const auto status=windows_capture_call("GraphicsCaptureAccess.wait_for", [&] {
         return access.wait_for(std::chrono::seconds(30)); });
       if(status==winrt::Windows::Foundation::AsyncStatus::Error) {
@@ -141,36 +143,43 @@ Result<WindowsCaptureCapabilityPlan, Error> windows_check_capture_runtime_capabi
     auto error = capture_error("wgc_apartment_unavailable", apartment.hr, apartment.origin);
     error.safe_context["api"] = "CoInitializeEx";
     record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
-        "failure", {}, &error);
+        "failure", {}, &error, true);
     return Out::failure(error);
   }
   try {
     const auto pool_name = L"Windows.Graphics.Capture.Direct3D11CaptureFramePool";
-    if (!windows_capture_call("GraphicsCaptureSession.IsSupported", [] {
-          return capture::GraphicsCaptureSession::IsSupported(); }) ||
-        !windows_capture_call("ApiInformation.IsMethodPresent", [&] {
-          return metadata::ApiInformation::IsMethodPresent(pool_name, L"CreateFreeThreaded"); })) {
+    const auto session_factory=windows_capture_call("GraphicsCaptureSession.GetActivationFactory", [] {
+      return windows_uncached_capture_factory<capture::GraphicsCaptureSession,capture::IGraphicsCaptureSessionStatics>(); });
+    metadata::IApiInformationStatics metadata_factory{nullptr};
+    const auto has_free_threaded_pool=[&] {
+      metadata_factory=windows_capture_call("ApiInformation.GetActivationFactory", [] {
+        return windows_uncached_capture_factory<metadata::ApiInformation,metadata::IApiInformationStatics>(); });
+      return windows_capture_call("ApiInformation.IsMethodPresent", [&] {
+        return metadata_factory.IsMethodPresent(pool_name,L"CreateFreeThreaded"); });
+    };
+    if (!windows_capture_call("GraphicsCaptureSession.IsSupported", [&] {
+          return session_factory.IsSupported(); }) || !has_free_threaded_pool()) {
       const auto error = capture_error("wgc_unsupported");
       record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
-          "failure", {{"api", "wgc_free_threaded"}}, &error);
+          "failure", {{"api", "wgc_free_threaded"}}, &error, true);
       return Out::failure(error);
     }
     const auto session_name = L"Windows.Graphics.Capture.GraphicsCaptureSession";
     const bool cursor_present = windows_capture_call("ApiInformation.IsPropertyPresent", [&] {
-      return metadata::ApiInformation::IsPropertyPresent(session_name, L"IsCursorCaptureEnabled"); });
+      return metadata_factory.IsPropertyPresent(session_name, L"IsCursorCaptureEnabled"); });
     const bool border_present = windows_capture_call("ApiInformation.IsPropertyPresent", [&] {
-      return metadata::ApiInformation::IsPropertyPresent(session_name, L"IsBorderRequired"); });
-    const bool border_access_present = windows_capture_call("ApiInformation.IsTypePresent", [] {
-      return metadata::ApiInformation::IsTypePresent(L"Windows.Graphics.Capture.GraphicsCaptureAccess"); }) &&
-        windows_capture_call("ApiInformation.IsMethodPresent", [] {
-          return metadata::ApiInformation::IsMethodPresent(
+      return metadata_factory.IsPropertyPresent(session_name, L"IsBorderRequired"); });
+    const bool border_access_present = windows_capture_call("ApiInformation.IsTypePresent", [&] {
+      return metadata_factory.IsTypePresent(L"Windows.Graphics.Capture.GraphicsCaptureAccess"); }) &&
+        windows_capture_call("ApiInformation.IsMethodPresent", [&] {
+          return metadata_factory.IsMethodPresent(
               L"Windows.Graphics.Capture.GraphicsCaptureAccess", L"RequestAccessAsync"); });
     const auto plan = windows_plan_capture_capabilities(
         cursor_present, border_present, border_access_present);
     if (!plan.can_exclude_cursor) {
       const auto error = capture_error("cursor_exclusion_unavailable");
       record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
-          "failure", {{"api", "wgc_cursor"}}, &error);
+          "failure", {{"api", "wgc_cursor"}}, &error, true);
       return Out::failure(error);
     }
     record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
@@ -184,7 +193,7 @@ Result<WindowsCaptureCapabilityPlan, Error> windows_check_capture_runtime_capabi
   } catch (const WindowsCaptureCallFailure& e) {
     const auto& error = e.error;
     record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.capability",
-        "failure", {}, &error);
+        "failure", {}, &error, true);
     return Out::failure(error);
   }
 }
@@ -369,7 +378,7 @@ Result<std::vector<WindowsDisplayInfo>, Error> enumerate_display_state(
         return DisplayConfigGetDeviceInfo(&source.header); });
       if (source_result.value != ERROR_SUCCESS) {
         auto error = source_result.error("display_source_name", HRESULT_FROM_WIN32(source_result.value));
-        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "display.source_name", "failure", {}, &error);
+        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "display.source_name", "failure", {}, &error, true);
       }
       target_paths.push_back({path.sourceInfo.adapterId.LowPart,
           path.sourceInfo.adapterId.HighPart, path.sourceInfo.id, path.targetInfo.id,
@@ -489,7 +498,7 @@ void windows_resolve_display_icc(WindowsDisplayInfo& display,
       profile ? "success" : "fallback",
       {{"displayId", std::to_string(display.snapshot.id.value)},
        {"source", profile ? display.icc_profile->sha256 : "assumed_srgb"}},
-      profile ? nullptr : &profile.error());
+      profile ? nullptr : &profile.error(), true);
 }
 
 Result<std::vector<WindowsDisplayInfo>, Error> windows_enumerate_displays(DiagnosticsPort* diagnostics) {
@@ -505,9 +514,43 @@ Result<WindowsDisplayInfo, Error> windows_query_display_state(
   return Out::success(std::move(displays.value().front()));
 }
 
+WindowsBorderlessAccess windows_prepare_borderless_access() {
+  WindowsCaptureCallScope optional(nullptr);
+  Apartment apartment;
+  const auto capability=windows_check_capture_runtime_capabilities();
+  if(!capability) return {false,0,"bordered_fallback",capability.error()};
+  return capability.value().may_request_borderless ? borderless_capture_access() : WindowsBorderlessAccess{};
+}
+void windows_submit_capture_work(std::function<void()> task) {
+  auto owned=std::make_unique<std::function<void()>>(std::move(task));
+  if(!TrySubmitThreadpoolCallback([](PTP_CALLBACK_INSTANCE instance, void* context) noexcept {
+    CallbackMayRunLong(instance);
+    std::unique_ptr<std::function<void()>> work(static_cast<std::function<void()>*>(context));
+    try { (*work)(); } catch (...) {} // ABI boundary; task owns result/drain guards.
+  }, owned.get(), nullptr)) {
+    const auto code=GetLastError();
+    auto error=capture_error("capture_submit_failed",HRESULT_FROM_WIN32(code));
+    error.safe_context["api"]="TrySubmitThreadpoolCallback";
+    throw WindowsCaptureCallFailure{std::move(error),HRESULT_FROM_WIN32(code)};
+  }
+  (void)owned.release();
+}
+
 Result<WindowsRawCapture, Error> windows_capture_display(
     const WindowsDisplayInfo& display, const std::atomic_bool* cancelled,
-    const std::uint32_t timeout_ms, DiagnosticsPort* diagnostics) {
+    const std::uint32_t timeout_ms, DiagnosticsPort* diagnostics, const WindowsCaptureHooks* hooks) {
+  const auto stop=[&] { return (cancelled && cancelled->load()) || (hooks && hooks->observer && hooks->observer->stop_requested()); };
+  const auto failure=[&](const Error& error) {
+    if(hooks && hooks->failed) hooks->failed(error);
+  };
+  WindowsCaptureCallHooks calls;
+  calls.failed=failure;
+  calls.boundary=[&](const char* api,bool enter) {
+    if(enter && std::string_view(api)!="CoUninitialize" && stop()) throw WindowsCaptureCallFailure{Error{ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}},S_OK};
+    if(hooks && hooks->facts) hooks->facts->stage(display.snapshot.id,api,enter?"call_enter":"call_return");
+    if(hooks && hooks->native && hooks->native->boundary) hooks->native->boundary(api,enter);
+  };
+  WindowsCaptureCallScope call_scope(hooks?&calls:nullptr);
   const auto capability = windows_check_capture_runtime_capabilities(diagnostics);
   if (!capability) {
     auto error = capability.error();
@@ -525,12 +568,19 @@ Result<WindowsRawCapture, Error> windows_capture_display(
   capture::GraphicsCaptureSession session{nullptr};
   capture::Direct3D11CaptureFrame frame{nullptr};
   capture::Direct3D11CaptureFramePool::FrameArrived_revoker token{};
-  using FrameState = WindowsCaptureFrameState<capture::Direct3D11CaptureFrame>;
+  struct ValidatedFrame {
+    capture::Direct3D11CaptureFrame frame{nullptr};
+    directx::Direct3D11::IDirect3DSurface surface{nullptr};
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    D3D11_TEXTURE2D_DESC desc{};
+    winrt::Windows::Graphics::SizeInt32 size{};
+  };
+  using FrameState = WindowsCaptureFrameState<std::shared_ptr<ValidatedFrame>>;
   std::shared_ptr<FrameState> state;
   const auto perform = [&]() -> Result<WindowsRawCapture, Error> {
   try {
     const auto interop = windows_capture_call("GraphicsCaptureItem.GetActivationFactory", [] {
-      return winrt::get_activation_factory<capture::GraphicsCaptureItem, IGraphicsCaptureItemInterop>(); });
+      return windows_uncached_capture_factory<capture::GraphicsCaptureItem, IGraphicsCaptureItemInterop>(); });
     capture::GraphicsCaptureItem item{nullptr};
     windows_capture_call("CreateForMonitor", [&] {
       winrt::check_hresult(interop->CreateForMonitor(reinterpret_cast<HMONITOR>(display.monitor),
@@ -548,13 +598,17 @@ Result<WindowsRawCapture, Error> windows_capture_display(
     const auto rt_device = windows_capture_call("IDirect3DDevice.QueryInterface", [&] {
       return inspectable.as<directx::Direct3D11::IDirect3DDevice>(); });
     const auto item_size = windows_capture_call("GraphicsCaptureItem.Size", [&] { return item.Size(); });
+    const auto pool_factory=windows_capture_call("Direct3D11CaptureFramePool.GetActivationFactory", [] {
+      return windows_uncached_capture_factory<capture::Direct3D11CaptureFramePool,capture::IDirect3D11CaptureFramePoolStatics2>(); });
     pool = windows_capture_call("Direct3D11CaptureFramePool.CreateFreeThreaded", [&] {
-      return capture::Direct3D11CaptureFramePool::CreateFreeThreaded(rt_device,
+      return pool_factory.CreateFreeThreaded(rt_device,
           directx::DirectXPixelFormat::R16G16B16A16Float, 2, item_size); });
     session = windows_capture_call("CreateCaptureSession", [&] { return pool.CreateCaptureSession(item); });
     const auto session_name = L"Windows.Graphics.Capture.GraphicsCaptureSession";
+    const auto metadata_factory=windows_capture_call("ApiInformation.GetActivationFactory", [] {
+      return windows_uncached_capture_factory<metadata::ApiInformation,metadata::IApiInformationStatics>(); });
     const bool border_present = windows_capture_call("ApiInformation.IsPropertyPresent", [&] {
-      return metadata::ApiInformation::IsPropertyPresent(session_name, L"IsBorderRequired"); });
+      return metadata_factory.IsPropertyPresent(session_name, L"IsBorderRequired"); });
     try {
       windows_capture_call("IsCursorCaptureEnabled.set", [&] { session.IsCursorCaptureEnabled(false); });
     } catch (const WindowsCaptureCallFailure& e) {
@@ -563,26 +617,28 @@ Result<WindowsRawCapture, Error> windows_capture_display(
       return Result<WindowsRawCapture, Error>::failure(std::move(error));
     }
     BorderlessAccess border_access{};
-    if (capability.value().may_request_borderless) border_access = borderless_capture_access();
+    if(hooks && hooks->borderless) border_access=*hooks->borderless;
+    else if (capability.value().may_request_borderless) { WindowsCaptureCallScope optional(nullptr); border_access = borderless_capture_access(); }
     if (border_access.error)
       record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border_optional", "fallback",
-          {{"displayId", std::to_string(display.snapshot.id.value)}}, &*border_access.error);
+          {{"displayId", std::to_string(display.snapshot.id.value)}}, &*border_access.error, true);
     if (border_present && border_access.allowed) {
-      try { windows_capture_call("IsBorderRequired.set", [&] { session.IsBorderRequired(false); }); }
+      try { WindowsCaptureCallScope optional(nullptr); windows_capture_call("IsBorderRequired.set", [&] { session.IsBorderRequired(false); }); }
       catch (const WindowsCaptureCallFailure& e) {
         border_access = {false, static_cast<std::uint32_t>(e.native_code), "bordered_fallback", {}};
-        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border_optional", "fallback", {}, &e.error);
+        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border_optional", "fallback", {}, &e.error, true);
       }
     }
     bool border_observed = false;
     bool border_required = true;
     if (border_present) {
       try {
+        WindowsCaptureCallScope optional(nullptr);
         border_required = windows_capture_call("IsBorderRequired.get", [&] { return session.IsBorderRequired(); });
         border_observed = true;
       } catch (const WindowsCaptureCallFailure& e) {
         border_access = {false, static_cast<std::uint32_t>(e.native_code), "bordered_fallback", {}};
-        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border_optional", "fallback", {}, &e.error);
+        record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border_optional", "fallback", {}, &e.error, true);
       }
     }
     record_diagnostic_stage(diagnostics, {}, {}, "windows.color", "capture.border", "success",
@@ -591,28 +647,54 @@ Result<WindowsRawCapture, Error> windows_capture_display(
          {"nativeCode", std::to_string(border_access.native_code)},
          {"reason", border_observed && !border_required ? "available" : "bordered_fallback"}});
     state = std::make_shared<FrameState>();
+    const auto owned_hooks=hooks?*hooks:WindowsCaptureHooks{};
+    state->failed=owned_hooks.failed;
+    state->accepted=[owned_hooks] {
+      if(owned_hooks.observer) owned_hooks.observer->native_event({owned_hooks.key,owned_hooks.display,CaptureNativeEventKind::image_received,{}});
+      if(owned_hooks.facts) owned_hooks.facts->image_received(owned_hooks.display);
+    };
+    // Callback captures only value-owned hooks and frozen display metadata.
+    const auto callback_hooks=hooks?*hooks:WindowsCaptureHooks{};
+    const auto expected=display.snapshot.capture_size_px;
+    if(hooks && hooks->work) hooks->work->registration_open();
     token = windows_capture_call("Direct3D11CaptureFramePool.FrameArrived", [&] {
-      return pool.FrameArrived(winrt::auto_revoke, [state](const auto& sender, const auto&) {
-        state->receive([&] { return sender.TryGetNextFrame(); });
+      return pool.FrameArrived(winrt::auto_revoke, [state,callback_hooks,expected](const auto& sender, const auto&) {
+        WindowsCallbackTicket callback_ticket(callback_hooks.work);
+        if(!callback_ticket.admitted) return;
+        if(callback_hooks.observer && callback_hooks.observer->stop_requested()) return;
+        WindowsCaptureCallHooks callback_calls;
+        callback_calls.failed=[state](const Error& error){state->report_failure(error);};
+        // Successful validation must not perform diagnostic IO before image_received.
+        callback_calls.boundary=[&](const char* api,bool enter) {
+          if(enter && callback_hooks.observer && callback_hooks.observer->stop_requested())
+            throw WindowsCaptureCallFailure{Error{ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}},S_OK};
+          if(callback_hooks.observe_call)callback_hooks.observe_call(api,enter);
+          if(callback_hooks.native && callback_hooks.native->boundary) callback_hooks.native->boundary(api,enter);
+        };
+        windows_receive_capture_frame(callback_ticket,*state,callback_calls,
+          [&]{return callback_hooks.native && callback_hooks.native->fetch ? callback_hooks.native->fetch(sender) : sender.TryGetNextFrame();},
+          [&](capture::Direct3D11CaptureFrame fetched) -> std::shared_ptr<ValidatedFrame> {
+          auto value=std::make_shared<ValidatedFrame>(); value->frame=std::move(fetched);
+          value->size=windows_capture_call("Direct3D11CaptureFrame.ContentSize",[&]{return value->frame.ContentSize();});
+          value->surface=windows_capture_call("Direct3D11CaptureFrame.Surface",[&]{return value->frame.Surface();});
+          const auto access=windows_capture_call("IDirect3DDxgiInterfaceAccess.QueryInterface",[&]{return value->surface.as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();});
+          windows_capture_call("IDirect3DDxgiInterfaceAccess.GetInterface",[&]{winrt::check_hresult(access->GetInterface(winrt::guid_of<ID3D11Texture2D>(),value->texture.put_void()));});
+          windows_capture_call("ID3D11Texture2D.GetDesc",[&]{value->texture->GetDesc(&value->desc);});
+          const auto& size=value->size; const auto& desc=value->desc;
+          windows_validate_capture_extent(desc.Format,DXGI_FORMAT_R16G16B16A16_FLOAT,size.Width,size.Height,
+              expected.width,expected.height,desc.Width,desc.Height);
+          return value;
+        });
       }); });
     windows_capture_call("StartCapture", [&] { session.StartCapture(); });
-    auto received = state->wait(cancelled, timeout_ms);
-    if (!received) return Result<WindowsRawCapture, Error>::failure(received.error());
-    frame = std::move(received.value());
-    const auto surface = windows_capture_call("Direct3D11CaptureFrame.Surface", [&] { return frame.Surface(); });
-    const auto access = windows_capture_call("IDirect3DDxgiInterfaceAccess.QueryInterface", [&] {
-      return surface.as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>(); });
-    winrt::com_ptr<ID3D11Texture2D> texture;
-    windows_capture_call("IDirect3DDxgiInterfaceAccess.GetInterface", [&] {
-      winrt::check_hresult(access->GetInterface(winrt::guid_of<ID3D11Texture2D>(), texture.put_void())); });
-    D3D11_TEXTURE2D_DESC desc{};
-    texture->GetDesc(&desc);
-    const auto size = windows_capture_call("Direct3D11CaptureFrame.ContentSize", [&] { return frame.ContentSize(); });
-    if (desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT || size.Width <= 0 || size.Height <= 0 ||
-        size.Width != display.snapshot.capture_size_px.width || size.Height != display.snapshot.capture_size_px.height ||
-        static_cast<UINT>(size.Width) > desc.Width || static_cast<UINT>(size.Height) > desc.Height) {
-      return Result<WindowsRawCapture, Error>::failure(capture_error("capture_size_or_format_changed"));
-    }
+    auto received = state->wait(cancelled, hooks?hooks->frame_timeout:std::optional<std::uint32_t>{timeout_ms});
+    if (!received) { failure(received.error()); return Result<WindowsRawCapture, Error>::failure(received.error()); }
+    auto validated=std::move(received.value());
+    frame=validated->frame;
+    auto texture=validated->texture;
+    auto desc=validated->desc;
+    const auto size=validated->size;
+    if(stop()) return Result<WindowsRawCapture,Error>::failure({ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}});
     WindowsRawCapture result{display.snapshot.id, {size.Width, size.Height},
         windows_capture_call("Direct3D11CaptureFrame.SystemRelativeTime", [&] {
           return frame.SystemRelativeTime().count(); }), static_cast<std::uint32_t>(desc.Format), {}};
@@ -624,17 +706,16 @@ Result<WindowsRawCapture, Error> windows_capture_display(
     windows_capture_call("ID3D11Device.CreateTexture2D", [&] {
       winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, staging.put())); });
     const D3D11_BOX box{0, 0, 0, desc.Width, desc.Height, 1};
-    context->CopySubresourceRegion(staging.get(), 0, 0, 0, 0, texture.get(), 0, &box);
+    windows_capture_call("ID3D11DeviceContext.CopySubresourceRegion",[&]{context->CopySubresourceRegion(staging.get(), 0, 0, 0, 0, texture.get(), 0, &box);});
     const auto row_samples = static_cast<std::size_t>(size.Width) * 4U;
     result.rgba_scrgb.resize(row_samples * static_cast<std::size_t>(size.Height));
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    windows_capture_call("ID3D11DeviceContext.Map", [&] {
-      winrt::check_hresult(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)); });
-    for (std::size_t y = 0; y < static_cast<std::size_t>(size.Height); ++y) {
-      std::memcpy(result.rgba_scrgb.data() + y * row_samples,
-          static_cast<const char*>(mapped.pData) + y * mapped.RowPitch, row_samples * sizeof(std::uint16_t));
-    }
-    context->Unmap(staging.get(), 0);
+    windows_copy_capture_rows(static_cast<std::size_t>(size.Height),stop,
+      [&]{winrt::check_hresult(context->Map(staging.get(),0,D3D11_MAP_READ,0,&mapped));},
+      [&](std::size_t y){
+        std::memcpy(result.rgba_scrgb.data()+y*row_samples,
+            static_cast<const char*>(mapped.pData)+y*mapped.RowPitch,row_samples*sizeof(std::uint16_t));
+      },[&]{context->Unmap(staging.get(),0);});
     texture = nullptr;
     return Result<WindowsRawCapture, Error>::success(std::move(result));
   } catch (const WindowsCaptureCallFailure& e) {
@@ -646,9 +727,15 @@ Result<WindowsRawCapture, Error> windows_capture_display(
   }
   };
   auto result = perform();
+  if(!result) failure(result.error());
+  WindowsCaptureCallHooks cleanup_calls;
+  cleanup_calls.failed=[&](const Error& error) { if(result) failure(error); else if(hooks && hooks->facts) hooks->facts->failure(display.snapshot.id,error,"cleanup_failure"); };
+  cleanup_calls.boundary=[&](const char* api,bool enter) { if(hooks && hooks->facts) hooks->facts->stage(display.snapshot.id,api,enter?"cleanup_enter":"cleanup_return"); if(hooks && hooks->native && hooks->native->boundary) hooks->native->boundary(api,enter); };
+  WindowsCaptureCallScope cleanup_scope(hooks?&cleanup_calls:nullptr);
   if (state) state->close();
   WindowsCaptureCleanup cleanup;
   cleanup.attempt("FrameArrived.revoke", [&] { token.revoke(); });
+  if(hooks && hooks->work) hooks->work->registration_closed();
   if (frame) cleanup.attempt("Direct3D11CaptureFrame.Close", [&] { frame.Close(); });
   if (session) cleanup.attempt("GraphicsCaptureSession.Close", [&] { session.Close(); });
   if (pool) cleanup.attempt("Direct3D11CaptureFramePool.Close", [&] { pool.Close(); });
@@ -656,7 +743,7 @@ Result<WindowsRawCapture, Error> windows_capture_display(
     try {
       auto error = cleanup.error();
       error.safe_context["displayId"] = std::to_string(display.snapshot.id.value);
-      record_diagnostic_stage(diagnostics, {}, {}, "capture", "cleanup", "failure", {}, &error);
+      record_diagnostic_stage(diagnostics, {}, {}, "capture", "cleanup", "failure", {}, &error, true);
     } catch (...) { /* Secondary diagnostic allocation cannot replace primary. */ }
   }
   result = cleanup.complete(std::move(result));
@@ -679,132 +766,165 @@ void WindowsDisplayCatalogPort::snapshot_displays(const SnapshotDisplaysRequest&
   completion(Result<DisplaySnapshotSet, Error>::success(std::move(set)));
 }
 
-struct WindowsCapturePort::Impl {
+
+struct WindowsCapturePort::Impl : std::enable_shared_from_this<Impl> {
+  struct Batch {
+    CaptureBatchRequest request;
+    std::atomic_bool cancelled{};
+    Completion completion;
+    std::vector<std::optional<NativeCaptureFrame>> frames;
+    std::vector<bool> results;
+    std::size_t remaining{}, draining{};
+    bool completed{};
+    std::shared_ptr<CaptureInFlightDiagnostics> facts;
+    struct Call {std::string api;bool entered{};std::chrono::steady_clock::time_point since;};
+    std::map<DisplayId,Call> callback_calls;
+  };
   std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays;
   std::shared_ptr<DiagnosticsPort> diagnostics;
   WindowsCaptureOptions options{};
-  std::mutex mutex;
-  std::map<OperationKey, std::shared_ptr<std::atomic_bool>> cancellations;
-  std::vector<std::future<void>> workers;
+  WindowsBorderlessAccess borderless;
+  mutable std::mutex mutex;
+  bool closed{};
+  std::shared_ptr<Batch> active;
+  WindowsNativeSubmit submit{windows_submit_capture_work};
+  CaptureDisplay capture_display;
+  std::shared_ptr<WindowsCaptureNativeCalls> native;
+  void finish(const std::shared_ptr<Batch>& batch, std::size_t index, Result<NativeCaptureFrame,Error> result) {
+    Completion done;
+    std::vector<std::optional<NativeCaptureFrame>> discarded;
+    std::optional<Result<NativeFrameBatch,Error>> output;
+    {
+      std::lock_guard lock(mutex);
+      if(batch->results[index]) return;
+      batch->results[index]=true; --batch->remaining;
+      if(!result && !batch->completed) {
+        batch->completed=true; batch->cancelled.store(true);discarded.swap(batch->frames);
+        done=std::move(batch->completion); output=Result<NativeFrameBatch,Error>::failure(result.error());
+      } else if(result && !batch->completed && !batch->cancelled.load()) {
+        batch->frames[index]=std::move(result.value());
+        if(!batch->remaining) {
+          NativeFrameBatch value{batch->request.session_id,batch->request.operation_id,batch->request.display_generation,{}};
+          for(auto& frame:batch->frames) value.frames.push_back(std::move(*frame));
+          batch->completed=true; done=std::move(batch->completion); output=Result<NativeFrameBatch,Error>::success(std::move(value));
+        }
+      }
+    }
+    discarded.clear();
+    if(done && output) { try {done(std::move(*output));} catch (...) {} }
+  }
+  void drained(const std::shared_ptr<Batch>& batch) {
+    std::shared_ptr<Batch> released;
+    { std::lock_guard lock(mutex); if(--batch->draining==0 && active==batch) released=std::move(active); }
+  }
 };
 WindowsCapturePort::WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
-    double gain, std::shared_ptr<DiagnosticsPort> diagnostics) : impl_(std::make_unique<Impl>()) {
-  impl_->displays=std::move(displays);
-  impl_->diagnostics=std::move(diagnostics);
-  if (valid_windows_scrgb_gain(gain)) impl_->options={true, false, gain};
+    double gain, std::shared_ptr<DiagnosticsPort> diagnostics) : impl_(std::make_shared<Impl>()) {
+  impl_->displays=std::move(displays); impl_->diagnostics=std::move(diagnostics);
+  if(valid_windows_scrgb_gain(gain)) impl_->options={true,false,gain};
 }
 WindowsCapturePort::WindowsCapturePort(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
-    WindowsCaptureOptions options, std::shared_ptr<DiagnosticsPort> diagnostics)
-    : impl_(std::make_unique<Impl>()) {
-  impl_->displays=std::move(displays);
-  impl_->diagnostics=std::move(diagnostics);
-  if (valid_windows_scrgb_gain(options.gain)) impl_->options=options;
+    WindowsCaptureOptions options, std::shared_ptr<DiagnosticsPort> diagnostics) : impl_(std::make_shared<Impl>()) {
+  impl_->displays=std::move(displays); impl_->diagnostics=std::move(diagnostics);
+  if(valid_windows_scrgb_gain(options.gain)) impl_->options=options;
 }
-void WindowsCapturePort::set_gain(double gain) {
-  if (!valid_windows_scrgb_gain(gain)) return;
-  const std::scoped_lock lock(impl_->mutex);
-  impl_->options.gain=gain;
-  impl_->options.gain_enabled=true;
+WindowsCapturePort::~WindowsCapturePort(){shutdown();}
+void WindowsCapturePort::set_gain(double gain) { if(!valid_windows_scrgb_gain(gain)) return; std::lock_guard lock(impl_->mutex); impl_->options.gain=gain;impl_->options.gain_enabled=true; }
+void WindowsCapturePort::set_capture_options(WindowsCaptureOptions options) { if(!valid_windows_scrgb_gain(options.gain))return;std::lock_guard lock(impl_->mutex);impl_->options=options; }
+bool WindowsCapturePort::busy() const {std::lock_guard lock(impl_->mutex);return bool(impl_->active);}
+void WindowsCapturePort::set_displays(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,WindowsBorderlessAccess access) {
+  std::lock_guard lock(impl_->mutex); if(!impl_->active){impl_->displays=std::move(displays);impl_->borderless=std::move(access);}
 }
-void WindowsCapturePort::set_capture_options(WindowsCaptureOptions options) {
-  if (!valid_windows_scrgb_gain(options.gain)) return;
-  const std::scoped_lock lock(impl_->mutex);
-  impl_->options=options;
+void WindowsCapturePort::set_test_seams(WindowsNativeSubmit submit,CaptureDisplay capture,std::shared_ptr<WindowsCaptureNativeCalls> native) {
+  std::lock_guard lock(impl_->mutex);if(!impl_->active){impl_->submit=submit?std::move(submit):WindowsNativeSubmit{windows_submit_capture_work};impl_->capture_display=std::move(capture);impl_->native=std::move(native);}
 }
-WindowsCapturePort::~WindowsCapturePort() {
-  { std::scoped_lock lock(impl_->mutex);
-    for (auto& [key, flag] : impl_->cancellations) flag->store(true);
-  }
-  for (auto& work : impl_->workers) work.wait();
+void WindowsCapturePort::diagnostic_snapshot(){
+  std::shared_ptr<CaptureInFlightDiagnostics> facts;std::vector<DiagnosticEvent> events;
+  {std::lock_guard lock(impl_->mutex);if(impl_->active){
+    const auto batch=impl_->active;facts=batch->facts;
+    for(const auto& [display,call]:batch->callback_calls){DiagnosticEvent event{};event.session_id=batch->request.session_id;event.operation_id=batch->request.operation_id;
+      event.subsystem="capture";event.stage="inflight_snapshot";event.outcome=call.entered?"call_enter":"call_return";event.detail_only=true;
+      event.safe_context={{"displayId",std::to_string(display.value)},{"api",call.api},{"generation",std::to_string(batch->request.display_generation)},
+        {"elapsedMs",std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-call.since).count())}};events.push_back(std::move(event));}
+  }}
+  if(facts)facts->snapshot();if(impl_->diagnostics)for(const auto& event:events)(void)impl_->diagnostics->record(event);
+}
+void WindowsCapturePort::shutdown(){ std::vector<std::optional<NativeCaptureFrame>> frames;Completion discarded;{std::lock_guard lock(impl_->mutex);impl_->closed=true;if(impl_->active){impl_->active->cancelled=true;frames.swap(impl_->active->frames);discarded=std::move(impl_->active->completion);}} }
+void WindowsCapturePort::cancel(SessionId session,OperationId operation){
+  std::vector<std::optional<NativeCaptureFrame>> frames;Completion discarded;std::shared_ptr<CaptureInFlightDiagnostics> facts;
+  {std::lock_guard lock(impl_->mutex);auto batch=impl_->active;if(batch && batch->request.session_id==session && batch->request.operation_id==operation){batch->cancelled=true;frames.swap(batch->frames);discarded=std::move(batch->completion);facts=batch->facts;}}
+  if(facts)facts->stage({},"capture","cancel_requested");
 }
 void WindowsCapturePort::capture(const CaptureBatchRequest& request, Completion completion) {
-  if (request.targets.empty() || request.display_generation == 0 || request.desired_format != PixelFormat::rgba16_float ||
-      std::set<DisplayId>(request.targets.begin(), request.targets.end()).size() != request.targets.size()) {
-    completion(Result<NativeFrameBatch, Error>::failure(capture_error("invalid_capture_request"))); return;
+  if(request.targets.empty() || !request.display_generation || request.desired_format!=PixelFormat::rgba16_float ||
+      std::set<DisplayId>(request.targets.begin(),request.targets.end()).size()!=request.targets.size()) {
+    completion(Result<NativeFrameBatch,Error>::failure(capture_error("invalid_capture_request")));return;
   }
-  const OperationKey key{request.session_id.value, request.operation_id.value};
-  const auto flag = std::make_shared<std::atomic_bool>(false);
-  std::unique_lock lock(impl_->mutex);
-  const auto frozen_options = impl_->options;
-  if (!impl_->cancellations.emplace(key, flag).second) {
-    lock.unlock(); completion(Result<NativeFrameBatch, Error>::failure(capture_error("duplicate_operation"))); return;
+  const auto owner=impl_;
+  auto batch=std::make_shared<Impl::Batch>();batch->request=request;batch->completion=std::move(completion);
+  batch->frames.resize(request.targets.size());batch->results.resize(request.targets.size());batch->remaining=batch->draining=request.targets.size();
+  const CaptureOperationKey key{request.session_id,request.operation_id,request.display_generation};
+  batch->facts=std::make_shared<CaptureInFlightDiagnostics>(key,owner->diagnostics,request.targets);
+  std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays;WindowsCaptureOptions options;WindowsBorderlessAccess borderless;
+  WindowsNativeSubmit submit;CaptureDisplay capture;std::shared_ptr<WindowsCaptureNativeCalls> native;
+  {std::unique_lock lock(owner->mutex);
+    if(owner->closed || owner->active){lock.unlock();batch->completion(Result<NativeFrameBatch,Error>::failure(capture_error("capture_draining")));return;}
+    displays=owner->displays;options=owner->options;borderless=owner->borderless;submit=owner->submit;capture=owner->capture_display;native=owner->native;
+    owner->active=batch;
   }
-  std::erase_if(impl_->workers, [](auto& work) { return work.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
-  impl_->workers.push_back(std::async(std::launch::async, [request, completion = std::move(completion), flag,
-      native=impl_->displays, diagnostics=impl_->diagnostics, frozen_options]() mutable {
-    const auto perform=[&]() -> Result<NativeFrameBatch,Error> {
-    try {
-    const auto displays = native ? Result<std::vector<WindowsDisplayInfo>,Error>::success(*native)
-                                 : windows_enumerate_displays(diagnostics.get());
-    if (!displays) return Result<NativeFrameBatch, Error>::failure(displays.error());
-    std::vector<std::future<Result<NativeCaptureFrame, Error>>> futures;
-    for (const auto target : request.targets) {
-      const auto found = std::find_if(displays.value().begin(), displays.value().end(), [target](const auto& d) { return d.snapshot.id == target; });
-      if (found == displays.value().end()) {
-        auto error = capture_error("target_display_missing");
-        error.safe_context["displayId"] = std::to_string(target.value);
-        return Result<NativeFrameBatch, Error>::failure(std::move(error));
-      }
-      futures.push_back(std::async(std::launch::async, [display = *found, flag, diagnostics,
-          frozen_options, session_id=request.session_id, operation_id=request.operation_id] {
-        const auto failure = [&](Error error) {
-          error.safe_context.try_emplace("displayId", std::to_string(display.snapshot.id.value));
-          return Result<NativeCaptureFrame, Error>::failure(std::move(error));
-        };
-        if (display.advanced_color_mode == 0 && !display.icc_profile)
-          return failure(capture_error("legacy_profile_unavailable"));
-        auto raw = windows_capture_display(display, flag.get(), 5000, diagnostics.get());
-        if (!raw) return failure(raw.error());
-        const auto scale = WindowsColor::scrgb_to_edr_scale(display.source_white);
-        if (!scale) return failure(scale.error());
-        const auto adjustment=resolve_capture_adjustment(frozen_options,
-            display.source_white.hdr_active, scale.value());
-        if (!adjustment) return failure(adjustment.error());
-        record_capture_adjustment_diagnostics(diagnostics.get(), session_id, operation_id,
-            display.snapshot.id.value, frozen_options, adjustment.value(),
-            display.source_white.sdr_white_nits, scale.value(), display.source_white.hdr_active);
-        auto linear = windows_normalize_scrgb_source(raw.value().size_px,
-            std::move(raw.value().rgba_scrgb), adjustment.value().white_scale,
-            adjustment.value().effective_gain,
-            display.advanced_color_mode == 0 ? display.icc_profile : nullptr);
-        if (!linear) return failure(linear.error());
-        record_diagnostic_stage(diagnostics.get(), {}, {}, "windows.color", "capture.normalize", "success",
-            {{"displayId", std::to_string(display.snapshot.id.value)},
-             {"transfer", display.advanced_color_mode == 0 ? "legacy_icc_oetf" : "scrgb_matrix"},
-             {"format", "rgba32f"}, {"sourceStorage", "rgba16f"}});
-        NativeCaptureFrame frame{};
-        frame.display_id = display.snapshot.id;
-        frame.size_px = raw.value().size_px;
-        frame.pixel_format = PixelFormat::rgba32_float;
-        frame.encoding = WindowsColor::linear_p3_encoding();
-        frame.linear_source = std::move(linear.value());
-        frame.capture_sdr_tolerance = display.source_white.hdr_active;
-        frame.capture_frozen_sdr = !display.source_white.hdr_active;
-        return Result<NativeCaptureFrame, Error>::success(std::move(frame));
-      }));
-    }
-    NativeFrameBatch batch{request.session_id, request.operation_id, request.display_generation, {}};
-    for (auto& future : futures) {
-      auto frame = future.get();
-      if (!frame) return Result<NativeFrameBatch, Error>::failure(frame.error());
-      batch.frames.push_back(std::move(frame.value()));
-    }
-    if (flag->load()) {
-      return Result<NativeFrameBatch, Error>::failure({ErrorCode::operation_cancelled, "WindowsCapture", Retryability::never, {}});
-    }
-    return Result<NativeFrameBatch, Error>::success(std::move(batch));
-    } catch(const std::exception&) {
-      return Result<NativeFrameBatch,Error>::failure(capture_error("capture_worker_failure"));
-    }
+  for(std::size_t index=0;index<request.targets.size();++index) {
+    auto work=std::make_shared<WindowsCaptureWork>([owner,batch]{owner->drained(batch);});
+    const auto target=request.targets[index];
+    WindowsCaptureHooks hooks;hooks.key=key;hooks.display=target;hooks.observer=request.progress;hooks.facts=batch->facts;hooks.work=work;hooks.native=native;
+    // Only GUI's observer-backed batches remove the legacy finite wait.
+    hooks.frame_timeout=request.progress?std::nullopt:std::optional<std::uint32_t>{5000};
+    if(request.progress)hooks.borderless=borderless;
+    hooks.observe_call=[owner,batch,target](const char* api,bool enter){std::lock_guard lock(owner->mutex);auto& call=batch->callback_calls[target];if(enter){call.api=api;call.since=std::chrono::steady_clock::now();}call.entered=enter;};
+    hooks.failed=[owner,batch,index,key,target](const Error& error){
+      if(error.code==ErrorCode::operation_cancelled)return;
+      if(batch->request.progress)batch->request.progress->native_event({key,target,CaptureNativeEventKind::failed,error});
+      owner->finish(batch,index,Result<NativeCaptureFrame,Error>::failure(error));
+      batch->facts->failure(target,error,"native_failure");
     };
-    auto result=perform();
-    if(flag->load()) result=Result<NativeFrameBatch,Error>::failure(
-        {ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}});
-    completion(std::move(result));
-  }));
+    auto task=[owner,batch,index,target,displays,options,hooks,capture,work]() mutable {
+      struct Tail {std::shared_ptr<WindowsCaptureWork> work;~Tail(){work->resources_released();work->result_finished();work->outer_returned();}} tail{work};
+      auto perform=[&]() -> Result<NativeCaptureFrame,Error> {
+        const auto stopped=[&]{return batch->cancelled.load() || (hooks.observer && hooks.observer->stop_requested());};
+        if(stopped())return Result<NativeCaptureFrame,Error>::failure({ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}});
+        WindowsCaptureCallHooks task_calls;
+        task_calls.failed=hooks.failed;
+        task_calls.boundary=[&](const char* api,bool enter){if(hooks.native && hooks.native->boundary)hooks.native->boundary(api,enter);};
+        WindowsCaptureCallScope task_scope(&task_calls);
+        Apartment apartment;
+        if(FAILED(apartment.hr) && apartment.hr!=RPC_E_CHANGED_MODE)return Result<NativeCaptureFrame,Error>::failure(capture_error("wgc_apartment_unavailable",apartment.hr,apartment.origin));
+        auto available=displays?Result<std::vector<WindowsDisplayInfo>,Error>::success(*displays):windows_enumerate_displays(owner->diagnostics.get());
+        if(!available)return Result<NativeCaptureFrame,Error>::failure(available.error());
+        const auto found=std::find_if(available.value().begin(),available.value().end(),[&](const auto& display){return display.snapshot.id==target;});
+        if(found==available.value().end())return Result<NativeCaptureFrame,Error>::failure(capture_error("target_display_missing"));
+        const auto& display=*found;
+        if(display.advanced_color_mode==0 && !display.icc_profile)return Result<NativeCaptureFrame,Error>::failure(capture_error("legacy_profile_unavailable"));
+        auto raw=capture?capture(display,&batch->cancelled,hooks):windows_capture_display(display,&batch->cancelled,5000,owner->diagnostics.get(),&hooks);
+        if(!raw)return Result<NativeCaptureFrame,Error>::failure(raw.error());
+        if(stopped())return Result<NativeCaptureFrame,Error>::failure({ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}});
+        const auto scale=WindowsColor::scrgb_to_edr_scale(display.source_white);
+        if(!scale)return Result<NativeCaptureFrame,Error>::failure(scale.error());
+        const auto adjustment=resolve_capture_adjustment(options,display.source_white.hdr_active,scale.value());
+        if(!adjustment)return Result<NativeCaptureFrame,Error>::failure(adjustment.error());
+        record_capture_adjustment_diagnostics(owner->diagnostics.get(),hooks.key.session_id,hooks.key.operation_id,display.snapshot.id.value,options,adjustment.value(),display.source_white.sdr_white_nits,scale.value(),display.source_white.hdr_active);
+        if(stopped())return Result<NativeCaptureFrame,Error>::failure({ErrorCode::operation_cancelled,"WindowsCapture",Retryability::never,{}});
+        auto linear=windows_normalize_scrgb_source(raw.value().size_px,std::move(raw.value().rgba_scrgb),adjustment.value().white_scale,adjustment.value().effective_gain,display.advanced_color_mode==0?display.icc_profile:nullptr);
+        if(!linear)return Result<NativeCaptureFrame,Error>::failure(linear.error());
+        NativeCaptureFrame frame{};frame.display_id=target;frame.size_px=raw.value().size_px;frame.pixel_format=PixelFormat::rgba32_float;
+        frame.encoding=WindowsColor::linear_p3_encoding();frame.linear_source=std::move(linear.value());frame.capture_sdr_tolerance=display.source_white.hdr_active;frame.capture_frozen_sdr=!display.source_white.hdr_active;
+        return Result<NativeCaptureFrame,Error>::success(std::move(frame));
+      };
+      try {auto result=perform();if(!result && result.error().code!=ErrorCode::operation_cancelled)hooks.failed(result.error());owner->finish(batch,index,std::move(result));}
+      catch(const WindowsCaptureCallFailure& failure){hooks.failed(failure.error);}
+      catch(...){hooks.failed(capture_error("capture_worker_failure"));}
+    };
+    try{submit(std::move(task));}
+    catch(const WindowsCaptureCallFailure& failure){hooks.failed(failure.error);work->resources_released();work->result_finished();work->outer_returned();}
+    catch(...){hooks.failed(capture_error("capture_submit_failed"));work->resources_released();work->result_finished();work->outer_returned();}
+  }
 }
-void WindowsCapturePort::cancel(SessionId session, OperationId operation) {
-  const std::scoped_lock lock(impl_->mutex);
-  if (const auto found = impl_->cancellations.find({session.value, operation.value}); found != impl_->cancellations.end()) found->second->store(true);
-}
-}  // namespace hdrshot
+} // namespace hdrshot

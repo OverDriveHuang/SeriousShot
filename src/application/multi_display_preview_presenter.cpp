@@ -41,6 +41,7 @@ struct FanOutState {
   std::optional<PresentReceipt> representative_receipt;
   PreviewPresenterPort::Completion completion;
   std::vector<std::shared_ptr<PreviewPresenterPort>> presenters;
+  std::vector<std::weak_ptr<PreviewPresenterPort>> weak_presenters;
   SessionId session_id{};
   OperationId operation_id{};
 };
@@ -48,8 +49,8 @@ struct FanOutState {
 }  // namespace
 
 MultiDisplayPreviewPresenterPort::MultiDisplayPreviewPresenterPort(
-    std::vector<DisplayPreviewEndpoint> endpoints)
-    : endpoints_(std::move(endpoints)) {}
+    std::vector<DisplayPreviewEndpoint> endpoints, std::shared_ptr<CaptureRuntimePort> runtime)
+    : endpoints_(std::move(endpoints)), runtime_(std::move(runtime)) {}
 
 void MultiDisplayPreviewPresenterPort::present(
     const PresentPreviewRequest& request,
@@ -67,13 +68,16 @@ void MultiDisplayPreviewPresenterPort::present(
       return;
     }
     endpoint->presenter->present(request,
-        [request, completion = std::move(completion)](auto result) mutable {
+        [request, completion = std::move(completion), runtime = runtime_](auto result) mutable {
+          auto deliver = [request, completion, result = std::move(result)]() mutable {
           if (result && !receipt_matches(request, result.value())) {
             completion(Result<PresentReceipt, Error>::failure(presenter_error(
                 ErrorCode::invalid_input, {{"reason", "present_receipt_mismatch"}})));
           } else {
             completion(std::move(result));
           }
+          };
+          if (runtime) runtime->post(std::move(deliver)); else deliver();
         });
     return;
   }
@@ -100,7 +104,8 @@ void MultiDisplayPreviewPresenterPort::present(
   state->operation_id = request.operation_id;
   state->presenters.reserve(endpoints_.size());
   for (const auto& endpoint : endpoints_) {
-    state->presenters.push_back(endpoint.presenter);
+    if (runtime_) state->weak_presenters.push_back(endpoint.presenter);
+    else state->presenters.push_back(endpoint.presenter);
   }
   for (const auto& endpoint : endpoints_) {
     {
@@ -113,7 +118,8 @@ void MultiDisplayPreviewPresenterPort::present(
     targeted.target_display_id = endpoint.display_id;
     endpoint.presenter->present(
         targeted,
-        [state, targeted](Result<PresentReceipt, Error> result) mutable {
+        [state, targeted, runtime = runtime_](Result<PresentReceipt, Error> result) mutable {
+      auto deliver = [state, targeted, result = std::move(result)]() mutable {
       PreviewPresenterPort::Completion done;
       std::optional<Result<PresentReceipt, Error>> outcome;
       bool cancel_all = false;
@@ -148,6 +154,8 @@ void MultiDisplayPreviewPresenterPort::present(
         }
       }
       if (cancel_all) {
+        for (const auto& weak : state->weak_presenters) if (auto presenter = weak.lock())
+          presenter->cancel(state->session_id, state->operation_id);
         for (const auto& presenter : state->presenters) {
           presenter->cancel(state->session_id, state->operation_id);
         }
@@ -155,6 +163,8 @@ void MultiDisplayPreviewPresenterPort::present(
       if (done && outcome.has_value()) {
         done(std::move(*outcome));
       }
+      };
+      if (runtime) runtime->post(std::move(deliver)); else deliver();
     });
   }
 }

@@ -24,6 +24,7 @@ struct DiagnosticEvent {
   std::string destination_name;
   std::uint64_t bytes{};
   std::optional<std::source_location> error_origin{};
+  bool detail_only{};
 };
 
 struct DiagnosticReceipt {
@@ -43,9 +44,11 @@ class DiagnosticsPort {
 inline void record_diagnostic_stage(DiagnosticsPort* port,
     SessionId session, OperationId operation, const std::string& subsystem,
     const std::string& stage, const std::string& outcome,
-    std::map<std::string, std::string> context = {}, const Error* error = nullptr) {
+    std::map<std::string, std::string> context = {}, const Error* error = nullptr, bool detail_only = false) noexcept {
+  try {
   if (!port || (!error && !port->detailed_logging())) return;
   DiagnosticEvent event{};
+  event.detail_only = detail_only;
   event.session_id = session;
   event.operation_id = operation;
   event.subsystem = subsystem;
@@ -58,6 +61,7 @@ inline void record_diagnostic_stage(DiagnosticsPort* port,
     event.safe_context.insert(error->safe_context.begin(), error->safe_context.end());
   }
   (void)port->record(event);
+  } catch (...) {} // Diagnostics must not interrupt cancellation or completion.
 }
 
 // The sink admits stable codes/reasons and strictly validated native integers

@@ -186,11 +186,16 @@ target_link_libraries(hdrshot_annotation_renderer
 target_include_directories(hdrshot_annotation_renderer PUBLIC src)
 hdrshot_enable_warnings(hdrshot_annotation_renderer)
 
+add_library(hdrshot_capture_progress STATIC src/application/capture_progress_watchdog.cpp src/application/capture_inflight_diagnostics.cpp)
+target_link_libraries(hdrshot_capture_progress PUBLIC hdrshot_core hdrshot_ports)
+target_include_directories(hdrshot_capture_progress PUBLIC src)
+hdrshot_enable_warnings(hdrshot_capture_progress)
+
 add_library(hdrshot_capture_session STATIC
   src/application/capture_session.cpp
 )
 target_link_libraries(hdrshot_capture_session
-  PUBLIC hdrshot_core hdrshot_ports hdrshot_frame_pipeline hdrshot_annotation_model
+  PUBLIC hdrshot_core hdrshot_ports hdrshot_frame_pipeline hdrshot_annotation_model hdrshot_capture_progress
 )
 target_include_directories(hdrshot_capture_session PUBLIC src)
 hdrshot_enable_warnings(hdrshot_capture_session)
@@ -462,6 +467,11 @@ if(HDRSHOT_ENABLE_QT_HOST)
   target_include_directories(hdrshot_qt_settings PUBLIC src)
   hdrshot_enable_warnings(hdrshot_qt_settings)
 
+  add_library(hdrshot_qt_capture_runtime STATIC src/platform/qt/qt_capture_runtime.cpp)
+  target_link_libraries(hdrshot_qt_capture_runtime PUBLIC hdrshot_capture_progress Qt6::Core)
+  target_include_directories(hdrshot_qt_capture_runtime PUBLIC src)
+  hdrshot_enable_warnings(hdrshot_qt_capture_runtime)
+
   add_library(hdrshot_qt_diagnostics STATIC
     src/platform/qt/qt_json_lines_diagnostics_port.cpp
     src/platform/qt/qt_session_diagnostics_port.cpp
@@ -506,6 +516,21 @@ if(HDRSHOT_ENABLE_QT_HOST)
     target_include_directories(hdrshot_qt_diagnostics_tests PRIVATE tests)
     hdrshot_enable_warnings(hdrshot_qt_diagnostics_tests)
     add_test(NAME hdrshot_qt_diagnostics_tests COMMAND hdrshot_qt_diagnostics_tests)
+
+    add_executable(hdrshot_capture_error_message_tests tests/capture_error_message_tests.cpp)
+    target_link_libraries(hdrshot_capture_error_message_tests PRIVATE hdrshot_ports Qt6::Core)
+    target_include_directories(hdrshot_capture_error_message_tests PRIVATE tests)
+    add_test(NAME hdrshot_capture_error_message_tests COMMAND hdrshot_capture_error_message_tests)
+
+    add_executable(hdrshot_qt_capture_runtime_tests tests/qt_capture_runtime_tests.cpp)
+    target_link_libraries(hdrshot_qt_capture_runtime_tests PRIVATE hdrshot_qt_capture_runtime)
+    target_include_directories(hdrshot_qt_capture_runtime_tests PRIVATE tests)
+    add_test(NAME hdrshot_qt_capture_runtime_tests COMMAND hdrshot_qt_capture_runtime_tests)
+
+    add_executable(hdrshot_capture_diagnostics_integration_tests tests/capture_diagnostics_integration_tests.cpp)
+    target_link_libraries(hdrshot_capture_diagnostics_integration_tests PRIVATE hdrshot_qt_diagnostics hdrshot_capture_session)
+    target_include_directories(hdrshot_capture_diagnostics_integration_tests PRIVATE tests)
+    add_test(NAME hdrshot_capture_diagnostics_integration_tests COMMAND hdrshot_capture_diagnostics_integration_tests)
 
     add_executable(hdrshot_session_diagnostics_tests tests/qt_session_diagnostics_port_tests.cpp)
     target_link_libraries(hdrshot_session_diagnostics_tests PRIVATE hdrshot_qt_diagnostics)
@@ -613,7 +638,7 @@ if(APPLE)
     src/platform/macos/macos_window_catalog.mm
   )
   target_link_libraries(hdrshot_macos_capture_ports
-    PUBLIC hdrshot_ports hdrshot_macos_capture_adapter hdrshot_geometry
+    PUBLIC hdrshot_ports hdrshot_macos_capture_adapter hdrshot_geometry hdrshot_capture_progress
   )
   target_include_directories(hdrshot_macos_capture_ports PUBLIC src)
   target_compile_options(hdrshot_macos_capture_ports PRIVATE -fobjc-arc)
@@ -858,6 +883,7 @@ if(APPLE)
       src/platform/macos/macos_qt_window_activation.mm
       src/platform/macos/macos_qt_overlay_window.mm)
     target_link_libraries(hdrshot_macos_qt_overlay_poc PRIVATE
+      hdrshot_qt_capture_runtime
       hdrshot_capture_session
       hdrshot_macos_qt_analyzer
       hdrshot_macos_qt_pinned_screenshot
@@ -1017,6 +1043,11 @@ if(BUILD_TESTING)
   target_include_directories(hdrshot_frame_pipeline_tests PRIVATE tests)
   hdrshot_enable_warnings(hdrshot_frame_pipeline_tests)
   add_test(NAME hdrshot_frame_pipeline_tests COMMAND hdrshot_frame_pipeline_tests)
+
+  add_executable(hdrshot_capture_progress_tests tests/capture_progress_watchdog_tests.cpp)
+  target_link_libraries(hdrshot_capture_progress_tests PRIVATE hdrshot_capture_progress)
+  target_include_directories(hdrshot_capture_progress_tests PRIVATE tests)
+  add_test(NAME hdrshot_capture_progress_tests COMMAND hdrshot_capture_progress_tests)
 
   add_executable(hdrshot_capture_session_tests tests/capture_session_tests.cpp)
   target_link_libraries(hdrshot_capture_session_tests PRIVATE hdrshot_capture_session)
@@ -1278,6 +1309,16 @@ if(BUILD_TESTING)
     set_tests_properties(
       hdrshot_macos_ultra_hdr_fixture_tests PROPERTIES SKIP_RETURN_CODE 77
     )
+
+  if(TARGET hdrshot_qt_capture_runtime)
+  add_executable(hdrshot_macos_capture_lifecycle_tests tests/macos_capture_lifecycle_tests.mm)
+  target_link_libraries(hdrshot_macos_capture_lifecycle_tests PRIVATE hdrshot_macos_capture_ports
+    hdrshot_qt_capture_runtime hdrshot_capture_session hdrshot_multi_display_preview hdrshot_macos_preview_presenter_port)
+  target_compile_options(hdrshot_macos_capture_lifecycle_tests PRIVATE -fobjc-arc)
+  target_include_directories(hdrshot_macos_capture_lifecycle_tests PRIVATE tests)
+  add_test(NAME hdrshot_macos_capture_lifecycle_tests COMMAND hdrshot_macos_capture_lifecycle_tests)
+
+  endif()
 
   add_executable(hdrshot_macos_capture_adapter_tests tests/macos_capture_adapter_tests.cpp)
     target_link_libraries(hdrshot_macos_capture_adapter_tests PRIVATE hdrshot_macos_capture_adapter)

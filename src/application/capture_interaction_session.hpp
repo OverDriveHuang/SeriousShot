@@ -12,6 +12,7 @@ class CaptureInteractionSession {
     state_ = InteractionController::reduce(state_, StartCaptureCommand{id, OperationId{1}}).state;
     return active();
   }
+  [[nodiscard]] UiPhase phase() const { return state_.phase; }
   [[nodiscard]] bool active() const { return state_.session_id.has_value(); }
   [[nodiscard]] SessionId id() const { return state_.session_id.value_or(SessionId{}); }
   [[nodiscard]] bool accepts(SessionId id) const { return active() && state_.session_id == id; }

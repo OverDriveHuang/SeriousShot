@@ -12,6 +12,7 @@
 #include "platform/macos/macos_window_catalog.hpp"
 #include "application/capture_interaction_session.hpp"
 #include "ui/qt/capture_error_message.hpp"
+#include "platform/qt/qt_capture_runtime.hpp"
 #include "application/export_workflow.hpp"
 #include "application/multi_display_preview_presenter.hpp"
 #include "adapters/shared/libultrahdr_encoder.hpp"
@@ -133,6 +134,7 @@ class MacApplicationShell final {
     const auto log_started = session_log->start(std::string(hdrshot::build_timestamp()), "macOS");
     if (!log_started) print_error(log_started.error());
     diagnostics_ = std::move(session_log);
+    capture_ = std::make_shared<hdrshot::MacCapturePort>(diagnostics_);
     settings_store_ = std::make_unique<hdrshot::QtSettingsStorePort>(
         config.toStdString(), kDefaultGlobalHotkey, pictures.toStdString());
     const auto loaded = settings_store_->load();
@@ -206,8 +208,7 @@ class MacApplicationShell final {
     hotkey_->set_trigger_handler([this] {
       hdrshot::record_diagnostic_stage(diagnostics_.get(), {}, {},
           "trigger", "hotkey_callback", "received", {{"source", "hotkey"}});
-      QMetaObject::invokeMethod(
-          &app_, [this] { start_capture("hotkey"); }, Qt::QueuedConnection);
+      capture_runtime_.handle()->post([this] { start_capture("hotkey"); });
     });
     const auto registered = hotkey_->register_hotkey(settings_.global_capture_hotkey);
     if (!registered) {
@@ -250,7 +251,7 @@ class MacApplicationShell final {
     if (tray_ != nullptr) {
       tray_->hide();
     }
-    finish_capture();
+    finish_capture({}, true);
     if (pinned_) pinned_->shutdown();
     if (analyzer_) analyzer_->shutdown();
     export_executor_.drain();
@@ -331,6 +332,8 @@ class MacApplicationShell final {
           [this](const hdrshot::SettingsSnapshot& settings) {
         settings_ = settings;
         diagnostics_->set_detailed_logging(settings_.detailed_logging);
+        if (capture_) capture_->diagnostic_snapshot();
+        if (catalog_) catalog_->diagnostic_snapshot();
         record_runtime_environment();
         update_capture_action_text();
       });
@@ -352,6 +355,17 @@ class MacApplicationShell final {
          {"api", "captureImageWithFilter"}, {"requestedSpace", "ExtendedDisplayP3"}});
   }
 
+  void notify_capture_failure(const hdrshot::Error& error, hdrshot::SessionId session = {}, hdrshot::OperationId operation = {}) {
+    if (!tray_) return;
+    tray_->showMessage(QStringLiteral("SeriousShot 截图失败"),
+        hdrshot::capture_error_message(error, QStringLiteral(
+            "尚未获得屏幕录制权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 SeriousShot，"
+            "再按截图快捷键或点菜单“截图”重试。应用只捕获画面，不录音。"),
+            QString::fromStdString(settings_.global_capture_hotkey)), QSystemTrayIcon::Critical, 10000);
+    hdrshot::record_diagnostic_stage(diagnostics_.get(), session, operation,
+        "capture", "notification_requested", "submitted", {}, nullptr, true);
+  }
+
   void record_capture_event(
       const hdrshot::SessionId session_id,
       const hdrshot::OperationId operation_id,
@@ -360,6 +374,7 @@ class MacApplicationShell final {
       const hdrshot::Error* error = nullptr) {
     hdrshot::record_diagnostic_stage(diagnostics_.get(), session_id, operation_id,
         "capture", stage, outcome, {}, error);
+    if (error && outcome == "failure") notify_capture_failure(*error, session_id, operation_id);
   }
 
   void update_capture_action_text() {
@@ -411,13 +426,16 @@ class MacApplicationShell final {
     if(updater_&&updater_->barrier_active())return;
     const auto requested_session = capture_lifecycle_.active() ? capture_lifecycle_.id()
         : hdrshot::SessionId{next_session_id_};
+    const bool draining = capture_ && capture_->busy() && !capture_lifecycle_.active();
+    const bool busy = capture_lifecycle_.active() || draining;
     hdrshot::record_diagnostic_stage(diagnostics_.get(), requested_session, hdrshot::OperationId{1},
-        "trigger", "received", capture_lifecycle_.active() ? "ignored" : "accepted",
-        {{"source", source}});
-    if (capture_lifecycle_.active()) {
+        "trigger", "received", busy ? "ignored" : "accepted",
+        {{"source", source}, {"reason", draining ? "capture_draining" :
+          capture_lifecycle_.phase() == hdrshot::UiPhase::capturing ? "preparing" : "user_trigger"}});
+    if (busy) {
       tray_->showMessage(
           QStringLiteral("SeriousShot"),
-          QStringLiteral("截图界面已经打开。"),
+          hdrshot::capture_busy_message(capture_lifecycle_.phase(), !capture_lifecycle_.active()),
           QSystemTrayIcon::Information,
           2000);
       return;
@@ -427,11 +445,6 @@ class MacApplicationShell final {
       const hdrshot::Error error{hdrshot::ErrorCode::capture_failed, "MacApplicationShell",
           hdrshot::Retryability::after_user_action, {{"reason", "no_available_screen"}}};
       record_capture_event(requested_session, hdrshot::OperationId{1}, "screens", "failure", &error);
-      tray_->showMessage(
-          QStringLiteral("SeriousShot"),
-          QStringLiteral("没有可用显示器。"),
-          QSystemTrayIcon::Critical,
-          3000);
       return;
     }
     const auto session_id = hdrshot::SessionId{next_session_id_++};
@@ -571,20 +584,14 @@ class MacApplicationShell final {
       const hdrshot::Error error{hdrshot::ErrorCode::presenter_failed, "MacApplicationShell",
           hdrshot::Retryability::after_user_action, {{"reason", "no_overlay_surface"}}};
       record_capture_event(session_id, operation_id, "surface_prepare", "failure", &error);
-      tray_->showMessage(
-          QStringLiteral("SeriousShot"),
-          QStringLiteral("没有可用显示器。"),
-          QSystemTrayIcon::Critical,
-          3000);
       finish_capture();
       return;
     }
     multi_preview_ = std::make_shared<hdrshot::MultiDisplayPreviewPresenterPort>(
-        std::move(endpoints));
+        std::move(endpoints), capture_runtime_.handle());
     catalog_ = std::make_shared<hdrshot::MacDisplayCatalogPort>(diagnostics_);
-    capture_ = std::make_shared<hdrshot::MacCapturePort>(diagnostics_);
     capture_session_ = std::make_shared<hdrshot::CaptureSession>(
-        catalog_, capture_, multi_preview_, window_catalog_, diagnostics_);
+        catalog_, capture_, multi_preview_, window_catalog_, diagnostics_, capture_runtime_.handle());
     capture_session_->begin(
         hdrshot::BeginCaptureRequest{
             session_id,
@@ -595,24 +602,16 @@ class MacApplicationShell final {
         },
         [this, session_id, operation_id](
             hdrshot::Result<hdrshot::CaptureReadyPayload, hdrshot::Error> result) mutable {
-      QMetaObject::invokeMethod(
-          &app_,
+      capture_runtime_.handle()->post(
           [this, session_id, operation_id, result = std::move(result)]() mutable {
             if (!capture_lifecycle_.accepts(session_id)) return;
             if (!result) {
-              record_capture_event(
-                  session_id, operation_id, "prepare_overlay", "failure", &result.error());
+              hdrshot::record_diagnostic_stage(diagnostics_.get(), session_id, operation_id,
+                  "capture", "prepare_overlay", "failure", {}, &result.error(), true);
               std::cerr << "CaptureSession failed: ";
               print_error(result.error());
-              tray_->showMessage(
-                  QStringLiteral("SeriousShot 截图失败"),
-                  hdrshot::capture_error_message(result.error(), QStringLiteral(
-                      "尚未获得屏幕录制权限。请在系统设置 → 隐私与安全性 → "
-                      "录屏与系统录音中允许 SeriousShot，再按截图快捷键或点菜单“截图”重试。"
-                      "应用只捕获画面，不录音。")),
-                  QSystemTrayIcon::Critical,
-                  10000);
-              finish_capture();
+              notify_capture_failure(result.error(), session_id, operation_id);
+              finish_capture(session_id);
               return;
             }
             auto payload = std::move(result.value());
@@ -640,12 +639,7 @@ class MacApplicationShell final {
               record_capture_event(
                   session_id, operation_id, "prepare_overlay", "failure", &error);
               std::cerr << "CaptureSession returned an incomplete multi-display frame\n";
-              tray_->showMessage(
-                  QStringLiteral("SeriousShot 截图失败"),
-                  QStringLiteral("多显示器捕获结果不完整"),
-                  QSystemTrayIcon::Critical,
-                  4000);
-              finish_capture();
+              finish_capture(session_id);
               return;
             }
             auto operation_sequence = std::make_shared<std::atomic<std::uint64_t>>(
@@ -658,8 +652,7 @@ class MacApplicationShell final {
                     "overlay", "shown", "success", {{"displayId", std::to_string(overlay.display_id.value)}});
               }
             }
-          },
-          Qt::QueuedConnection);
+          });
     });
   }
 
@@ -675,12 +668,16 @@ class MacApplicationShell final {
     return true;
   }
 
-  void finish_capture(hdrshot::SessionId expected = {}) {
+  void finish_capture(hdrshot::SessionId expected = {}, bool shutting_down = false) {
     if (expected.value == 0) expected = capture_lifecycle_.id();
-    if (!capture_lifecycle_.finish(expected)) return;
+    if (!capture_lifecycle_.finish(expected) && !shutting_down) return;
     // Invalidate before cancellation can queue callbacks. Native resources are
     // then released; stale callbacks cannot close a newer session.
-    if (capture_session_) capture_session_->cancel(expected, hdrshot::OperationId{1});
+    capture_session_.reset(); // owner-thread detach invalidates/cancels before any surface teardown
+    if (shutting_down) {
+      capture_runtime_.shutdown();
+      if (capture_) capture_->shutdown();
+    }
     for (auto& overlay : display_overlays_) {
       if (overlay.host != nullptr) {
         overlay.host->hide();
@@ -688,16 +685,15 @@ class MacApplicationShell final {
         overlay.host = nullptr;
       }
     }
-    capture_session_.reset();
     multi_preview_.reset();
     display_overlays_.clear();
-    capture_.reset();
     catalog_.reset();
     save_feedback_.set_capture_active(false);
     std::cout << "captureSessionReturnedToResident=1\n";
   }
 
   QApplication& app_;
+  hdrshot::QtCaptureRuntime capture_runtime_;
   QSystemTrayIcon* tray_{};
   QMenu* tray_menu_{};
   QAction* capture_action_{};

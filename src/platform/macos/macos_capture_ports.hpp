@@ -10,24 +10,40 @@ namespace hdrshot {
 
 class MacDisplayCatalogPort final : public DisplayCatalogPort {
  public:
-  explicit MacDisplayCatalogPort(std::shared_ptr<DiagnosticsPort> diagnostics = {})
-      : diagnostics_(std::move(diagnostics)) {}
+  using Enumerate = std::function<void(MacScreenCaptureKitAdapter::DisplayListCompletion,
+      std::function<bool()>, std::function<void(const char*, const char*)>)>;
+  explicit MacDisplayCatalogPort(std::shared_ptr<DiagnosticsPort> diagnostics = {}, Enumerate enumerate = {});
+  ~MacDisplayCatalogPort() override;
   void snapshot_displays(const SnapshotDisplaysRequest& request, Completion completion) override;
+  void cancel(SessionId session_id, OperationId operation_id) override;
+  void diagnostic_snapshot() const;
  private:
+  struct State;
+  std::shared_ptr<State> state_;
+  Enumerate enumerate_;
   std::shared_ptr<DiagnosticsPort> diagnostics_;
 };
 
 class MacCapturePort final : public CapturePort {
  public:
-  explicit MacCapturePort(std::shared_ptr<DiagnosticsPort> diagnostics = {});
+  using CaptureDisplay = std::function<void(std::uint32_t, MacScreenCaptureKitAdapter::CaptureCompletion, MacCaptureHooks)>;
+  // Accept-and-return, or throw without enqueueing. No ambiguous submission result.
+  using NativeSubmit = std::function<void(std::function<void()>)>;
+  explicit MacCapturePort(std::shared_ptr<DiagnosticsPort> diagnostics = {},
+      CaptureDisplay capture_display = {}, NativeSubmit submit = {});
   ~MacCapturePort() override;
 
   void capture(const CaptureBatchRequest& request, Completion completion) override;
   void cancel(SessionId session_id, OperationId operation_id) override;
 
+  bool busy() const;
+  void shutdown();
+  void diagnostic_snapshot() const;
  private:
-  struct CancellationRegistry;
-  std::shared_ptr<CancellationRegistry> cancellations_;
+  struct State;
+  std::shared_ptr<State> state_;
+  CaptureDisplay capture_display_;
+  NativeSubmit submit_;
   std::shared_ptr<DiagnosticsPort> diagnostics_;
 };
 

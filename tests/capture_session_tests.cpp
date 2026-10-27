@@ -273,11 +273,79 @@ void cancelled_or_destroyed_window_query_cannot_start_capture() {
   }
 }
 
+class ControlledRuntime final : public CaptureRuntimePort {
+ public:
+  CaptureSteadyTime time{}; std::vector<Task> queue;
+  struct Timer { CaptureSteadyTime due; Task task; }; std::map<TimerId, Timer> timers;
+  CaptureSteadyTime now() const noexcept override { return time; }
+  bool post(Task task) override { queue.push_back(std::move(task)); return true; }
+  void arm(TimerId id, CaptureSteadyTime due, Task task) override { timers[id] = {due,std::move(task)}; }
+  void disarm(TimerId id) override { timers.erase(id); }
+  void flush() { while (!queue.empty()) { auto q=std::move(queue); queue.clear(); for (auto& task:q) task(); } }
+  void at(int ms) { time=CaptureSteadyTime{}+std::chrono::milliseconds(ms); }
+  void fire() { auto copy=timers; for(auto& [id,timer]:copy) if(time>=timer.due) timer.task(); }
+};
+void runtime_timeout_cancels_and_late_success_never_presents() {
+  auto runtime=std::make_shared<ControlledRuntime>(); auto catalog=std::make_shared<FakeCatalog>();
+  auto capture=std::make_shared<FakeCapture>(); capture->hold=true; auto presenter=std::make_shared<FakePresenter>();
+  CaptureSession session(catalog,capture,presenter,{}, {},runtime); int calls{};
+  session.begin(request(),[&](auto result) { ++calls; HDRSHOT_CHECK(!result); HDRSHOT_CHECK(result.error().safe_context.at("reason")=="capture_progress_timeout"); });
+  HDRSHOT_CHECK(!catalog->last_request); runtime->flush(); HDRSHOT_CHECK(capture->last_request.has_value());
+  runtime->at(1999); runtime->fire(); HDRSHOT_CHECK(calls==0);
+  runtime->at(2000); runtime->fire(); HDRSHOT_CHECK(calls==1 && capture->cancel_called && presenter->cancel_called);
+  capture->held_completion(Result<NativeFrameBatch,Error>::success(native_batch({1},{2}))); runtime->flush();
+  HDRSHOT_CHECK(calls==1 && !presenter->last_request);
+}
+void native_registration_stops_timer_before_ui_delivery() {
+  auto runtime=std::make_shared<ControlledRuntime>(); auto catalog=std::make_shared<FakeCatalog>();
+  auto capture=std::make_shared<FakeCapture>(); capture->hold=true; auto presenter=std::make_shared<FakePresenter>();
+  auto session=std::make_unique<CaptureSession>(catalog,capture,presenter,nullptr,nullptr,runtime); int calls{};
+  session->begin(request(),[&](auto result) { HDRSHOT_CHECK(result.has_value()); ++calls; }); runtime->flush();
+  runtime->at(1999); capture->last_request->progress->native_event({{{1},{2},5},{7},CaptureNativeEventKind::image_received,{}});
+  runtime->at(10000); runtime->fire(); HDRSHOT_CHECK(calls==0 && !capture->cancel_called);
+  capture->held_completion(Result<NativeFrameBatch,Error>::success(native_batch({1},{2}))); runtime->flush();
+  HDRSHOT_CHECK(calls==1 && presenter->last_request);
+  // An observer surviving GUI detach must contain no strong UI owner.
+  auto observer=capture->last_request->progress; session.reset(); presenter.reset();
+  observer->native_event({{{1},{2},5},{7},CaptureNativeEventKind::image_received,{}}); runtime->flush();
+}
+void native_error_wins_before_delayed_ui_timeout() {
+  auto runtime=std::make_shared<ControlledRuntime>(); auto catalog=std::make_shared<FakeCatalog>();
+  auto capture=std::make_shared<FakeCapture>(); capture->hold=true; auto presenter=std::make_shared<FakePresenter>();
+  CaptureSession session(catalog,capture,presenter,{}, {},runtime); int calls{};
+  session.begin(request(),[&](auto result) { ++calls; HDRSHOT_CHECK(!result); HDRSHOT_CHECK(result.error().safe_context.at("nativeCode")=="-55"); }); runtime->flush();
+  runtime->at(1500); capture->last_request->progress->native_event({{{1},{2},5},{7},CaptureNativeEventKind::failed,
+      Error{ErrorCode::capture_failed,"native",Retryability::same_input,{{"nativeCode","-55"}}}});
+  HDRSHOT_CHECK(capture->last_request->progress->stop_requested());
+  runtime->at(2500); runtime->fire(); runtime->flush(); HDRSHOT_CHECK(calls==1 && capture->cancel_called);
+}
+
+
+void initial_catalog_is_not_in_native_timeout_window() {
+  struct HeldCatalog final : DisplayCatalogPort {
+    Completion held; bool cancelled{};
+    void snapshot_displays(const SnapshotDisplaysRequest&,Completion completion) override { held=std::move(completion); }
+    void cancel(SessionId,OperationId) override { cancelled=true; }
+  };
+  auto runtime=std::make_shared<ControlledRuntime>(); auto catalog=std::make_shared<HeldCatalog>();
+  auto capture=std::make_shared<FakeCapture>(); auto presenter=std::make_shared<FakePresenter>(); int delivered{};
+  auto session=std::make_unique<CaptureSession>(catalog,capture,presenter,nullptr,nullptr,runtime);
+  session->begin(request(),[&](auto) { ++delivered; }); runtime->flush(); runtime->at(20000); runtime->fire();
+  HDRSHOT_CHECK(delivered==0 && runtime->timers.empty() && !capture->last_request);
+  session.reset(); HDRSHOT_CHECK(catalog->cancelled);
+  catalog->held(Result<DisplaySnapshotSet,Error>::success(display_set())); runtime->flush();
+  HDRSHOT_CHECK(delivered==0 && !capture->last_request);
+}
+
 }  // namespace
 
 int main() {
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
+      {"initial enumeration has no native deadline", initial_catalog_is_not_in_native_timeout_window},
+      {"runtime timeout cancels", runtime_timeout_cancels_and_late_success_never_presents},
+      {"native registration precedes UI", native_registration_stops_timer_before_ui_delivery},
+      {"native error precedes UI timer", native_error_wins_before_delayed_ui_timeout},
       {"capture session happy path", happy_path_preserves_envelope_and_frame_truth},
       {"window snapshot before capture and safe fallback", windows_are_frozen_before_capture_and_failure_is_manual_fallback},
       {"late window query cannot revive a capture", cancelled_or_destroyed_window_query_cannot_start_capture},

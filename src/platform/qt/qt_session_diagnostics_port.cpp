@@ -72,9 +72,9 @@ QByteArray detailed_fields(const DiagnosticEvent& event) {
       "diffuseWhite", "precision", "quality", "dimFactor", "uiWhite",
       "borderWidth", "maximumLinear", "maxCLL", "maxFALL",
       "linearizationPasses", "sourceBytes", "contentBuilds", "contentCacheHits", "composedPixels", "cleanBytes",
-      "clippedPixels", "clippedChannels", "encodeMs", "publishMs", "queuedMs"};
+      "clippedPixels", "clippedChannels", "encodeMs", "publishMs", "queuedMs", "pending", "received", "epoch", "generation", "batchElapsedMs", "sinceProgressMs"};
   static const std::vector<std::string> codes{
-      "source", "api", "requestedSpace", "returnedSpace", "requestedFormat", "preset", "osVersion",
+      "source", "api", "nativeDomain", "requestedSpace", "returnedSpace", "requestedFormat", "preset", "osVersion",
       "format", "range", "transfer", "surface", "reason", "opaque", "cursor", "sourceStorage"};
   for (const auto& key : numbers) {
     const auto it = event.safe_context.find(key);
@@ -177,6 +177,7 @@ Result<DiagnosticReceipt, Error> QtSessionDiagnosticsPort::start(
 
 Result<DiagnosticReceipt, Error> QtSessionDiagnosticsPort::record(const DiagnosticEvent& event) {
   const QMutexLocker lock(&mutex_);
+  if (!detailed_ && event.detail_only) return Result<DiagnosticReceipt, Error>::success({sequence_});
   const bool export_result = event.subsystem == "export" && event.stage == "complete" &&
       (event.outcome == "success" || event.outcome == "failure" || event.outcome == "cancelled");
   if (!detailed_ && !export_result && event.outcome != "failure") {
