@@ -1755,6 +1755,9 @@ void small_screen_restore_clamps_without_replacing_large_preference() {
   AnalyzerWindow window({std::make_shared<FixtureSource>(), 1, true},
                         R"({"version":1,"windowWidth":6000,"windowHeight":4000})");
   window.set_close_confirmation([] { return true; });
+  // setScreen does not move a window within a virtual desktop. Establish the
+  // small-screen position before native creation and its geometry-based routing.
+  window.move(small->availableGeometry().topLeft());
   (void)window.winId();
   window.windowHandle()->setScreen(small);
   window.show();
