@@ -48,7 +48,7 @@
       "binaryDir": "${sourceDir}/build-qt",
       "cacheVariables": {
         "HDRSHOT_ENABLE_QT_HOST": "ON",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/.build-tools/Qt/6.11.1/macos"
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.build-tools/Qt/6.11.2/macos"
       }
     }
   ],

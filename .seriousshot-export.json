@@ -1,17 +1,17 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-29T01:33:32+08:00",
+  "timestamp": "2026-10-29T13:31:42+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "6a61f3e20294fe6dbdb25f230faa936b83bab6e6e07b53e9782db51a6981e883",
+      "sha256": "d1ed25699efe2dddcb2b314eb2f29136c40e2e24ddd52b203cc5691751a2bf55",
       "mode": 420
     },
     "CMakePresets.json": {
-      "sha256": "9c5efcf6e10097e9faed0e263810b22b06f0629a6a8f2a763092e1155dc9ceeb",
+      "sha256": "abdaf4017c29517f27ca828005bc5eefff29b2da42ddc04e9bdaab820838b583",
       "mode": 420
     },
     "README.md": {
@@ -19,7 +19,7 @@
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "eb45e2ae71b69f124b566541f28ee8b3396669269745a24f06b04e889da42026",
+      "sha256": "acf28ff428b675d28f8737b78196aa56cc5f20284caec975458eea33543f2a84",
       "mode": 420
     },
     "assets/color_profiles/CC0-1.0.txt": {
@@ -115,7 +115,7 @@
       "mode": 420
     },
     "docs/BUILDING.md": {
-      "sha256": "dd358739e924ff580f172d85ca3dab88cddbcf552d85cf7de88676d337a77068",
+      "sha256": "c672f8a09fa8fdb6e68119f157ff77702b223e53d8fb4f860f9052693692824a",
       "mode": 420
     },
     "docs/UPDATES.md": {
@@ -147,7 +147,7 @@
       "mode": 420
     },
     "scripts/bootstrap_macos_dependencies.sh": {
-      "sha256": "4a1a6415b645d56e42fb835d94fe65b24f96720a48e642750263295c80ff4da3",
+      "sha256": "70be5aa8a404d082143ffa1bc019b29a389b7930adb85f38f6c8c5287058cd48",
       "mode": 493
     },
     "scripts/build-macos.py": {
@@ -1624,6 +1624,10 @@
     },
     "tests/macos_preview_presenter_port_tests.cpp": {
       "sha256": "157566ad19ff518c931e0bd47e2a9ce6129ed2aa0d75449a2f72864b98b10281",
+      "mode": 420
+    },
+    "tests/macos_qimage_cursor_tests.mm": {
+      "sha256": "da117b793530b4a5ca7840bfe7592ce2cdffba73b3b21e3df67ea33d3ddcd6fa",
       "mode": 420
     },
     "tests/macos_qt_input_platform_adapter_tests.cpp": {

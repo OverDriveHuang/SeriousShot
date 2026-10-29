@@ -1,6 +1,6 @@
 # Third-party notices
 
-最后更新：2026-10-12 16:18:00 CST
+最后更新：2026-10-29 13:15:32 CST
 
 SeriousShot currently uses the following third-party components.
 Release bundles must include this notice and the referenced license texts.
@@ -12,7 +12,7 @@ of the exact binaries shipped.
 
 ## Qt and bundled FreeType
 
-- The current host build uses Qt 6.11.1 Widgets/Core/Gui and Qt's bundled
+- The current macOS host build uses Qt 6.11.2 (including QTBUG-147602); Windows uses Qt 6.11.1. Both use Widgets/Core/Gui and Qt's bundled
   FreeType. Qt provides multiple licensing options; consult the actual SDK's
   license texts and SBOM as well as [Qt licensing](https://doc.qt.io/qt-6/licensing.html).
 - The development host dynamically links Qt. Distribution must include the
@@ -95,7 +95,7 @@ static transitive dependency of libultrahdr.
 
 The updater statically links libsodium 1.0.22 (ISC license) for Ed25519 verification,
 and libarchive 3.8.9 (BSD/ISC license texts in COPYING) for bounded ZIP decoding.
-Qt Network remains dynamically linked under the same Qt 6.11.1 terms as Widgets.
+Qt Network remains dynamically linked under the same Qt terms as Widgets (macOS 6.11.2; Windows 6.11.1).
 Include `assets/licenses/libsodium-LICENSE.txt` and
 `assets/licenses/libarchive-COPYING.txt` in every distributed bundle.
 Pinned upstream source archive SHA-256 values:

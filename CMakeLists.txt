@@ -1005,6 +1005,16 @@ if(APPLE)
       set_target_properties(hdrshot_macos_qt_overlay_window_tests PROPERTIES
         OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON OSX_DEPLOYMENT_TARGET 15.5)
       hdrshot_enable_warnings(hdrshot_macos_qt_overlay_window_tests)
+      add_executable(hdrshot_macos_qimage_cursor_tests tests/macos_qimage_cursor_tests.mm)
+      target_include_directories(hdrshot_macos_qimage_cursor_tests PRIVATE tests)
+      target_link_libraries(hdrshot_macos_qimage_cursor_tests PRIVATE Qt6::Widgets "-framework AppKit")
+      set_target_properties(hdrshot_macos_qimage_cursor_tests PROPERTIES
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON OSX_DEPLOYMENT_TARGET 15.5)
+      hdrshot_enable_warnings(hdrshot_macos_qimage_cursor_tests)
+      add_test(NAME hdrshot_macos_qimage_cursor_tests COMMAND hdrshot_macos_qimage_cursor_tests)
+      set_tests_properties(hdrshot_macos_qimage_cursor_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=cocoa" TIMEOUT 30)
+
       add_test(NAME hdrshot_macos_qt_overlay_window_tests
         COMMAND hdrshot_macos_qt_overlay_window_tests)
       # Native attributes cannot be tested with Qt's offscreen platform plugin.
