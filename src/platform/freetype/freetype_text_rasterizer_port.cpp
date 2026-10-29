@@ -169,16 +169,16 @@ Result<TextMetrics, Error> FreeTypeTextRasterizerPort::measure(
   if (!codepoints) {
     return Result<TextMetrics, Error>::failure(codepoints.error());
   }
-  if (request.font_size_pt == 0 ||
-      !std::isfinite(request.pixels_per_point) || request.pixels_per_point <= 0.0 ||
-      codepoints.value().empty()) {
+  if (request.font_size_dip == 0 ||
+      !std::isfinite(request.capture_pixels_per_dip) ||
+      request.capture_pixels_per_dip <= 0.0 || codepoints.value().empty()) {
     return Result<TextMetrics, Error>::failure(
         font_error(ErrorCode::invalid_input, "invalid_text_measure_request"));
   }
-  const auto pixel_size = static_cast<unsigned int>(std::max(
-      1.0,
-      std::floor(
-          static_cast<double>(request.font_size_pt) * request.pixels_per_point + 0.5)));
+  const auto pixel_size = static_cast<unsigned int>(
+      std::max(1.0, std::floor(static_cast<double>(request.font_size_dip) *
+                                   request.capture_pixels_per_dip +
+                               0.5)));
 
   const std::scoped_lock lock(impl_->mutex);
   if (impl_->initialization_error.has_value()) {
@@ -252,9 +252,9 @@ Result<TextCoverageMask, Error> FreeTypeTextRasterizerPort::rasterize(
     return Result<TextCoverageMask, Error>::failure(codepoints.error());
   }
   if (request.object_id.value == 0 || request.mask_size_px.width <= 0 ||
-      request.mask_size_px.height <= 0 || request.font_size_pt == 0 ||
-      !std::isfinite(request.pixels_per_point) || request.pixels_per_point <= 0.0 ||
-      codepoints.value().empty()) {
+      request.mask_size_px.height <= 0 || request.font_size_dip == 0 ||
+      !std::isfinite(request.capture_pixels_per_dip) ||
+      request.capture_pixels_per_dip <= 0.0 || codepoints.value().empty()) {
     return Result<TextCoverageMask, Error>::failure(
         font_error(ErrorCode::invalid_input, "invalid_text_raster_request"));
   }
@@ -265,10 +265,10 @@ Result<TextCoverageMask, Error> FreeTypeTextRasterizerPort::rasterize(
     return Result<TextCoverageMask, Error>::failure(
         font_error(ErrorCode::invalid_input, "mask_size_overflow"));
   }
-  const auto pixel_size = static_cast<unsigned int>(std::max(
-      1.0,
-      std::floor(
-          static_cast<double>(request.font_size_pt) * request.pixels_per_point + 0.5)));
+  const auto pixel_size = static_cast<unsigned int>(
+      std::max(1.0, std::floor(static_cast<double>(request.font_size_dip) *
+                                   request.capture_pixels_per_dip +
+                               0.5)));
 
   const std::scoped_lock lock(impl_->mutex);
   if (impl_->initialization_error.has_value()) {

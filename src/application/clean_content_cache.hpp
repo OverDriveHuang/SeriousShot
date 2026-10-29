@@ -16,6 +16,11 @@ using CleanContentRef = std::shared_ptr<const CleanContentSnapshot>;
 struct CleanContentCounters {
   std::uint64_t content_builds{}, cache_hits{}, composed_pixels{};
   std::size_t retained_sample_bytes{};
+  // Last completed build diagnostics; native readiness is timed by its
+  // consumer.
+  double pixel_plan_ms{}, sample_prepare_ms{}, compose_submit_ms{};
+  std::size_t last_sample_count{}, sample_vector_growths{};
+  std::size_t last_owned_pixels{}, opaque_span_count{}, effective_upload_bytes{}, sample_capacity_bytes{};
 };
 // One cache per display session. Immutable returned revisions outlive the cache.
 // Serialized construction cannot publish an out-of-order asynchronous result.

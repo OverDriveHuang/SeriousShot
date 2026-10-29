@@ -3,8 +3,9 @@
 #include "core/error.hpp"
 #include "core/geometry.hpp"
 #include "core/ids.hpp"
-#include "core/result.hpp"
 #include "core/linear_source.hpp"
+#include "core/result.hpp"
+#include "domain/annotation/annotation_coverage.hpp"
 #include "domain/annotation/annotation_document.hpp"
 #include "ports/text_rasterizer_port.hpp"
 
@@ -15,32 +16,43 @@
 
 namespace hdrshot {
 
-struct CoverageSpan {
-  std::int32_t y{};
-  std::int32_t x{};
-  std::vector<std::uint8_t> coverage_u8;
-
-  friend bool operator==(const CoverageSpan&, const CoverageSpan&) = default;
+enum class PreviewIntent { create, replace };
+struct ObjectPreview {
+  PreviewIntent intent;
+  AnnotationObject object;
+  std::optional<ReusableAnnotationLayer> origin;
 };
-
-struct AnnotationCoverageLayer {
-  ObjectId object_id{};
-  AnnotationKind kind{AnnotationKind::rectangle};
-  PixelRect bounds_px{};
-  std::uint32_t color_srgb_rgb{};
-  std::vector<CoverageSpan> spans;
-  std::string raster_identity;
-
-  friend bool operator==(const AnnotationCoverageLayer&, const AnnotationCoverageLayer&) = default;
-};
+using AnnotationPreviewRequest = std::variant<ObjectPreview, BrushPreview>;
 
 struct AnnotationRenderPlan {
   DocumentRevision source_document_revision{};
   PixelSize output_size_px{};
   std::vector<AnnotationCoverageLayer> ordered_layers;
   PixelRect source_selection_rect_px{};
+  AnnotationScale scale;
 
-  friend bool operator==(const AnnotationRenderPlan&, const AnnotationRenderPlan&) = default;
+  AnnotationRenderPlan(DocumentRevision revision, PixelSize output,
+                       std::vector<AnnotationCoverageLayer> layers,
+                       PixelRect selection, AnnotationScale scale)
+      : source_document_revision(revision), output_size_px(output),
+        ordered_layers(std::move(layers)), source_selection_rect_px(selection),
+        scale(scale) {}
+  friend bool operator==(const AnnotationRenderPlan &a,
+                         const AnnotationRenderPlan &b) {
+    return a.source_document_revision == b.source_document_revision &&
+           a.output_size_px == b.output_size_px &&
+           a.ordered_layers == b.ordered_layers &&
+           a.source_selection_rect_px == b.source_selection_rect_px &&
+           a.scale == b.scale;
+  }
+
+private:
+  struct Provenance;
+  std::shared_ptr<const Provenance> provenance_;
+  void bind_source(const AnnotationDocumentSnapshot &);
+  bool matches_source(const AnnotationDocumentSnapshot &) const;
+  friend class AnnotationRenderPlanner;
+  friend class AnnotationPlanUpdater;
 };
 
 struct SourceVisibleSpan {
@@ -88,9 +100,9 @@ struct AnnotationPixelPlan {
 // It stores no platform resources and must only be used on its owner's thread.
 class AnnotationCoverageCache {
  public:
-  [[nodiscard]] Result<AnnotationCoverageLayer, Error> get(
-      const AnnotationObject& object, PixelSize output);
-  void clear() { entries_.clear(); }
+   [[nodiscard]] Result<AnnotationCoverageLayer, Error>
+   get(const AnnotationObject &object, PixelSize output, AnnotationScale scale);
+   void clear() { entries_.clear(); }
 
  private:
   struct Entry {
@@ -98,28 +110,42 @@ class AnnotationCoverageCache {
     PixelRect clip;
     AnnotationCoverageLayer layer;
     int x{}, y{};
+    AnnotationScale scale;
   };
   std::vector<Entry> entries_;
 };
 
 class AnnotationRenderPlanner {
  public:
-  [[nodiscard]] static Result<AnnotationRenderPlan, Error> build(
-      const AnnotationDocumentSnapshot& annotations,
-      PixelRect selection_rect_px, double pixels_per_point,
-      TextRasterizerPort* text_rasterizer = nullptr,
-      AnnotationCoverageCache* coverage_cache = nullptr);
+   [[nodiscard]] static Result<AnnotationRenderPlan, Error>
+   build(const AnnotationDocumentSnapshot &annotations,
+         PixelRect selection_rect_px, double capture_pixels_per_dip,
+         TextRasterizerPort *text_rasterizer = nullptr,
+         AnnotationCoverageCache *coverage_cache = nullptr);
 
-  [[nodiscard]] static Result<AnnotationRenderPlan, Error> rebase(
-      const AnnotationRenderPlan& render_plan,
-      PixelRect selection_rect_px);
+   [[nodiscard]] static Result<AnnotationRenderPlan, Error>
+   rebase(const AnnotationRenderPlan &render_plan, PixelRect selection_rect_px);
 
-  [[nodiscard]] static Result<AnnotationCoverageLayer, Error> rasterize_shape(
-      const AnnotationObject& object,
-      PixelSize output_size_px);
+   [[nodiscard]] static Result<AnnotationCoverageLayer, Error>
+   rasterize_shape(const AnnotationObject &object, PixelSize output_size_px,
+                   AnnotationScale scale);
 
-  [[nodiscard]] static Result<AnnotationPixelPlan, Error> build_pixel_plan(
-      const AnnotationRenderPlan& render_plan);
+   [[nodiscard]] static Result<AnnotationPixelPlan, Error>
+   build_pixel_plan(const AnnotationRenderPlan &render_plan);
 };
 
 }  // namespace hdrshot
+
+namespace hdrshot {
+bool brush_clip_changed(const AnnotationObject &, PixelRect old_roi,
+                        PixelRect new_roi, AnnotationScale);
+Result<AnnotationRenderPlan, Error> update_annotation_render_plan(
+    const AnnotationDocumentSnapshot &, const AnnotationDocumentSnapshot &,
+    const AnnotationRenderPlan *, PixelRect, AnnotationScale,
+    TextRasterizerPort *, AnnotationCoverageCache *,
+    const ReusableAnnotationLayer * = nullptr);
+Result<AnnotationRenderPlan, Error> prepare_annotation_preview_plan(
+    const AnnotationDocumentSnapshot &, const AnnotationRenderPlan *,
+    const AnnotationPreviewRequest &, PixelRect, AnnotationScale,
+    TextRasterizerPort *, AnnotationCoverageCache *);
+} // namespace hdrshot

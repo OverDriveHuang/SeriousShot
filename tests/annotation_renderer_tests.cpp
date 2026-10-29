@@ -144,8 +144,8 @@ std::uint8_t coverage_at(
     const std::int32_t y) {
   for (const auto& span : layer.spans) {
     if (span.y == y && x >= span.x &&
-        x < span.x + static_cast<std::int32_t>(span.coverage_u8.size())) {
-      return span.coverage_u8[static_cast<std::size_t>(x - span.x)];
+        x < span.x + static_cast<std::int32_t>(span.length())) {
+      return span.coverage_at(static_cast<std::size_t>(x - span.x));
     }
   }
   return 0U;
@@ -217,7 +217,7 @@ void sparse_ellipse_matches_exhaustive_reference() {
         std::nullopt,
     };
     const auto layer = AnnotationRenderPlanner::rasterize_shape(
-        ellipse, test_case.output);
+        ellipse, test_case.output, AnnotationScale::from(1).value());
     HDRSHOT_CHECK(layer.has_value());
     const auto half_width = static_cast<double>(test_case.line_width) / 2.0;
     for (std::int32_t y = 0; y < test_case.output.height; ++y) {
@@ -253,7 +253,7 @@ void render_plan_rebase_preserves_absolute_coverage_and_rejects_exclusion() {
           ObjectId{41},
           AnnotationKind::ellipse,
           PixelRect{130, 140, 80, 40},
-          ShapeStyle{0x36A3FF, 8},
+          ShapeStyle{0x36A3FF, 6},
           {},
           std::nullopt,
       }});
@@ -289,18 +289,18 @@ void non_circular_ellipse_keeps_constant_geometric_stroke_width() {
       ObjectId{4},
       AnnotationKind::ellipse,
       PixelRect{10, 10, 80, 20},
-      ShapeStyle{0x36A3FF, 8},
+      ShapeStyle{0x36A3FF, 6},
       {},
       std::nullopt,
   };
   const auto layer = AnnotationRenderPlanner::rasterize_shape(
-      ellipse, PixelSize{100, 50});
+      ellipse, PixelSize{100, 50}, AnnotationScale::from(1).value());
   HDRSHOT_CHECK(layer.has_value());
   // The old normalized-radius formula incorrectly covered x=0 at the wide
   // ellipse's horizontal end (roughly 4x the requested stroke width).
   HDRSHOT_CHECK(coverage_at(layer.value(), 0, 20) == 0U);
-  HDRSHOT_CHECK(coverage_at(layer.value(), 6, 20) > 0U);
-  HDRSHOT_CHECK(coverage_at(layer.value(), 50, 6) > 0U);
+  HDRSHOT_CHECK(coverage_at(layer.value(), 7, 20) > 0U);
+  HDRSHOT_CHECK(coverage_at(layer.value(), 50, 7) > 0U);
   HDRSHOT_CHECK(coverage_at(layer.value(), 50, 0) == 0U);
 }
 
@@ -327,18 +327,18 @@ void renderer_consumes_the_exact_prebuilt_plan_revision() {
 }
 
 void annotation_owned_pixel_does_not_read_or_blend_hidden_source() {
-  const AnnotationRenderPlan plan{
-      4,
-      PixelSize{4, 4},
-      {AnnotationCoverageLayer{
-          ObjectId{9},
-          AnnotationKind::rectangle,
-          PixelRect{0, 0, 1, 1},
-          0x25C06D,
-          {CoverageSpan{0, 0, {255U}}},
-          "test",
-      }},
-  };
+  const AnnotationRenderPlan plan{4,
+                                  PixelSize{4, 4},
+                                  {AnnotationCoverageLayer{
+                                      ObjectId{9},
+                                      AnnotationKind::rectangle,
+                                      PixelRect{0, 0, 1, 1},
+                                      0x25C06D,
+                                      {CoverageSpan{0, 0, {255U}}},
+                                      "test",
+                                  }},
+                                  {},
+                                  AnnotationScale::from(1).value()};
   auto first = frame();
   auto second = frame();
   first.rgba_half[0] = 0x3810;
@@ -359,14 +359,21 @@ void pixel_plan_resolves_topmost_opaque_owner_and_exhaustive_source_spans() {
       7,
       PixelSize{3, 1},
       {
-          AnnotationCoverageLayer{
-              ObjectId{1}, AnnotationKind::rectangle, PixelRect{0, 0, 2, 1},
-              0xFF0000, {CoverageSpan{0, 0, {255U, 255U}}}, "first"},
-          AnnotationCoverageLayer{
-              ObjectId{2}, AnnotationKind::rectangle, PixelRect{1, 0, 1, 1},
-              0x0000FF, {CoverageSpan{0, 1, {255U}}}, "second"},
+          AnnotationCoverageLayer{ObjectId{1},
+                                  AnnotationKind::rectangle,
+                                  PixelRect{0, 0, 2, 1},
+                                  0xFF0000,
+                                  {CoverageSpan{0, 0, {255U, 255U}}},
+                                  "first"},
+          AnnotationCoverageLayer{ObjectId{2},
+                                  AnnotationKind::rectangle,
+                                  PixelRect{1, 0, 1, 1},
+                                  0x0000FF,
+                                  {CoverageSpan{0, 1, {255U}}},
+                                  "second"},
       },
-  };
+      {},
+      AnnotationScale::from(1).value()};
   const auto pixel_plan = AnnotationRenderPlanner::build_pixel_plan(plan);
   HDRSHOT_CHECK(pixel_plan.has_value());
   HDRSHOT_CHECK(pixel_plan.value().source_visible_spans ==
@@ -379,9 +386,10 @@ void pixel_plan_resolves_topmost_opaque_owner_and_exhaustive_source_spans() {
 void rotated_shapes_match_exhaustive_geometry_and_rebase() {
   for(auto kind : {AnnotationKind::rectangle,AnnotationKind::ellipse}) {
     for(auto angle : {0.0,0.37,-0.91,std::numbers::pi/2}) {
-      AnnotationObject object{ObjectId{80},kind,{30,42,64,28},ShapeStyle{0xFF4D67,8},{},std::nullopt};
+      AnnotationObject object{ObjectId{80},kind,{30,42,64,28},ShapeStyle{0xFF4D67,6},{},std::nullopt};
       object.transform={angle,0.25,0.75};
-      const auto layer=AnnotationRenderPlanner::rasterize_shape(object,{128,128});
+      const auto layer = AnnotationRenderPlanner::rasterize_shape(
+          object, {128, 128}, AnnotationScale::from(1).value());
       HDRSHOT_CHECK(layer.has_value());
       int partial=0;
       const auto center=shape_center(object);
@@ -395,7 +403,7 @@ void rotated_shapes_match_exhaustive_geometry_and_rebase() {
           const auto qx=std::abs(lx)-32, qy=std::abs(ly)-14;
           distance=std::abs(std::hypot(std::max(qx,0.0),std::max(qy,0.0))+std::min(std::max(qx,qy),0.0));
         } else distance=reference_distance_to_ellipse_boundary(lx+62,ly+56,object.bounds);
-        const auto expected=static_cast<int>(std::lround(std::clamp(4.5-distance,0.0,1.0)*255));
+        const auto expected=static_cast<int>(std::lround(std::clamp(std::get<ShapeStyle>(object.style).line_width_dip*.5+.5-distance,0.0,1.0)*255));
         const auto actual=coverage_at(layer.value(),x,y);
         if(std::abs(static_cast<int>(actual)-expected)>1) throw std::runtime_error(
             "rotated coverage mismatch kind="+std::to_string(static_cast<int>(kind))+" at="+
@@ -418,13 +426,14 @@ void rotated_shapes_match_exhaustive_geometry_and_rebase() {
 
 void rotated_large_ellipse_is_sparse_and_bounded() {
   AnnotationObject object{ObjectId{81},AnnotationKind::ellipse,{2000,3600,4000,800},
-      ShapeStyle{0xFFFFFF,12},{},std::nullopt};
+      ShapeStyle{0xFFFFFF,6},{},std::nullopt};
   object.transform.rotation_radians=0.72;
   const auto start=std::chrono::steady_clock::now();
-  const auto result=AnnotationRenderPlanner::rasterize_shape(object,{8192,8192});
+  const auto result = AnnotationRenderPlanner::rasterize_shape(
+      object, {8192, 8192}, AnnotationScale::from(1).value());
   HDRSHOT_CHECK(result.has_value());
   std::size_t samples=0;
-  for(const auto& span:result.value().spans) samples+=span.coverage_u8.size();
+  for(const auto& span:result.value().spans) samples+=span.length();
   HDRSHOT_CHECK(samples>10000 && samples<200000);
   const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
   std::cout << "rotated 8K ellipse raster_ms=" << ms << " covered_samples=" << samples << '\n';
@@ -441,7 +450,8 @@ void ellipse_convergence_matches_fixed_iteration_reference() {
             {100-size.width/2,100-size.height/2,size.width,size.height},
             ShapeStyle{0xFFFFFF,static_cast<std::uint16_t>(width)},{},std::nullopt};
         object.transform={angle,0.25,0.75};
-        const auto result=AnnotationRenderPlanner::rasterize_shape(object,{202,202});
+        const auto result = AnnotationRenderPlanner::rasterize_shape(
+            object, {202, 202}, AnnotationScale::from(1).value());
         HDRSHOT_CHECK(result.has_value());
         const auto center=shape_center(object);
         const auto c=std::cos(angle),s=std::sin(angle);
@@ -466,12 +476,13 @@ void ellipse_convergence_matches_fixed_iteration_reference() {
 void ellipse_raster_timing_samples() {
   for (const auto size : {PixelSize{600,300},PixelSize{1600,800},PixelSize{4000,800}}) {
     AnnotationObject object{ObjectId{83},AnnotationKind::ellipse,
-        {2000,3600,size.width,size.height},ShapeStyle{0xFFFFFF,12},{},std::nullopt};
+        {2000,3600,size.width,size.height},ShapeStyle{0xFFFFFF,6},{},std::nullopt};
     object.transform.rotation_radians=0.72;
     std::vector<double> timings;
     for (int run=0;run<8;++run) {
       const auto start=std::chrono::steady_clock::now();
-      const auto result=AnnotationRenderPlanner::rasterize_shape(object,{8192,8192});
+      const auto result = AnnotationRenderPlanner::rasterize_shape(
+          object, {8192, 8192}, AnnotationScale::from(1).value());
       HDRSHOT_CHECK(result.has_value());
       const auto ms=std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-start).count();

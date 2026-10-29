@@ -217,7 +217,11 @@ void real_analysis_original_and_report_keep_capture_range() {
     original.selection = {SelectionRevision{1}, {0, 0, 1, 1}};
     original.annotations.revision = DocumentRevision{2};
     original.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
-        AnnotationRenderPlan{original.annotations.revision, {1, 1}, {}, original.selection.desktop_rect});
+        AnnotationRenderPlan{original.annotations.revision,
+                             {1, 1},
+                             {},
+                             original.selection.desktop_rect,
+                             AnnotationScale::from(1).value()});
     WindowsLinearP3RangeProbe probe;
     auto cpu = make_cpu_analysis_port();
     const auto prepared = AnalysisWorkflow::prepare(original, *cpu, &probe);

@@ -1,7 +1,9 @@
+#include "domain/annotation/annotation_allocation_checkpoint.hpp"
 #include "domain/annotation/annotation_document.hpp"
 #include "domain/annotation/annotation_geometry.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <type_traits>
 
@@ -24,75 +26,16 @@ template <typename Objects>
   });
 }
 
-[[nodiscard]] bool allowed_color(const std::uint32_t color) {
-  switch (color) {
-    case 0xFF4D67:
-    case 0xFFC83D:
-    case 0xFF8A34:
-    case 0x25C06D:
-    case 0x36A3FF:
-    case 0xFFFFFF:
-    case 0x111111:
-      return true;
-    default:
-      return false;
-  }
-}
-
-[[nodiscard]] bool valid_style(const AnnotationKind kind, const AnnotationStyle& style) {
-  if (kind == AnnotationKind::text) {
-    const auto* text = std::get_if<TextStyle>(&style);
-    if (text == nullptr || !allowed_color(text->color_srgb_rgb)) {
-      return false;
-    }
-    switch (text->font_size_pt) {
-      case 12:
-      case 16:
-      case 20:
-      case 24:
-      case 32:
-      case 48:
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  const auto* shape = std::get_if<ShapeStyle>(&style);
-  if (shape == nullptr || !allowed_color(shape->color_srgb_rgb)) {
-    return false;
-  }
-  switch (shape->line_width_px) {
-    case 2:
-    case 4:
-    case 6:
-    case 8:
-    case 12:
-      return true;
-    default:
-      return false;
-  }
-}
-
-[[nodiscard]] bool valid_geometry(const AnnotationObject& object) {
-  if (object.bounds.empty() || !valid_shape_transform(object)) {
-    return false;
-  }
-  if (object.kind == AnnotationKind::arrow) {
-    return object.arrow_geometry.has_value() &&
-        object.arrow_geometry->start != object.arrow_geometry->end;
-  }
-  return !object.arrow_geometry.has_value();
-}
-
 [[nodiscard]] PixelRect bounds_from_arrow(const ArrowGeometry geometry) {
   const auto left = std::min(geometry.start.x, geometry.end.x);
   const auto top = std::min(geometry.start.y, geometry.end.y);
   return PixelRect{
       left,
       top,
-      std::max(1, std::max(geometry.start.x, geometry.end.x) - left),
-      std::max(1, std::max(geometry.start.y, geometry.end.y) - top),
+      static_cast<int>(std::max<std::int64_t>(
+          1, std::int64_t(std::max(geometry.start.x, geometry.end.x)) - left)),
+      static_cast<int>(std::max<std::int64_t>(
+          1, std::int64_t(std::max(geometry.start.y, geometry.end.y)) - top)),
   };
 }
 
@@ -109,6 +52,62 @@ template <typename Objects>
 
 }  // namespace
 
+bool valid_style(AnnotationKind kind, const AnnotationStyle &style) {
+  const auto colors = annotation_palette_srgb();
+  const auto sizes = annotation_sizes_dip(kind);
+  std::uint32_t color;
+  std::uint16_t size;
+  if (kind == AnnotationKind::text) {
+    auto p = std::get_if<TextStyle>(&style);
+    if (!p)
+      return false;
+    color = p->color_srgb_rgb;
+    size = p->font_size_dip;
+  } else if (kind == AnnotationKind::brush) {
+    auto p = std::get_if<BrushStyle>(&style);
+    if (!p)
+      return false;
+    color = p->color_srgb_rgb;
+    size = p->diameter_dip;
+  } else {
+    auto p = std::get_if<ShapeStyle>(&style);
+    if (!p)
+      return false;
+    color = p->color_srgb_rgb;
+    size = p->line_width_dip;
+  }
+  return std::find(colors.begin(), colors.end(), color) != colors.end() &&
+         std::find(sizes.begin(), sizes.end(), size) != sizes.end();
+}
+bool valid_geometry(const AnnotationObject &object) {
+  if (object.bounds.empty() || !valid_shape_transform(object) ||
+      std::int64_t(object.bounds.x) + object.bounds.width >
+          std::numeric_limits<int>::max() ||
+      std::int64_t(object.bounds.y) + object.bounds.height >
+          std::numeric_limits<int>::max())
+    return false;
+  if (object.kind == AnnotationKind::brush) {
+    if (!object.brush_geometry || object.arrow_geometry || !object.text.empty())
+      return false;
+    auto bounds = brush_geometry_bounds(*object.brush_geometry);
+    return bounds && bounds.value() == object.bounds;
+  }
+  if (object.brush_geometry)
+    return false;
+  if (object.kind == AnnotationKind::arrow ||
+      object.kind == AnnotationKind::line) {
+    if (!object.arrow_geometry ||
+        object.arrow_geometry->start == object.arrow_geometry->end)
+      return false;
+    auto g = *object.arrow_geometry;
+    return std::abs(std::int64_t(g.start.x) - g.end.x) <=
+               std::numeric_limits<int>::max() &&
+           std::abs(std::int64_t(g.start.y) - g.end.y) <=
+               std::numeric_limits<int>::max();
+  }
+  return !object.arrow_geometry;
+}
+
 AnnotationDocument AnnotationDocument::empty() {
   return AnnotationDocument{};
 }
@@ -121,6 +120,8 @@ void AnnotationDocument::refresh_history_flags() {
 Result<AnnotationDocument, Error> AnnotationDocument::apply(
     const AnnotationDocument& document,
     const AnnotationCommand& command) {
+  try {
+  annotation_allocation_checkpoint(AnnotationAllocationStage::history_candidate);
   if (std::holds_alternative<UndoAnnotation>(command)) {
     if (document.undo_stack_.empty()) {
       return Result<AnnotationDocument, Error>::failure(Error{
@@ -193,6 +194,29 @@ Result<AnnotationDocument, Error> AnnotationDocument::apply(
           if (object == candidate.objects.end()) {
             return object_error(ErrorCode::object_not_found, typed_command.object_id);
           }
+          if (object->brush_geometry) {
+            auto geometry = *object->brush_geometry;
+            geometry.origin_x += typed_command.delta.x;
+            geometry.origin_y += typed_command.delta.y;
+            auto bounds = brush_geometry_bounds(geometry);
+            if (!bounds)
+              return bounds.error();
+            object->brush_geometry = std::move(geometry);
+            object->bounds = bounds.value();
+            candidate.selected_object_id = typed_command.object_id;
+            return std::nullopt;
+          }
+          const auto safe_add = [](int a, int b) {
+            auto sum = std::int64_t(a) + b;
+            return sum >= std::numeric_limits<int>::min() &&
+                   sum <= std::numeric_limits<int>::max();
+          };
+          if (!safe_add(object->bounds.x, typed_command.delta.x) ||
+              !safe_add(object->bounds.y, typed_command.delta.y) ||
+              !safe_add(object->bounds.right(), typed_command.delta.x) ||
+              !safe_add(object->bounds.bottom(), typed_command.delta.y))
+            return object_error(ErrorCode::invalid_input,
+                                typed_command.object_id);
           object->bounds.x += typed_command.delta.x;
           object->bounds.y += typed_command.delta.y;
           if (object->arrow_geometry.has_value()) {
@@ -207,6 +231,9 @@ Result<AnnotationDocument, Error> AnnotationDocument::apply(
           if (object == candidate.objects.end()) {
             return object_error(ErrorCode::object_not_found, typed_command.object_id);
           }
+          if (object->kind == AnnotationKind::brush)
+            return object_error(ErrorCode::precondition_failed,
+                                typed_command.object_id);
           if (typed_command.bounds.empty()) {
             return object_error(ErrorCode::invalid_input, typed_command.object_id);
           }
@@ -243,6 +270,23 @@ Result<AnnotationDocument, Error> AnnotationDocument::apply(
           }
           object->bounds = typed_command.bounds;
           candidate.selected_object_id = typed_command.object_id;
+        } else if constexpr (std::is_same_v<Command, SetBrushGeometry>) {
+          const auto object =
+              find_object(candidate.objects, typed_command.object_id);
+          if (object == candidate.objects.end())
+            return object_error(ErrorCode::object_not_found,
+                                typed_command.object_id);
+          if (object->kind != AnnotationKind::brush ||
+              !object->brush_geometry ||
+              object->brush_geometry->path != typed_command.geometry.path)
+            return object_error(ErrorCode::precondition_failed,
+                                typed_command.object_id);
+          auto bounds = brush_geometry_bounds(typed_command.geometry);
+          if (!bounds)
+            return bounds.error();
+          object->brush_geometry = typed_command.geometry;
+          object->bounds = bounds.value();
+          candidate.selected_object_id = typed_command.object_id;
         } else if constexpr (std::is_same_v<Command, SetShapeGeometry>) {
           const auto object = find_object(candidate.objects, typed_command.object_id);
           if (object == candidate.objects.end())
@@ -259,12 +303,23 @@ Result<AnnotationDocument, Error> AnnotationDocument::apply(
           if (object == candidate.objects.end()) {
             return object_error(ErrorCode::object_not_found, typed_command.object_id);
           }
-          if (object->kind != AnnotationKind::arrow ||
+          if ((object->kind != AnnotationKind::arrow &&
+               object->kind != AnnotationKind::line) ||
               typed_command.geometry.start == typed_command.geometry.end) {
             return object_error(ErrorCode::precondition_failed, typed_command.object_id);
           }
+          const auto g = typed_command.geometry;
+          if (std::abs(std::int64_t(g.start.x) - g.end.x) >
+                  std::numeric_limits<int>::max() ||
+              std::abs(std::int64_t(g.start.y) - g.end.y) >
+                  std::numeric_limits<int>::max())
+            return object_error(ErrorCode::invalid_input,
+                                typed_command.object_id);
           object->arrow_geometry = typed_command.geometry;
           object->bounds = bounds_from_arrow(typed_command.geometry);
+          if (!valid_geometry(*object))
+            return object_error(ErrorCode::invalid_input,
+                                typed_command.object_id);
           candidate.selected_object_id = typed_command.object_id;
         } else if constexpr (std::is_same_v<Command, RestyleAnnotation>) {
           const auto object = find_object(candidate.objects, typed_command.object_id);
@@ -322,6 +377,10 @@ Result<AnnotationDocument, Error> AnnotationDocument::apply(
   next.current_ = std::move(candidate);
   next.refresh_history_flags();
   return Result<AnnotationDocument, Error>::success(std::move(next));
+  } catch (const std::bad_alloc&) {
+    return Result<AnnotationDocument,Error>::failure({ErrorCode::state_inconsistent,
+        "AnnotationDocument",Retryability::same_input,{{"reason","allocation_failed"}}});
+  }
 }
 
 }  // namespace hdrshot

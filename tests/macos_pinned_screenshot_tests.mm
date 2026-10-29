@@ -62,7 +62,11 @@ ExportSnapshot fixture(bool hdr = true) {
   snapshot.selection = {1, {16, 8, 224, 144}};
   snapshot.annotations.revision = 1;
   snapshot.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
-      AnnotationRenderPlan{1, {224, 144}, {}, snapshot.selection.desktop_rect});
+      AnnotationRenderPlan{1,
+                           {224, 144},
+                           {},
+                           snapshot.selection.desktop_rect,
+                           AnnotationScale::from(1).value()});
   return snapshot;
 }
 
@@ -724,8 +728,12 @@ void thumbnail_native(bool portrait=false) {
   snapshot.frozen_desktop=pixels;
   if(portrait) {
     snapshot.selection={1,{16,8,64,144}};
-    snapshot.annotation_render_plan=std::make_shared<AnnotationRenderPlan>(
-        AnnotationRenderPlan{1,{64,144},{},snapshot.selection.desktop_rect});
+    snapshot.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
+        AnnotationRenderPlan{1,
+                             {64, 144},
+                             {},
+                             snapshot.selection.desktop_rect,
+                             AnnotationScale::from(1).value()});
   }
   auto prepared=prepare_macos_pinned_screenshot(snapshot);HDRSHOT_CHECK(prepared.has_value());
   auto data=prepared.value();

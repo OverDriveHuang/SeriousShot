@@ -2,6 +2,7 @@
 #include "domain/annotation/annotation_render_plan.hpp"
 #include "domain/frame/frame_cropper.hpp"
 #include <memory>
+#include <cstddef>
 #include <span>
 
 namespace hdrshot {
@@ -10,6 +11,9 @@ struct CleanCompositionSample {
   std::array<float, 4> annotation; // premultiplied RGB + remaining source weight
   std::array<float, 4> source;     // linear P3; only read for partial coverage
 };
+static_assert(sizeof(CleanCompositionSample)==32);
+static_assert(sizeof(PositionedCleanSample)==24);
+static_assert(offsetof(PositionedCleanSample,x)==16 && offsetof(PositionedCleanSample,y)==20);
 class CleanCompositionPort {
  public:
   virtual ~CleanCompositionPort() = default;

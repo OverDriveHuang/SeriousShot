@@ -926,7 +926,8 @@ struct CleanTasks final : ExportTaskExecutorPort {
 };
 // Deterministic scheduling: a newer input arrives before the old build
 // callback.
-void continuous_annotation_results_publish_within_their_gesture() {
+void continuous_annotation_results_publish_within_their_gesture(
+    const char *tool) {
   test::TestInputPlatformAdapter input;
   CleanTasks tasks;
   QtOverlayHost host(std::make_unique<Window>(), {7}, {1, {0, 0, 500, 300}},
@@ -971,7 +972,7 @@ void continuous_annotation_results_publish_within_their_gesture() {
     tasks.callbacks.clear();
     for (auto& f : work) f();
   };
-  host.findChild<QToolButton*>("toolArrow")->click();
+  host.findChild<QToolButton *>(tool)->click();
   mouse(QEvent::MouseButtonPress, {60, 60});
   mouse(QEvent::MouseMove, {130, 100});
   QApplication::processEvents();
@@ -1011,6 +1012,8 @@ void continuous_annotation_results_publish_within_their_gesture() {
   mouse(QEvent::MouseMove, {150, 120});
   QApplication::processEvents();
   build();
+  if (std::string(tool) == "toolBrush")
+    editor->interrupt_pointer_gesture();
   mouse(QEvent::MouseButtonPress, {80, 70});
   const auto restarted = presenter->frames;
   publish();
@@ -1021,6 +1024,21 @@ void continuous_annotation_results_publish_within_their_gesture() {
   HDRSHOT_CHECK(presenter->last->model.annotation_document.revision ==
                 editor->annotations().revision);
   HDRSHOT_CHECK(!presenter->last->model.clean_content->owned.empty());
+  if (std::string(tool) == "toolBrush") {
+    const auto &object = editor->annotations().objects.front();
+    HDRSHOT_CHECK(object.kind == AnnotationKind::brush);
+    HDRSHOT_CHECK(object.brush_geometry->path->points.back() ==
+                  (StrokePoint{380, 230}));
+    // Hover-only cursor updates must not schedule another clean task.
+    const auto builds = tasks.builds.size();
+    const auto frames = presenter->frames;
+    for (int i = 0; i < 20; ++i) {
+      mouse(QEvent::MouseMove, {double(200 + i), 150});
+      QApplication::processEvents();
+    }
+    HDRSHOT_CHECK(tasks.builds.size() == builds);
+    HDRSHOT_CHECK(presenter->frames == frames);
+  }
 }
 
 void background_publication_ignores_old_document_and_closed_host() {
@@ -1243,7 +1261,15 @@ int main(int argc, char** argv) {
         [] { host_pending_readings_have_one_bounded_grace(true); }},
        {"continuous annotation publishes monotonic snapshots with gesture "
         "barriers",
-        continuous_annotation_results_publish_within_their_gesture},
+        [] {
+          continuous_annotation_results_publish_within_their_gesture(
+              "toolArrow");
+        }},
+       {"continuous brush prefixes epochs and cursor-only stability",
+        [] {
+          continuous_annotation_results_publish_within_their_gesture(
+              "toolBrush");
+        }},
        {"background old document/closed host publication is ignored",
         background_publication_ignores_old_document_and_closed_host},
        {"single card geometry, isolated background and stale completion",
@@ -1256,7 +1282,10 @@ int main(int argc, char** argv) {
               false, true);
         }},
        {"background exact pin commits text, retains failure and hands off once",
-        [] { pending_text_exports_final_clean_revision_without_present_completion(false,true,true); }},
+        [] {
+          pending_text_exports_final_clean_revision_without_present_completion(
+              false, true, true);
+        }},
        {"background exact analysis retains requested document",
         [] {
           pending_text_exports_final_clean_revision_without_present_completion(

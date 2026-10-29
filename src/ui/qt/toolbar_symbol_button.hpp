@@ -13,6 +13,8 @@ enum class ToolbarSymbol : std::uint8_t {
   select,
   rectangle,
   ellipse,
+  line,
+  brush,
   arrow,
   text,
   undo,
@@ -33,6 +35,10 @@ inline const char* toolbar_symbol_name(const ToolbarSymbol symbol) {
     case ToolbarSymbol::select: return "select";
     case ToolbarSymbol::rectangle: return "rectangle";
     case ToolbarSymbol::ellipse: return "ellipse";
+    case ToolbarSymbol::line:
+      return "line";
+    case ToolbarSymbol::brush:
+      return "brush";
     case ToolbarSymbol::arrow: return "arrow";
     case ToolbarSymbol::text: return "text";
     case ToolbarSymbol::undo: return "undo";
@@ -132,6 +138,23 @@ class ToolbarSymbolButton final : public QToolButton {
         break;
       case ToolbarSymbol::ellipse:
         painter.drawEllipse(QPointF(12.0, 12.0), 8.5, 6.5);
+        break;
+      case ToolbarSymbol::line:
+        painter.drawLine(QPointF(4.5, 18.5), QPointF(19, 5));
+        break;
+      case ToolbarSymbol::brush:
+        path.moveTo(10.4, 13.6);
+        path.lineTo(18.2, 4.2);
+        path.quadTo(19.6, 2.7, 21, 4.1);
+        path.quadTo(22.3, 5.4, 20.7, 6.8);
+        path.lineTo(11.4, 14.6);
+        path.moveTo(10.4, 13.6);
+        path.lineTo(11.4, 14.6);
+        path.moveTo(10.4, 13.6);
+        path.cubicTo(8.9, 12.3, 6.7, 13.1, 6.5, 15.2);
+        path.cubicTo(6.2, 17.4, 4.6, 18.2, 3, 18.7);
+        path.cubicTo(7, 21, 11.8, 19.2, 11.4, 14.6);
+        painter.drawPath(path);
         break;
       case ToolbarSymbol::arrow:
         painter.drawLine(QPointF(4.5, 18.5), QPointF(19.0, 5.0));

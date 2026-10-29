@@ -130,13 +130,14 @@ struct ArrowSegments {
   double second_y{};
 };
 
-ArrowSegments arrow_segments(const AnnotationObject& object) {
+ArrowSegments arrow_segments(const AnnotationObject &object, double scale = 1) {
   const auto geometry = object.arrow_geometry.value();
   const auto style = std::get<ShapeStyle>(object.style);
   const auto angle = std::atan2(
       static_cast<double>(geometry.start.y - geometry.end.y),
       static_cast<double>(geometry.start.x - geometry.end.x));
-  const auto head = std::max(12.0, static_cast<double>(style.line_width_px) * 4.0);
+  const auto head =
+      std::max(12.0, static_cast<double>(style.line_width_dip) * 4.0) * scale;
   return ArrowSegments{
       static_cast<double>(geometry.start.x),
       static_cast<double>(geometry.start.y),
@@ -149,7 +150,8 @@ ArrowSegments arrow_segments(const AnnotationObject& object) {
   };
 }
 
-double distance_to_shape(const AnnotationObject& object, const double x, const double y) {
+double distance_to_shape(const AnnotationObject &object, const double x,
+                         const double y, double scale = 1) {
   const auto& bounds = object.bounds;
   if (object.kind == AnnotationKind::rectangle) {
     return std::min({
@@ -162,7 +164,7 @@ double distance_to_shape(const AnnotationObject& object, const double x, const d
   if (object.kind == AnnotationKind::ellipse) {
     return distance_to_ellipse_boundary(x, y, bounds);
   }
-  const auto segments = arrow_segments(object);
+  const auto segments = arrow_segments(object, scale);
   return std::min({
       distance_to_segment(
           x, y, segments.start_x, segments.start_y, segments.end_x, segments.end_y),
@@ -173,9 +175,12 @@ double distance_to_shape(const AnnotationObject& object, const double x, const d
   });
 }
 
-PixelRect shape_scan_bounds(const AnnotationObject& object, const PixelSize output) {
+PixelRect shape_scan_bounds(const AnnotationObject &object,
+                            const PixelSize output, double scale = 1) {
   const auto style = std::get<ShapeStyle>(object.style);
-  const auto margin = static_cast<std::int32_t>(style.line_width_px / 2U) + 2;
+  const auto margin =
+      static_cast<std::int32_t>(std::floor(style.line_width_dip * scale / 2)) +
+      2;
   if (is_rotatable(object) && object.transform != ShapeTransform{}) {
     return intersect_output(shape_pixel_bounds(object, margin), output);
   }
@@ -184,7 +189,7 @@ PixelRect shape_scan_bounds(const AnnotationObject& object, const PixelSize outp
   double right = object.bounds.right();
   double bottom = object.bounds.bottom();
   if (object.kind == AnnotationKind::arrow) {
-    const auto segments = arrow_segments(object);
+    const auto segments = arrow_segments(object, scale);
     left = std::min({segments.start_x, segments.end_x, segments.first_x, segments.second_x});
     top = std::min({segments.start_y, segments.end_y, segments.first_y, segments.second_y});
     right = std::max({segments.start_x, segments.end_x, segments.first_x, segments.second_x});
@@ -396,9 +401,9 @@ void rasterize_transformed_shape(
 
 }  // namespace
 
-Result<AnnotationCoverageLayer, Error> rasterize_shape(
-    const AnnotationObject& object,
-    const PixelSize output_size_px) {
+Result<AnnotationCoverageLayer, Error>
+rasterize_shape(const AnnotationObject &object, const PixelSize output_size_px,
+                double scale = 1) {
   if (output_size_px.width <= 0 || output_size_px.height <= 0 ||
       object.kind == AnnotationKind::text || !std::holds_alternative<ShapeStyle>(object.style) ||
       !valid_shape_transform(object) || object.bounds.empty() ||
@@ -411,7 +416,7 @@ Result<AnnotationCoverageLayer, Error> rasterize_shape(
         plan_error(ErrorCode::invalid_input, "shape_out_of_selection", object.id));
   }
   const auto style = std::get<ShapeStyle>(object.style);
-  const auto scan_bounds = shape_scan_bounds(object, output_size_px);
+  const auto scan_bounds = shape_scan_bounds(object, output_size_px, scale);
   AnnotationCoverageLayer layer{
       object.id,
       object.kind,
@@ -420,7 +425,8 @@ Result<AnnotationCoverageLayer, Error> rasterize_shape(
       {},
       "hdrshot-shape-coverage-v1",
   };
-  const auto half_width = static_cast<double>(style.line_width_px) / 2.0;
+  const auto half_width =
+      static_cast<double>(style.line_width_dip) * scale / 2.0;
   if (is_rotatable(object) && object.transform != ShapeTransform{}) {
     rasterize_transformed_shape(layer, object, scan_bounds, half_width);
     return Result<AnnotationCoverageLayer, Error>::success(std::move(layer));
@@ -432,8 +438,9 @@ Result<AnnotationCoverageLayer, Error> rasterize_shape(
     }
     std::vector<std::uint8_t> row(static_cast<std::size_t>(scan_bounds.width), 0U);
     for (std::int32_t x = scan_bounds.x; x < scan_bounds.right(); ++x) {
-      const auto distance = distance_to_shape(
-          object, static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+      const auto distance =
+          distance_to_shape(object, static_cast<double>(x) + 0.5,
+                            static_cast<double>(y) + 0.5, scale);
       const auto coverage = std::clamp(half_width + 0.5 - distance, 0.0, 1.0);
       row[static_cast<std::size_t>(x - scan_bounds.x)] =
           static_cast<std::uint8_t>(std::lround(coverage * 255.0));
@@ -473,7 +480,7 @@ Result<AnnotationPixelPlan, Error> build_pixel_plan(
     for (const auto& span : layer.spans) {
       if (span.y < 0 || span.y >= size.height || span.x < 0 ||
           static_cast<std::int64_t>(span.x) +
-                  static_cast<std::int64_t>(span.coverage_u8.size()) >
+                  static_cast<std::int64_t>(span.length()) >
               static_cast<std::int64_t>(size.width)) {
         return Result<AnnotationPixelPlan, Error>::failure(
             plan_error(ErrorCode::state_inconsistent,
@@ -503,8 +510,8 @@ Result<AnnotationPixelPlan, Error> build_pixel_plan(
     std::fill(samples.begin(), samples.end(), std::array<float, 4>{0, 0, 0, 1});
     std::fill(edge.begin(), edge.end(), false);
     for (const auto& coverage : spans_by_row[static_cast<std::size_t>(y)]) {
-      for (std::size_t offset = 0; offset < coverage.span->coverage_u8.size(); ++offset) {
-        const auto amount = coverage.span->coverage_u8[offset];
+      for (std::size_t offset = 0; offset < coverage.span->length(); ++offset) {
+        const auto amount = coverage.span->coverage_at(offset);
         if (amount == 0U) continue;
         const auto index = static_cast<std::size_t>(coverage.span->x) + offset;
         const auto& color = colors[coverage.layer_index];

@@ -15,8 +15,8 @@ struct TextRasterRequest {
   ObjectId object_id{};
   std::string utf8_text;
   PixelSize mask_size_px{};
-  std::uint16_t font_size_pt{};
-  double pixels_per_point{1.0};
+  std::uint16_t font_size_dip{};
+  double capture_pixels_per_dip{1.0};
 };
 
 struct TextCoverageMask {
@@ -28,8 +28,8 @@ struct TextCoverageMask {
 
 struct TextMeasureRequest {
   std::string utf8_text;
-  std::uint16_t font_size_pt{};
-  double pixels_per_point{1.0};
+  std::uint16_t font_size_dip{};
+  double capture_pixels_per_dip{1.0};
 };
 
 struct TextMetrics {

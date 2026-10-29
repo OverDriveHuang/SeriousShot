@@ -3,6 +3,7 @@
 #include "domain/color/extended_p3_mapper.hpp"
 #include "platform/macos/macos_shared_source_buffer.hpp"
 #include "platform/macos/macos_gpu_source.hpp"
+#include "platform/macos/macos_annotation_pack_checkpoint.hpp"
 #include "domain/annotation/annotation_compositing.hpp"
 #include "domain/color/pq_reference_white_mapper.hpp"
 
@@ -306,6 +307,8 @@ struct Parameters {
 
 struct MacAnnotationBuffers {
   id<MTLBuffer> mask{nil}, samples{nil};
+  id<MTLCommandBuffer> pack{nil};
+  bool fail_completion{};
 };
 Result<MacAnnotationBuffers, Error> annotation_buffers(id<MTLDevice> device,
     const AnnotationPixelPlan& plan) {
@@ -320,20 +323,53 @@ Result<MacAnnotationBuffers, Error> annotation_buffers(id<MTLDevice> device,
   }
   MacAnnotationBuffers out;
   if (native) {
-    const auto width = static_cast<std::size_t>(plan.output_size_px.width);
-    out.samples = macos_sample_buffer(native);
-    out.mask = [device newBufferWithLength:width * static_cast<std::size_t>(plan.output_size_px.height) * sizeof(std::uint32_t)
-        options:MTLResourceStorageModeShared];
-    if (!out.mask || !out.samples) return Output::failure(processor_error(
-        ErrorCode::presenter_failed, "native_annotation_binding_failed"));
-    auto* indices = static_cast<std::uint32_t*>(out.mask.contents);
-    std::memset(indices, 0, out.mask.length);
-    for (const auto& span : plan.annotation_owned_spans) {
-      if (span.native_samples != native || span.native_sample_offset + static_cast<std::size_t>(span.length) >= UINT32_MAX)
-        return Output::failure(processor_error(ErrorCode::state_inconsistent, "invalid_native_span"));
-      for (std::int32_t i = 0; i < span.length; ++i)
-        indices[static_cast<std::size_t>(span.y) * width + static_cast<std::size_t>(span.x + i)] =
-            static_cast<std::uint32_t>(span.native_sample_offset + static_cast<std::size_t>(i) + 1);
+    const auto width=std::size_t(plan.output_size_px.width),height=std::size_t(plan.output_size_px.height);
+    const auto count=native->sample_count();auto native_buffer=macos_sample_buffer(native);
+    if(!native_buffer || native_buffer.device!=device || count>native_buffer.length/16 || count>=UINT32_MAX ||
+       width>std::numeric_limits<std::size_t>::max()/height || width*height>device.maxBufferLength/4)
+      return Output::failure(processor_error(ErrorCode::state_inconsistent,"invalid_native_buffer"));
+    std::vector<std::array<float,4>> palette;
+    std::map<std::uint32_t,std::size_t> constants;
+    out.mask=[device newBufferWithLength:width*height*4 options:MTLResourceStorageModeShared];
+    if(!out.mask) return Output::failure(processor_error(ErrorCode::presenter_failed,"native_mask_allocation_failed"));
+    auto* indices=static_cast<std::uint32_t*>(out.mask.contents);std::memset(indices,0,out.mask.length);
+    for(const auto& span:plan.annotation_owned_spans) {
+      std::size_t offset=span.native_sample_offset;bool constant=false;
+      if(span.native_samples) {
+        if(span.native_samples!=native || offset>UINT32_MAX-std::size_t(span.length))
+          return Output::failure(processor_error(ErrorCode::state_inconsistent,"invalid_native_span"));
+      } else {
+        if(!span.edge_samples.empty()) return Output::failure(processor_error(ErrorCode::state_inconsistent,"mixed_cpu_native_samples"));
+        auto [it,inserted]=constants.try_emplace(span.color_srgb_rgb,palette.size());
+        if(inserted) palette.push_back(annotation_linear_sample(span,0));
+        if(palette.size()>UINT32_MAX-1-count) return Output::failure(processor_error(ErrorCode::state_inconsistent,"palette_index_overflow"));
+        offset=count+it->second;constant=true;
+      }
+      auto* row=indices+std::size_t(span.y)*width+std::size_t(span.x);
+      if(constant) std::fill_n(row,span.length,std::uint32_t(offset+1));
+      else for(int i=0;i<span.length;++i) row[i]=std::uint32_t(offset+std::size_t(i)+1);
+    }
+    // The common AA-only path keeps its existing immutable native binding.
+    if(palette.empty()) out.samples=native_buffer;
+    else {
+      if(count>device.maxBufferLength/16 || palette.size()>device.maxBufferLength/16-count)
+        return Output::failure(processor_error(ErrorCode::state_inconsistent,"pack_size_overflow"));
+      if(consume_mac_annotation_pack_failure(MacAnnotationPackFailure::allocation))
+        return Output::failure(processor_error(ErrorCode::presenter_failed,"pack_allocation_failed"));
+      out.samples=[device newBufferWithLength:(count+palette.size())*16 options:MTLResourceStorageModePrivate];
+      auto staging=[device newBufferWithBytes:palette.data() length:palette.size()*16 options:MTLResourceStorageModeShared];
+      auto queue=macos_gpu_queue();
+      if(!out.samples||!staging||!queue || native_buffer.device!=device)
+        return Output::failure(processor_error(ErrorCode::presenter_failed,"pack_allocation_failed"));
+      if(consume_mac_annotation_pack_failure(MacAnnotationPackFailure::encoder))
+        return Output::failure(processor_error(ErrorCode::presenter_failed,"pack_encoder_failed"));
+      auto command=[queue commandBuffer];auto blit=[command blitCommandEncoder];
+      if(!command||!blit) return Output::failure(processor_error(ErrorCode::presenter_failed,"pack_encoder_failed"));
+      [blit copyFromBuffer:native_buffer sourceOffset:0 toBuffer:out.samples destinationOffset:0 size:count*16];
+      [blit copyFromBuffer:staging sourceOffset:0 toBuffer:out.samples destinationOffset:count*16 size:palette.size()*16];
+      [blit endEncoding];out.pack=command;
+      out.fail_completion=consume_mac_annotation_pack_failure(MacAnnotationPackFailure::completion);
+      [command commit];
     }
   } else {
     auto upload = prepare_annotation_gpu_upload(plan);
@@ -570,6 +606,10 @@ Result<ExportPixelProcessResult, Error> MacMetalExportPixelProcessor::process(
         {{"nativeCode", std::to_string(command_buffer.error.code)},
          {"nativeDescription", ns_string_to_utf8(command_buffer.error.localizedDescription)}}));
   }
+  if(annotation.value().pack && (annotation.value().fail_completion || annotation.value().pack.status!=MTLCommandBufferStatusCompleted))
+    return Result<ExportPixelProcessResult,Error>::failure(processor_error(ErrorCode::presenter_failed,"annotation_pack_failed",
+        {{"nativeCode",std::to_string(annotation.value().pack.error.code)},
+          {"nativeDescription",ns_string_to_utf8(annotation.value().pack.error.localizedDescription)}}));
   auto native_ready = verify_native_inputs(source, plan);
   if (!native_ready) return Result<ExportPixelProcessResult, Error>::failure(native_ready.error());
   const auto* counter_values = static_cast<const std::uint32_t*>(counters.contents);
@@ -714,6 +754,10 @@ Result<LinearDisplayP3HalfImage, Error> MacMetalExportPixelProcessor::render(
         {{"nativeCode", std::to_string(command_buffer.error.code)},
          {"nativeDescription", ns_string_to_utf8(command_buffer.error.localizedDescription)}}));
   }
+  if(annotation.value().pack && (annotation.value().fail_completion || annotation.value().pack.status!=MTLCommandBufferStatusCompleted))
+    return Result<LinearDisplayP3HalfImage,Error>::failure(processor_error(ErrorCode::presenter_failed,"annotation_pack_failed",
+        {{"nativeCode",std::to_string(annotation.value().pack.error.code)},
+          {"nativeDescription",ns_string_to_utf8(annotation.value().pack.error.localizedDescription)}}));
   auto native_ready = verify_native_inputs(source, plan);
   if (!native_ready) return Result<LinearDisplayP3HalfImage, Error>::failure(native_ready.error());
   const auto* counter_values = static_cast<const std::uint32_t*>(counters.contents);

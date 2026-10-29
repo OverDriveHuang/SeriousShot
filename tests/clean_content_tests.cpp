@@ -1,8 +1,11 @@
 #include "application/clean_content_cache.hpp"
-#include "domain/frame/frame_pipeline.hpp"
+#include "domain/annotation/brush_stroke_builder.hpp"
+#include "domain/annotation/annotation_compositing.hpp"
+#include "domain/annotation/annotation_allocation_checkpoint.hpp"
 #include "domain/color/extended_p3_mapper.hpp"
-#include "domain/output/source_range_probe.hpp"
+#include "domain/frame/frame_pipeline.hpp"
 #include "domain/output/output_row_producer.hpp"
+#include "domain/output/source_range_probe.hpp"
 #include "domain/output/ultra_hdr_input_renderer.hpp"
 #include "test_support.hpp"
 #include <future>
@@ -28,8 +31,16 @@ FrozenDesktopRef fixture() {
   return std::make_shared<const FrozenDesktop>(std::move(desktop));
 }
 AnnotationRenderPlan plan() {
-  return {1, {6, 2}, {{ObjectId{1}, AnnotationKind::text, {1,0,4,1}, 0x00ff00,
-      {{0,1,{64,128,192,255}}}, "text"}}, {1,1,6,2}};
+  return {1,
+          {6, 2},
+          {{ObjectId{1},
+            AnnotationKind::text,
+            {1, 0, 4, 1},
+            0x00ff00,
+            {{0, 1, {64, 128, 192, 255}}},
+            "text"}},
+          {1, 1, 6, 2},
+          AnnotationScale::from(1).value()};
 }
 void source_precision_and_roi() {
   const auto source = fixture();
@@ -106,7 +117,7 @@ void reuse_selection_revisions_and_lifetime() {
   larger.value().source_document_revision = 9; // UI object selection revision
   auto selected = cache.get(source, DisplayId{1}, larger.value()); HDRSHOT_CHECK(selected.value() == first.value());
   HDRSHOT_CHECK(cache.counters().content_builds == 1);
-  HDRSHOT_CHECK(cache.counters().composed_pixels == 4);
+  HDRSHOT_CHECK(cache.counters().composed_pixels == 3);
   HDRSHOT_CHECK(cache.counters().cache_hits == 2);
   render.ordered_layers[0].color_srgb_rgb = 0xff0000; // same document revision, transient content differs
   auto changed = cache.get(source, DisplayId{1}, render); HDRSHOT_CHECK(changed && changed.value() != first.value());
@@ -119,8 +130,9 @@ void reuse_selection_revisions_and_lifetime() {
   HDRSHOT_CHECK(!lifetime.expired()); // old exports own their source after session caller release
   HDRSHOT_CHECK(first.value()->owned != changed.value()->owned);
 }
-void ownership_and_output_match_reference() {
-  auto source = fixture(); const auto render = plan(); CleanContentCache cache;
+void ownership_and_output_match_reference(const AnnotationRenderPlan &render) {
+  auto source = fixture();
+  CleanContentCache cache;
   auto content = cache.get(source, DisplayId{1}, render); HDRSHOT_CHECK(content.has_value());
   auto clean = content.value()->roi_plan(render.source_selection_rect_px, render.source_document_revision);
   auto original = AnnotationRenderPlanner::build_pixel_plan(render);
@@ -178,10 +190,11 @@ void failed_revision_does_not_publish() {
   HDRSHOT_CHECK(cache.get(source, DisplayId{1}, plan()).value() == first.value());
 }
 #ifdef __APPLE__
-void metal_clean_and_preview() {
+void metal_clean_and_preview(const AnnotationRenderPlan &render) {
   auto native = MacMetalExportPixelProcessor::create(); HDRSHOT_CHECK(native.has_value());
   auto gpu = std::shared_ptr<MacMetalExportPixelProcessor>(std::move(native.value()));
-  auto source = fixture(); const auto render = plan(); CleanContentCache cpu, metal(gpu);
+  auto source = fixture();
+  CleanContentCache cpu, metal(gpu);
   auto a = cpu.get(source, DisplayId{1}, render); auto b = metal.get(source, DisplayId{1}, render); HDRSHOT_CHECK(a && b);
   for (std::size_t j=0;j<a.value()->owned.size();++j)
     for (std::size_t i=0;i<a.value()->owned[j].edge_samples.size();++i)
@@ -192,7 +205,7 @@ void metal_clean_and_preview() {
   auto shown = presenter.value()->render_offscreen(request, true); HDRSHOT_CHECK(shown.has_value());
   HDRSHOT_CHECK(shown.value().source_aliases_cpu);
   for (const auto& span : b.value()->owned) for (int i=0;i<span.length;++i) for (std::size_t c=0;c<3;++c) {
-    const auto expected = ExtendedP3Mapper::decode_binary16(ExtendedP3Mapper::encode_binary16(span.edge_samples[static_cast<std::size_t>(i)][c]));
+    const auto expected = ExtendedP3Mapper::decode_binary16(ExtendedP3Mapper::encode_binary16(annotation_linear_sample(span,std::size_t(i))[c]));
     HDRSHOT_CHECK_NEAR(shown.value().rgba_linear_display_p3[(static_cast<std::size_t>(span.y)*8+static_cast<std::size_t>(span.x+i))*4+c], expected.value(), 0.002);
   }
   request.selection_px={2,1,4,2};request.ui_border_width_px=1;request.outside_linear_dim_factor=0.35F;
@@ -229,17 +242,103 @@ void metal_clean_and_preview() {
     }
 }
 #endif
+void brush_line_real_output() {
+  BrushStrokeBuilder builder;
+  auto scale = AnnotationScale::from(1).value();
+  HDRSHOT_CHECK(
+      builder.begin({8}, {0xFF4D67, 4}, {3.2, 2.3}, {0, 0, 8, 4}, scale)
+          .has_value());
+  auto stroke = builder.finish({4.7, 2.8});
+  HDRSHOT_CHECK(stroke.has_value());
+  AnnotationObject line{{9},          AnnotationKind::line,
+                        {1, 1, 6, 2}, ShapeStyle{0x36A3FF, 2},
+                        {},           ArrowGeometry{{1, 1}, {7, 3}}};
+  auto built = AnnotationRenderPlanner::build(
+      {4, {stroke.value().object, line}, {}, false, false}, {0, 0, 8, 4}, 1);
+  HDRSHOT_CHECK(built.has_value());
+  ownership_and_output_match_reference(built.value());
+#ifdef __APPLE__
+  metal_clean_and_preview(built.value());
+#endif
+  HDRSHOT_CHECK(
+      builder.begin({10}, {0x111111, 72}, {4, 2}, {0, 0, 8, 4}, scale)
+          .has_value());
+  auto opaque = builder.finish({4, 2});
+  HDRSHOT_CHECK(opaque.has_value());
+  auto covered = AnnotationRenderPlanner::build(
+      {5, {opaque.value().object}, {}, false, false}, {0, 0, 8, 4}, 1);
+  HDRSHOT_CHECK(covered.has_value());
+  auto pixel = AnnotationRenderPlanner::build_pixel_plan(covered.value());
+  auto source = fixture();
+  auto view = FrameCropper::view_display(*source, {1}, {1, {0, 0, 8, 4}});
+  auto range = SourceRangeProbe::probe(view.value(), pixel.value());
+  HDRSHOT_CHECK(range && range.value().fits_sdr);
+}
+void snapshot_allocation_preserves_cache_identity_and_counters() {
+  CleanContentCache cache;auto source=fixture();auto original=plan();
+  auto old=cache.get(source,{1},original);HDRSHOT_CHECK(old.has_value());
+  const auto before=cache.counters();auto changed=original;
+  changed.ordered_layers.front().color_srgb_rgb=0xFF4D67;
+  annotation_allocation_failure=AnnotationAllocationStage::clean_snapshot;
+  HDRSHOT_CHECK(!cache.get(source,{1},changed));
+  HDRSHOT_CHECK(annotation_allocation_failure==AnnotationAllocationStage::none);
+  const auto after=cache.counters();
+  HDRSHOT_CHECK(after.content_builds==before.content_builds && after.cache_hits==before.cache_hits &&
+      after.composed_pixels==before.composed_pixels && after.last_sample_count==before.last_sample_count &&
+      after.last_owned_pixels==before.last_owned_pixels && after.retained_sample_bytes==before.retained_sample_bytes &&
+      after.opaque_span_count==before.opaque_span_count && after.sample_vector_growths==before.sample_vector_growths &&
+      after.effective_upload_bytes==before.effective_upload_bytes && after.sample_capacity_bytes==before.sample_capacity_bytes &&
+      after.pixel_plan_ms==before.pixel_plan_ms && after.sample_prepare_ms==before.sample_prepare_ms &&
+      after.compose_submit_ms==before.compose_submit_ms);
+  HDRSHOT_CHECK(cache.get(source,{1},original).value()==old.value());
+  auto recovered=cache.get(source,{1},changed);HDRSHOT_CHECK(recovered && recovered.value()!=old.value());
+  HDRSHOT_CHECK(recovered.value()->content_revision==old.value()->content_revision+1);
+}
+
+class NoCompose final : public CleanCompositionPort {
+public:
+  int calls{};
+  Result<std::vector<std::array<float,4>>,Error> compose(std::span<const CleanCompositionSample>) override {
+    ++calls;return Result<std::vector<std::array<float,4>>,Error>::failure({ErrorCode::state_inconsistent,"NoCompose"});
+  }
+};
+void opaque_snapshot_never_composes() {
+  auto executor=std::make_shared<NoCompose>();CleanContentCache cache(executor);
+  AnnotationRenderPlan p{1,{8,4},{{{1},AnnotationKind::brush,{1,1,6,1},0xFF4D67,
+      {CoverageSpan::opaque(1,1,6)},"opaque"}},{0,0,8,4},AnnotationScale::from(1).value()};
+  auto clean=cache.get(fixture(),{1},p);HDRSHOT_CHECK(clean.has_value());
+  HDRSHOT_CHECK(executor->calls==0);
+  HDRSHOT_CHECK(cache.counters().last_sample_count==0 && cache.counters().last_owned_pixels==6);
+  HDRSHOT_CHECK(cache.counters().opaque_span_count==1 && cache.counters().retained_sample_bytes==0);
+  auto roi=clean.value()->roi_plan({2,1,3,1},2);HDRSHOT_CHECK(roi.has_value());
+  HDRSHOT_CHECK(roi.value().annotation_owned_spans.size()==1);
+  const auto& span=roi.value().annotation_owned_spans.front();
+  HDRSHOT_CHECK(span.length==3 && span.edge_samples.empty() && !span.native_samples && !span.clean_composited);
+}
+
 }
 int main() {
-  std::vector<test::TestCase> cases{{"FP32 source ownership and ROI",source_precision_and_roi},
-    { "exhaustive source precision and existing linear bypass",exhaustive_fp16_source_and_linear_input},
-    {"multi-display detached export lifetime",multisegment_and_detached_export_lifetime},
-    {"content cache selection revision undo lifetime",reuse_selection_revisions_and_lifetime},
-    {"ownership and SDR HDR JPEG reference",ownership_and_output_match_reference},
-    {"owned HDR AA remains excluded from classification",owned_hdr_edges_remain_excluded_from_classification},
-    {"failure does not publish",failed_revision_does_not_publish}};
+  std::vector<test::TestCase> cases{
+      {"all opaque clean snapshot never submits empty work",opaque_snapshot_never_composes},
+      {"snapshot allocation preserves old cache and recovers",snapshot_allocation_preserves_cache_identity_and_counters},
+      {"brush line CPU Metal preview PNG JPEG ownership",
+       brush_line_real_output},
+      {"FP32 source ownership and ROI", source_precision_and_roi},
+      {"exhaustive source precision and existing linear bypass",
+       exhaustive_fp16_source_and_linear_input},
+      {"multi-display detached export lifetime",
+       multisegment_and_detached_export_lifetime},
+      {"content cache selection revision undo lifetime",
+       reuse_selection_revisions_and_lifetime},
+      {"ownership and SDR HDR JPEG reference",
+       [] { ownership_and_output_match_reference(plan()); }},
+      {"owned HDR AA remains excluded from classification",
+       owned_hdr_edges_remain_excluded_from_classification},
+      {"failure does not publish", failed_revision_does_not_publish}};
 #ifdef __APPLE__
-  if (MacMetalExportPixelProcessor::create()) cases.push_back({"actual Metal clean preview output",metal_clean_and_preview});
+  if (MacMetalExportPixelProcessor::create())
+    cases.push_back({"actual Metal clean preview output",
+                     [] { metal_clean_and_preview(plan()); }});
   else std::cout << "Metal unavailable: GPU case not run\n";
 #endif
   return test::run(cases);

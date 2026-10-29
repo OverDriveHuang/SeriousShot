@@ -26,7 +26,8 @@ CanonicalFrameView frame(const std::uint16_t first, const std::uint16_t second) 
 }
 
 AnnotationPixelPlan empty_plan() {
-  const auto render_plan = AnnotationRenderPlan{0, PixelSize{2, 1}, {}};
+  const auto render_plan = AnnotationRenderPlan{
+      0, PixelSize{2, 1}, {}, {}, AnnotationScale::from(1).value()};
   const auto result = AnnotationRenderPlanner::build_pixel_plan(render_plan);
   HDRSHOT_CHECK(result.has_value());
   return result.value();
@@ -40,18 +41,19 @@ void source_component_above_edr_one_requires_hdr() {
 }
 
 void annotation_owned_hdr_source_is_skipped() {
-  const auto render_plan = AnnotationRenderPlan{
-      1,
-      PixelSize{2, 1},
-      {AnnotationCoverageLayer{
-          ObjectId{4},
-          AnnotationKind::rectangle,
-          PixelRect{1, 0, 1, 1},
-          0xFF4D67,
-          {CoverageSpan{0, 1, {1U}}},
-          "test",
-      }},
-  };
+  const auto render_plan =
+      AnnotationRenderPlan{1,
+                           PixelSize{2, 1},
+                           {AnnotationCoverageLayer{
+                               ObjectId{4},
+                               AnnotationKind::rectangle,
+                               PixelRect{1, 0, 1, 1},
+                               0xFF4D67,
+                               {CoverageSpan{0, 1, {1U}}},
+                               "test",
+                           }},
+                           {},
+                           AnnotationScale::from(1).value()};
   const auto pixel_plan = AnnotationRenderPlanner::build_pixel_plan(render_plan);
   HDRSHOT_CHECK(pixel_plan.has_value());
   const auto result = SourceRangeProbe::probe(

@@ -3,6 +3,15 @@
 #include "test_support.hpp"
 
 #include <QApplication>
+#include <QAbstractItemView>
+#include <QListView>
+#include <QPointer>
+#include "ui/qt/annotation_size_combo.hpp"
+#include <QDir>
+#include <QFileInfo>
+#include <QEnterEvent>
+#include "ui/qt/toolbar_style.hpp"
+#include <QStyle>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QColor>
@@ -139,6 +148,190 @@ struct Fixture {
     return result;
   }
 };
+
+void brush_preserves_all_events_and_final_double_coordinates() {
+  Fixture fixture;
+  fixture.widget.set_annotation_preview_coalescing(true);
+  fixture.button("toolBrush")->click();
+  auto *sizes = fixture.widget.findChild<QComboBox *>();
+  HDRSHOT_CHECK(sizes->count() == 6);
+  HDRSHOT_CHECK(sizes->currentText() == "24 DIP");
+  const auto send = [&](QEvent::Type type, QPointF point) {
+    QMouseEvent event(type, point, point, point,
+                      type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton
+                                                         : Qt::LeftButton,
+                      Qt::NoModifier);
+    QApplication::sendEvent(&fixture.widget, &event);
+  };
+  send(QEvent::MouseButtonPress, {100.1, 100.2});
+  send(QEvent::MouseMove, {150.2, 100.3});
+  send(QEvent::MouseMove, {150.4, 150.5});
+  send(QEvent::MouseMove, {100.3, 150.7});
+  send(QEvent::MouseButtonRelease, {100.6, 150.9});
+  auto snapshot = fixture.widget.annotations();
+  HDRSHOT_CHECK(snapshot.objects.size() == 1);
+  const auto path = snapshot.objects.front().brush_geometry->path;
+  HDRSHOT_CHECK(path->points.size() == 5);
+  HDRSHOT_CHECK_NEAR(path->points.back().x, 100.6, 1e-10);
+  HDRSHOT_CHECK_NEAR(path->points[1].y, 100.3, 1e-10);
+  int actions = 0;
+  fixture.widget.set_action_requested([&](auto) { ++actions; });
+  send(QEvent::MouseButtonDblClick, {250.2, 220.3});
+  send(QEvent::MouseButtonRelease, {250.2, 220.3});
+  HDRSHOT_CHECK(fixture.widget.annotations().objects.size() == 2);
+  HDRSHOT_CHECK(actions == 0);
+  fixture.button("actionUndo")->click();
+  HDRSHOT_CHECK(fixture.widget.annotations().objects.size() == 1);
+  send(QEvent::MouseButtonPress, {300.1, 300.2});
+  send(QEvent::MouseMove, {350.4, 350.7});
+  fixture.button("actionSaveDefault")->click();
+  HDRSHOT_CHECK(actions == 1);
+  HDRSHOT_CHECK(fixture.widget.annotations().objects.size() == 2);
+  HDRSHOT_CHECK(fixture.widget.annotations()
+                    .objects.back()
+                    .brush_geometry->path->points.size() == 2);
+}
+
+void fractional_capture_scale_preserves_subpixel_samples() {
+  for (double scale : {1., 1.25, 1.5, 2.}) {
+    TestInputPlatformAdapter input;
+    SolidTextRasterizer text;
+    const PixelSize capture{int(1000 * scale), int(600 * scale)};
+    OverlayEditorWidget widget{capture, scale, &text, "", input,
+        SelectionSnapshot{1, {0, 0, capture.width, capture.height}}};
+    widget.resize(1000, 600);
+    widget.show();
+    QApplication::processEvents();
+    widget.findChild<QToolButton *>("toolBrush")->click();
+    const auto send = [&](QEvent::Type type, QPointF p) {
+      QMouseEvent event(type, p, p, p,
+          type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+          type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+          Qt::NoModifier);
+      QApplication::sendEvent(&widget, &event);
+    };
+    send(QEvent::MouseButtonPress, {100.1, 100.1});
+    send(QEvent::MouseMove, {100.2, 100.2});
+    send(QEvent::MouseButtonRelease, {100.3, 100.3});
+    const auto &points = widget.annotations().objects[0].brush_geometry->path->points;
+    HDRSHOT_CHECK(points.size() == 3);
+    HDRSHOT_CHECK(int(points[0].x) == int(points[1].x));
+    HDRSHOT_CHECK(points[0] != points[1]);
+    HDRSHOT_CHECK_NEAR(points[0].x, 100.1 * scale, 1e-9);
+    HDRSHOT_CHECK_NEAR(points.back().y, 100.3 * scale, 1e-9);
+  }
+}
+void three_dip_size_groups_and_palette_are_independent() {
+  Fixture fixture;
+  auto *sizes=fixture.widget.findChild<QComboBox *>();
+  const auto verify=[&](const char *tool,std::initializer_list<int> values,int selected) {
+    fixture.button(tool)->click();
+    HDRSHOT_CHECK(sizes->count()==int(values.size()));
+    int i=0;
+    for(auto value:values) {
+      HDRSHOT_CHECK(sizes->itemData(i).toInt()==value);
+      HDRSHOT_CHECK(sizes->itemText(i)==QString::number(value)+" DIP");
+      ++i;
+    }
+    HDRSHOT_CHECK(sizes->currentData().toInt()==selected);
+  };
+  verify("toolBrush",{2,4,24,32,48,72},24);
+  sizes->setCurrentIndex(5);
+  verify("toolLine",{1,2,3,4,6},2);
+  sizes->setCurrentIndex(4);
+  verify("toolText",{12,16,20,24,32,48},20);
+  sizes->setCurrentIndex(5);
+  verify("toolBrush",{2,4,24,32,48,72},72);
+  verify("toolArrow",{1,2,3,4,6},6);
+  verify("toolText",{12,16,20,24,32,48},48);
+  for(const char *color:{"COLORFF4D67","COLORFFC83D","COLORFF8A34","COLOR25C06D","COLOR36A3FF","COLORFFFFFF","COLOR111111"})
+    HDRSHOT_CHECK(fixture.button(color)->isVisible());
+}
+
+void brush_actions_and_interruptions() {
+  for (const char *action : {"actionSaveDefault", "actionSaveAs", "actionCopy",
+                             "actionAnalyze", "actionPinScreenshot"}) {
+    Fixture fixture;
+    fixture.widget.set_analysis_available(true);
+    fixture.widget.set_pin_available(true);
+    fixture.button("toolBrush")->click();
+    int calls = 0;
+    fixture.widget.set_action_requested([&](auto) {
+      ++calls;
+      HDRSHOT_CHECK(fixture.widget.annotations().objects.size() == 1);
+      HDRSHOT_CHECK(fixture.widget.annotations()
+                        .objects.front()
+                        .brush_geometry->path->points.back() ==
+                    (StrokePoint{170.4, 150.7}));
+    });
+    QMouseEvent press(QEvent::MouseButtonPress, {100.2, 100.3}, {100.2, 100.3},
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, {170.4, 150.7}, {170.4, 150.7},
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&fixture.widget, &press);
+    QApplication::sendEvent(&fixture.widget, &move);
+    fixture.button(action)->click();
+    HDRSHOT_CHECK(calls == 1);
+  }
+  for (int interruption = 0; interruption < 5; ++interruption) {
+    Fixture fixture;
+    fixture.widget.set_annotation_preview_coalescing(true);
+    fixture.button("toolBrush")->click();
+    QMouseEvent press(QEvent::MouseButtonPress, {100, 100}, {100, 100},
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, {180, 140}, {180, 140}, Qt::NoButton,
+                     Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&fixture.widget, &press);
+    QApplication::sendEvent(&fixture.widget, &move);
+    const auto epoch = fixture.widget.annotation_preview_epoch();
+    if (interruption == 0)
+      fixture.button("actionUndo")->click();
+    else if (interruption == 1)
+      fixture.button("toolLine")->click();
+    else {
+      QEvent event(interruption == 2   ? QEvent::WindowDeactivate
+                   : interruption == 3 ? QEvent::Hide
+                                       : QEvent::UngrabMouse);
+      QApplication::sendEvent(&fixture.widget, &event);
+    }
+    QApplication::processEvents();
+    HDRSHOT_CHECK(fixture.widget.annotations().objects.empty());
+    HDRSHOT_CHECK(fixture.widget.annotation_preview_epoch() > epoch);
+  }
+}
+
+void brush_transform_is_exact_and_undoable() {
+  Fixture fixture;
+  fixture.button("toolBrush")->click();
+  send_drag(fixture.widget, {100.2, 100.3}, {180.4, 150.6});
+  fixture.button("toolSelect")->click();
+  auto original = fixture.widget.annotations().objects.front();
+  send_drag(fixture.widget, {140.3, 125.45}, {140.55, 126.2});
+  auto moved = fixture.widget.annotations().objects.front();
+  HDRSHOT_CHECK(moved.brush_geometry->path == original.brush_geometry->path);
+  HDRSHOT_CHECK_NEAR(moved.brush_geometry->origin_x, .25, 1e-10);
+  HDRSHOT_CHECK_NEAR(moved.brush_geometry->origin_y, .75, 1e-10);
+  fixture.button("actionUndo")->click();
+  HDRSHOT_CHECK(fixture.widget.annotations().objects.front() == original);
+  send_drag(fixture.widget, {180.4, 150.6}, {220.7, 180.9});
+  const auto resized = fixture.widget.annotations().objects.front();
+  HDRSHOT_CHECK(resized.brush_geometry->path == original.brush_geometry->path);
+  HDRSHOT_CHECK(resized.brush_geometry->scale_x > 1 &&
+                resized.brush_geometry->scale_y > 1);
+  HDRSHOT_CHECK(std::get<BrushStyle>(resized.style).diameter_dip == 24);
+  fixture.button("actionUndo")->click();
+  HDRSHOT_CHECK(fixture.widget.annotations().objects.front() == original);
+  fixture.button("COLOR25C06D")->click();
+  auto *sizes = fixture.widget.findChild<QComboBox *>();
+  sizes->setCurrentIndex(5);
+  auto styled = fixture.widget.annotations().objects.front();
+  HDRSHOT_CHECK(std::get<BrushStyle>(styled.style).color_srgb_rgb == 0x25C06D);
+  HDRSHOT_CHECK(std::get<BrushStyle>(styled.style).diameter_dip == 72);
+  fixture.button("actionUndo")->click();
+  fixture.button("actionUndo")->click();
+  HDRSHOT_CHECK(fixture.widget.annotations().objects.front() == original);
+}
 
 void drawing_cursor_does_not_leak_into_controls() {
   Fixture fixture;
@@ -337,13 +530,14 @@ void selected_object_exposes_its_own_units_and_toolbar_has_group_separators() {
   HDRSHOT_CHECK(property_bar != nullptr);
   HDRSHOT_CHECK(size_combo != nullptr);
   HDRSHOT_CHECK(property_bar->isVisible());
-  HDRSHOT_CHECK(size_combo->currentText().endsWith(QStringLiteral(" px")));
+  HDRSHOT_CHECK(size_combo->currentText().endsWith(QStringLiteral(" DIP")));
 }
 
 void icon_toolbar_preserves_accessibility_and_scopes_press_feedback_to_actions() {
   Fixture fixture;
-  constexpr std::array<const char*, 5> tool_names{
-      "toolSelect", "toolRectangle", "toolEllipse", "toolArrow", "toolText"};
+  constexpr std::array<const char *, 7> tool_names{
+      "toolSelect", "toolRectangle", "toolEllipse", "toolLine",
+      "toolArrow",  "toolText",      "toolBrush"};
   constexpr std::array<const char*, 8> action_names{
       "actionUndo", "actionRedo", "actionSaveDefault",
       "actionSaveAs", "actionCopy", "actionAnalyze", "actionPinScreenshot", "actionCancel"};
@@ -437,12 +631,27 @@ void pin_action_availability_preserves_toolbar_groups_and_dispatches_command() {
   }
 
   fixture.widget.set_analysis_available(true);
-  const std::vector<QString> expected{
-      "toolSelect", "separatorAfterSelect", "toolRectangle", "toolEllipse",
-      "toolArrow", "toolText", "separatorBeforeUndo", "actionUndo", "actionRedo",
-      "separatorBeforeAnalyze", "actionAnalyze", "separatorBeforeSave",
-      "actionSaveDefault", "actionSaveAs", "actionCopy", "separatorBeforePin",
-      "actionPinScreenshot", "separatorBeforeCancel", "actionCancel"};
+  const std::vector<QString> expected{"toolSelect",
+                                      "separatorAfterSelect",
+                                      "toolRectangle",
+                                      "toolEllipse",
+                                      "toolLine",
+                                      "toolArrow",
+                                      "toolText",
+                                      "toolBrush",
+                                      "separatorBeforeUndo",
+                                      "actionUndo",
+                                      "actionRedo",
+                                      "separatorBeforeAnalyze",
+                                      "actionAnalyze",
+                                      "separatorBeforeSave",
+                                      "actionSaveDefault",
+                                      "actionSaveAs",
+                                      "actionCopy",
+                                      "separatorBeforePin",
+                                      "actionPinScreenshot",
+                                      "separatorBeforeCancel",
+                                      "actionCancel"};
   std::vector<QString> actual;
   for (int index = 0; index < toolbar->layout()->count(); ++index) {
     const auto* item = toolbar->layout()->itemAt(index)->widget();
@@ -648,7 +857,7 @@ void selected_annotations_resize_and_crop_cannot_exclude_them() {
                 (PixelRect{200, 200, 200, 100}));
 
   send_drag(widget, QPointF(500, 180), QPointF(250, 180));
-  HDRSHOT_CHECK(widget.selection().desktop_rect == (PixelRect{100, 100, 302, 300}));
+  HDRSHOT_CHECK(widget.selection().desktop_rect == (PixelRect{100, 100, 301, 300}));
   HDRSHOT_CHECK(widget.annotations().objects.front().bounds.right() <
                 widget.selection().desktop_rect.right());
 
@@ -690,6 +899,22 @@ void rectangle_and_ellipse_keep_all_eight_resize_handles() {
           fixture.widget.annotations().objects.front().bounds == test_case.expected);
     }
   }
+}
+
+void initial_empty_selection_accepts_roi_then_brush() {
+  TestInputPlatformAdapter input_platform;
+  SolidTextRasterizer text_rasterizer;
+  OverlayEditorWidget widget{PixelSize{1000,600},1.,&text_rasterizer,"",input_platform,
+      SelectionSnapshot{SelectionRevision{1},{}}};
+  widget.resize(1000,600); widget.show(); QApplication::processEvents();
+  send_drag(widget,{100,100},{700,500});
+  HDRSHOT_CHECK(widget.selection().desktop_rect==PixelRect(100,100,600,400));
+  HDRSHOT_CHECK(widget.annotation_render_plan()!=nullptr);
+  HDRSHOT_CHECK(widget.annotation_render_plan()->source_selection_rect_px==widget.selection().desktop_rect);
+  widget.findChild<QToolButton*>(QStringLiteral("toolBrush"))->click();
+  send_drag(widget,{200,200},{400,300});
+  HDRSHOT_CHECK(widget.annotations().objects.size()==1);
+  HDRSHOT_CHECK(widget.annotations().objects.front().kind==AnnotationKind::brush);
 }
 
 void invalid_selection_candidate_does_not_poison_later_drawing() {
@@ -1120,9 +1345,259 @@ void annotation_moves_coalesce_and_release_keeps_final_coordinate() {
 
 }  // namespace
 
+void trial_brush_cursor_area_and_cleanup() {
+  TestInputPlatformAdapter input;
+  SolidTextRasterizer rasterizer;
+  OverlayEditorWidget widget{{1000, 600}, 1.0, &rasterizer, "", input,
+      SelectionSnapshot{SelectionRevision{1}, PixelRect{100, 100, 500, 300}}};
+  widget.resize(1000, 600);
+  widget.show();
+  QApplication::processEvents();
+  auto* brush = widget.findChild<QToolButton*>("toolBrush");
+  auto* line = widget.findChild<QToolButton*>("toolLine");
+  brush->click();
+  send_move(widget, {650, 200});
+  const auto clear = widget.grab().toImage().copy(180, 180, 40, 40);
+  const auto erased = [&] { return widget.grab().toImage().copy(180, 180, 40, 40) == clear; };
+  send_move(widget, {200, 200});
+  HDRSHOT_CHECK(widget.cursor().shape() == Qt::CrossCursor);
+  HDRSHOT_CHECK(!erased());
+  send_move(widget, {650, 200});
+  HDRSHOT_CHECK(widget.cursor().shape() == Qt::ArrowCursor);
+  HDRSHOT_CHECK(erased());
+  send_button(widget, QEvent::MouseButtonPress, {650, 200});
+  send_button(widget, QEvent::MouseButtonRelease, {650, 200});
+  HDRSHOT_CHECK(widget.annotations().objects.empty());
+  send_move(widget, {200, 200});
+  QEvent leave(QEvent::Leave);
+  QApplication::sendEvent(&widget, &leave);
+  HDRSHOT_CHECK(erased());
+  send_move(widget, {200, 200});
+  const auto child_point = brush->mapTo(&widget, brush->rect().center());
+  send_move(widget, child_point);
+  HDRSHOT_CHECK(erased());
+  send_move(widget, {200, 200});
+  widget.set_interaction_locked(true);
+  HDRSHOT_CHECK(widget.cursor().shape() == Qt::ArrowCursor);
+  HDRSHOT_CHECK(erased());
+  widget.set_interaction_locked(false);
+  send_move(widget, {200, 200});
+  line->click();
+  HDRSHOT_CHECK(erased());
+  brush->click();
+  send_move(widget, {600, 400});  // existing inclusive capture boundary
+  HDRSHOT_CHECK(widget.cursor().shape() == Qt::CrossCursor);
+  send_move(widget, {600.25, 400});
+  HDRSHOT_CHECK(widget.cursor().shape() == Qt::ArrowCursor);
+}
+
+void trial_popup_width_and_input() {
+  Fixture fixture;
+  fixture.button("toolBrush")->click();
+  auto* combo = fixture.widget.findChild<QComboBox*>();
+  const auto width = combo->width();
+  const int initial = combo->currentIndex();
+  QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+  QApplication::sendEvent(combo, &down);
+  HDRSHOT_CHECK(combo->currentIndex() == initial + 1);
+  combo->showPopup();
+  QApplication::processEvents();
+  auto* shell = QApplication::activePopupWidget();
+  HDRSHOT_CHECK(shell != nullptr && shell->objectName() == "annotationSizePopup");
+  auto* view = shell->findChild<QListView*>();
+  HDRSHOT_CHECK(view != nullptr && view->model() == combo->model());
+  int widest_text = 0;
+  for (int row = 0; row < combo->count(); ++row) {
+    auto font = combo->font();
+    const auto role = combo->itemData(row, Qt::FontRole);
+    if (role.canConvert<QFont>()) font = qvariant_cast<QFont>(role).resolve(font);
+    const auto advance = QFontMetrics(font).horizontalAdvance(combo->itemText(row));
+    std::cout << "size popup text " << combo->itemText(row).toStdString() << " width=" << advance << '\n';
+    widest_text = std::max(widest_text, advance);
+  }
+  HDRSHOT_CHECK(shell->width() == widest_text + 32 + 18);
+  QImage rendered(shell->size(), QImage::Format_ARGB32_Premultiplied);
+  rendered.fill(Qt::transparent);
+  shell->render(&rendered, QPoint(), QRegion(), QWidget::DrawChildren);
+  HDRSHOT_CHECK(rendered.pixelColor(0,0).alpha() == 0);
+  HDRSHOT_CHECK(rendered.pixelColor(rendered.width()-1,rendered.height()-1).alpha() == 0);
+  const auto point = view->visualRect(combo->model()->index(4, 0)).center();
+  const auto global = view->viewport()->mapToGlobal(point);
+  QMouseEvent press(QEvent::MouseButtonPress, point, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QMouseEvent release(QEvent::MouseButtonRelease, point, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(view->viewport(), &press);
+  QApplication::sendEvent(view->viewport(), &release);
+  HDRSHOT_CHECK(combo->currentData().toInt() == 48);
+  combo->hidePopup();
+  HDRSHOT_CHECK(combo->width() == width);
+  combo->showPopup();
+  shell = QApplication::activePopupWidget();
+  view = shell->findChild<QListView*>();
+  QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+  QApplication::sendEvent(view, &up);
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  QApplication::sendEvent(view, &escape);
+  HDRSHOT_CHECK(!shell->isVisible() && combo->currentData().toInt() == 48);
+  fixture.button("toolLine")->click();
+  HDRSHOT_CHECK(combo->count() == 5);
+  combo->showPopup();
+  shell = QApplication::activePopupWidget();
+  view = shell->findChild<QListView*>();
+  HDRSHOT_CHECK(view->model()->rowCount() == 5);
+  combo->hidePopup();
+  fixture.button("toolText")->click();
+  HDRSHOT_CHECK(combo->count() == 6);
+  combo->showPopup();
+  shell = QApplication::activePopupWidget();
+  HDRSHOT_CHECK(shell != nullptr);
+  fixture.widget.hide();
+  HDRSHOT_CHECK(!shell->isVisible());
+  combo->setEnabled(false);
+  combo->showPopup();
+  HDRSHOT_CHECK(!shell->isVisible());
+  auto* temporary = new AnnotationSizeCombo;
+  temporary->addItem("24 DIP", 24);
+  temporary->show();
+  temporary->showPopup();
+  QPointer<QWidget> owned_popup = QApplication::activePopupWidget();
+  HDRSHOT_CHECK(owned_popup != nullptr);
+  delete temporary;
+  HDRSHOT_CHECK(owned_popup.isNull());
+}
+
+void closed_picker_approved_paint_and_state_recovery() {
+  const auto output = qEnvironmentVariable("SERIOUSSHOT_CLOSED_PICKER_IMAGES");
+  const auto reference = qEnvironmentVariable("SERIOUSSHOT_CLOSED_PICKER_REFERENCE_DIR");
+  if (!reference.isEmpty()) {
+    for (const auto* theme : {"light", "dark"}) for (int value : {2, 24}) for (int state : {0, 1, 3}) {
+      const auto path = QDir(reference).filePath(QString("%1_%2_%3_candidate.png").arg(theme).arg(value).arg(state));
+      const QFileInfo file(path);
+      const QImage expected(path);
+      if (!file.isFile() || !file.isReadable() || expected.isNull()) {
+        std::cerr << "closed picker reference missing, unreadable or invalid: " << path.toStdString()
+                  << "; set SERIOUSSHOT_CLOSED_PICKER_REFERENCE_DIR to the approved reference directory\n";
+        HDRSHOT_CHECK(false);
+      }
+    }
+  }
+  if (!output.isEmpty()) QDir().mkpath(output);
+  for (bool dark : {false, true}) {
+    QFrame context;
+    context.setObjectName("propertyBar");
+    auto palette = QApplication::palette();
+    palette.setColor(QPalette::Window, dark ? QColor("#26292E") : QColor("#F5F6F8"));
+    context.setPalette(palette);
+    context.setStyleSheet(toolbar_style::sheet(dark));
+    AnnotationSizeCombo combo(&context);
+    for (int value : {2, 4, 24, 32, 48, 72}) combo.addItem(QString::number(value) + " DIP", value);
+    combo.setMinimumWidth(76); combo.setFixedHeight(28); combo.resize(76, 28);
+    context.ensurePolished(); combo.ensurePolished();
+    const auto capture = [&](int value, int state) {
+      QImage image(combo.size() * 2, QImage::Format_ARGB32_Premultiplied);
+      image.setDevicePixelRatio(2); image.fill(Qt::transparent);
+      combo.render(&image, QPoint(), QRegion(), QWidget::DrawChildren);
+      const auto stem = QString("%1_%2_%3").arg(dark ? "dark" : "light").arg(value).arg(state);
+      if (!output.isEmpty()) HDRSHOT_CHECK(image.save(output + "/" + stem + "_production.png"));
+      if (!reference.isEmpty() && (state == 0 || state == 1 || state == 3)) {
+        QImage approved(QDir(reference).filePath(stem + "_candidate.png"));
+        HDRSHOT_CHECK(!approved.isNull() && approved.size() == image.size());
+        approved = approved.convertToFormat(image.format());
+        std::size_t differences = 0;
+        for (int y = 0; y < image.height(); ++y)
+          for (int x = 0; x < image.width(); ++x)
+            differences += image.pixel(x, y) != approved.pixel(x, y);
+        std::cout << "approved closed pixels " << stem.toStdString() << " differences=" << differences << '\n';
+        HDRSHOT_CHECK(differences == 0);
+      }
+      return image;
+    };
+    for (int value : {2, 24}) {
+      combo.setCurrentText(QString::number(value) + " DIP");
+      QEvent leave(QEvent::Leave); QApplication::sendEvent(&combo, &leave);
+      const auto normal = capture(value, 0);
+      QEnterEvent enter(QPointF(4,4), QPointF(4,4), QPointF(4,4));
+      QApplication::sendEvent(&combo, &enter);
+      capture(value, 1);
+      const QPointF press_point(65, 14);
+      QMouseEvent press(QEvent::MouseButtonPress, press_point, combo.mapToGlobal(press_point),
+                        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+      QApplication::sendEvent(&combo, &press);
+      auto* popup = QApplication::activePopupWidget();
+      HDRSHOT_CHECK(popup != nullptr && popup->objectName() == "annotationSizePopup");
+      capture(value, 3);
+      auto* list = popup->findChild<QListView*>();
+      QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+      QApplication::sendEvent(list, &escape);  // no release was delivered to the combo
+      HDRSHOT_CHECK(!popup->isVisible() && combo.currentData().toInt() == value);
+      HDRSHOT_CHECK(capture(value, 4) == normal);
+      QKeyEvent open(QEvent::KeyPress, Qt::Key_Down, Qt::AltModifier);
+      QApplication::sendEvent(&combo, &open);
+      popup = QApplication::activePopupWidget();
+      HDRSHOT_CHECK(popup != nullptr);
+      popup->hide();  // same hideEvent path as Qt outside-dismiss; not native input verification
+      HDRSHOT_CHECK(capture(value, 5) == normal);
+      combo.showPopup();
+      combo.setEnabled(false);
+      HDRSHOT_CHECK(QApplication::activePopupWidget() == nullptr);
+      combo.setEnabled(true);
+      HDRSHOT_CHECK(capture(value, 6) == normal);
+    }
+  }
+}
+
+void trial_popup_visuals(const QString& output) {
+  QDir().mkpath(output);
+  const auto original = QApplication::palette();
+  for (bool dark : {false, true}) {
+    auto palette = original;
+    palette.setColor(QPalette::Window, dark ? QColor("#26292E") : QColor("#F5F6F8"));
+    QApplication::setPalette(palette);
+    Fixture fixture;
+    for (const char* tool : {"toolBrush", "toolLine", "toolText"}) {
+      fixture.button(tool)->click();
+      auto* combo = fixture.widget.findChild<QComboBox*>();
+      const auto closed_width = combo->width();
+      for (int selected = 0; selected < combo->count(); ++selected) {
+        combo->setCurrentIndex(selected);
+        combo->showPopup();
+        QApplication::processEvents();
+        auto* shell = QApplication::activePopupWidget();
+        HDRSHOT_CHECK(shell != nullptr);
+        auto* view = shell->findChild<QListView*>();
+        HDRSHOT_CHECK(view != nullptr);
+        std::cout << "POPUP " << dark << ' ' << tool << ' ' << selected
+                  << " closed=" << closed_width << " popup=" << shell->width()
+                  << " natural=" << view->sizeHintForColumn(0)
+                  << " dpr=" << combo->devicePixelRatioF() << '\n';
+        const auto stem = QString("%1_%2_%3").arg(dark ? "dark" : "light").arg(tool).arg(selected);
+        HDRSHOT_CHECK(shell->grab().save(output + "/" + stem + "_popup.png"));
+        if (selected == 2) {
+          const auto hover_point = view->visualRect(combo->model()->index(3, 0)).center();
+          QMouseEvent move(QEvent::MouseMove, hover_point, view->viewport()->mapToGlobal(hover_point),
+                           Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+          QApplication::sendEvent(view->viewport(), &move);
+          QApplication::processEvents();
+          HDRSHOT_CHECK(combo->currentIndex() == selected);
+          HDRSHOT_CHECK(shell->grab().save(output + "/" + stem + "_hover_other.png"));
+        }
+        combo->hidePopup();
+        HDRSHOT_CHECK(combo->grab().save(output + "/" + stem + "_closed.png"));
+        HDRSHOT_CHECK(combo->width() == closed_width);
+      }
+    }
+  }
+  QApplication::setPalette(original);
+}
+
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication application(argc, argv);
+  if (qEnvironmentVariableIsSet("SERIOUSSHOT_TRIAL_UI_CHECKS"))
+    return hdrshot::test::run({{"approved closed picker paint and state recovery", closed_picker_approved_paint_and_state_recovery},
+                               {"brush cursor area and cleanup", trial_brush_cursor_area_and_cleanup},
+                               {"popup natural width and existing keyboard/mouse input", trial_popup_width_and_input}});
+  const auto images = qEnvironmentVariable("SERIOUSSHOT_TRIAL_UI_IMAGES");
+  if (!images.isEmpty()) { trial_popup_visuals(images); return 0; }
   if (qEnvironmentVariableIsSet("HDRSHOT_OVERLAY_DARK")) {
     auto palette = application.palette();
     palette.setColor(QPalette::Window, QColor(30, 30, 30));
@@ -1149,13 +1624,24 @@ int main(int argc, char** argv) {
     widget.resize(1000, 600);
     widget.show();
     QApplication::processEvents();
-    widget.findChild<QToolButton*>(QStringLiteral("toolEllipse"))->click();
+    const bool brush_screenshot = qEnvironmentVariableIsSet("HDRSHOT_OVERLAY_SCREENSHOT_BRUSH");
+    widget.findChild<QToolButton*>(brush_screenshot ? QStringLiteral("toolBrush") : QStringLiteral("toolEllipse"))->click();
+    if (brush_screenshot) {
+      auto *sizes = widget.findChild<QComboBox *>();
+      HDRSHOT_CHECK(sizes->count() == 6);
+      sizes->setCurrentIndex(sizes->findData(72));
+    }
     send_drag(widget, QPointF(280, 170), QPointF(590, 320));
-    widget.findChild<QToolButton*>(QStringLiteral("toolSelect"))->click();
+    if (!brush_screenshot)
+      widget.findChild<QToolButton*>(QStringLiteral("toolSelect"))->click();
+    else
+      send_move(widget, QPointF(680, 270));
     HDRSHOT_CHECK(widget.annotations().objects.size() == 1U);
     HDRSHOT_CHECK(widget.annotations().objects.front().bounds ==
                   (PixelRect{280, 170, 310, 150}));
-    QImage screenshot(widget.size(), QImage::Format_ARGB32_Premultiplied);
+    const auto screenshot_dpr = widget.devicePixelRatioF();
+    QImage screenshot(widget.size() * screenshot_dpr, QImage::Format_ARGB32_Premultiplied);
+    screenshot.setDevicePixelRatio(screenshot_dpr);
     std::size_t annotation_pixels = 0;
     for (int attempt = 0; attempt < 10 && annotation_pixels < 200U; ++attempt) {
       QCoreApplication::sendPostedEvents();
@@ -1183,6 +1669,17 @@ int main(int argc, char** argv) {
     }
   }
   return hdrshot::test::run({
+      {"approved closed picker paint and state recovery", closed_picker_approved_paint_and_state_recovery},
+      {"brush cursor area and cleanup", trial_brush_cursor_area_and_cleanup},
+      {"popup width and existing keyboard/mouse selection", trial_popup_width_and_input},
+      {"brush preserves events and final coordinates",
+       brush_preserves_all_events_and_final_double_coordinates},
+      {"fractional capture scale preserves same-pixel samples",
+       fractional_capture_scale_preserves_subpixel_samples},
+      {"three DIP size groups retain independent values",three_dip_size_groups_and_palette_are_independent},
+      {"brush precise transform undo", brush_transform_is_exact_and_undoable},
+      {"brush actions and interruption cleanup",
+       brush_actions_and_interruptions},
       {"latest annotation moves, final release and interruption",
        annotation_moves_coalesce_and_release_keeps_final_coordinate},
       {"rotation commits exact pose in one undo",
@@ -1243,6 +1740,8 @@ int main(int argc, char** argv) {
        selected_annotations_resize_and_crop_cannot_exclude_them},
       {"rectangle and ellipse keep all resize handles",
        rectangle_and_ellipse_keep_all_eight_resize_handles},
+      {"initial empty selection accepts ROI and brush",
+       initial_empty_selection_accepts_roi_then_brush},
       {"invalid selection candidate preserves drawing",
        invalid_selection_candidate_does_not_poison_later_drawing},
       {"preview rerasterizes only adjusted object",

@@ -10,6 +10,7 @@ template <typename Span> bool valid_samples(const Span& span) {
     if (span.native_samples) return span.clean_composited && span.edge_samples.empty() &&
         span.length > 0 && span.native_sample_offset <= span.native_samples->sample_count() &&
         static_cast<std::size_t>(span.length) <= span.native_samples->sample_count() - span.native_sample_offset;
+    if (span.native_sample_offset != 0) return false;
     if (span.edge_samples.empty()) return !span.clean_composited;
     if (span.edge_samples.size() != static_cast<std::size_t>(span.length)) return false;
     for (const auto& sample : span.edge_samples) {

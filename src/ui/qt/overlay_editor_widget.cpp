@@ -1,10 +1,13 @@
 #include "ui/qt/toolbar_style.hpp"
+#include "ui/qt/annotation_size_combo.hpp"
 #include "ui/qt/status_message_style.hpp"
 #include "ui/qt/overlay_editor_widget.hpp"
 #include "ports/annotation_font_contract.hpp"
 #include "ui/qt/toolbar_symbol_button.hpp"
 
 #include <QComboBox>
+#include <QAbstractItemView>
+#include <QStyle>
 #include <QCursor>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -33,10 +36,11 @@
 namespace hdrshot {
 namespace {
 
-constexpr std::array<std::uint32_t, 7> kColors{
-    0xFF4D67, 0xFFC83D, 0xFF8A34, 0x25C06D, 0x36A3FF, 0xFFFFFF, 0x111111};
-constexpr std::array<std::uint16_t, 5> kLineWidths{2, 4, 6, 8, 12};
-constexpr std::array<std::uint16_t, 6> kFontSizes{12, 16, 20, 24, 32, 48};
+const auto kColors = annotation_palette_srgb();
+constexpr std::array<EditorTool, 7> kTools{
+    EditorTool::select, EditorTool::rectangle, EditorTool::ellipse,
+    EditorTool::line,   EditorTool::arrow,     EditorTool::text,
+    EditorTool::brush};
 
 QCursor rotation_cursor() {
   // Shared vector symbol, black stroke with white surround on either theme.
@@ -184,6 +188,11 @@ void OverlayEditorWidget::clear_window_candidate() {
 }
 void OverlayEditorWidget::interrupt_pointer_gesture() {
   pending_annotation_move_.reset();
+  brush_builder_.cancel();
+  brush_active_ = false;
+  brush_preview_scheduled_ = false;
+  pending_brush_points_.clear();
+  pending_reuse_.reset();
   ++annotation_preview_epoch_;
   clear_window_candidate();
   dragging_selection_ = false;
@@ -238,15 +247,15 @@ void OverlayEditorWidget::build_controls() {
   toolbar_layout_->setContentsMargins(toolbar_style::horizontal_margin, toolbar_style::vertical_margin, toolbar_style::horizontal_margin, toolbar_style::vertical_margin);
   toolbar_layout_->setSpacing(toolbar_style::spacing);
 
-  constexpr std::array<const char*, 5> labels{"选择", "矩形", "圆形", "箭头", "文字"};
-  constexpr std::array<const char*, 5> object_names{
-      "toolSelect", "toolRectangle", "toolEllipse", "toolArrow", "toolText"};
-  constexpr std::array<ToolbarSymbol, 5> symbols{
-      ToolbarSymbol::select,
-      ToolbarSymbol::rectangle,
-      ToolbarSymbol::ellipse,
-      ToolbarSymbol::arrow,
-      ToolbarSymbol::text,
+  constexpr std::array<const char *, 7> labels{"选择", "矩形", "圆形", "直线",
+                                               "箭头", "文字", "画笔"};
+  constexpr std::array<const char *, 7> object_names{
+      "toolSelect", "toolRectangle", "toolEllipse", "toolLine",
+      "toolArrow",  "toolText",      "toolBrush"};
+  constexpr std::array<ToolbarSymbol, 7> symbols{
+      ToolbarSymbol::select, ToolbarSymbol::rectangle, ToolbarSymbol::ellipse,
+      ToolbarSymbol::line,   ToolbarSymbol::arrow,     ToolbarSymbol::text,
+      ToolbarSymbol::brush,
   };
   const auto add_separator = [this](const char* object_name) {
     auto* separator = new QFrame(toolbar_);
@@ -265,7 +274,7 @@ void OverlayEditorWidget::build_controls() {
     button->setFixedSize(toolbar_style::button_size, toolbar_style::button_size);
     button->setToolTip(QString::fromUtf8(labels[index]));
     button->setAccessibleName(QString::fromUtf8(labels[index]));
-    const auto tool = static_cast<EditorTool>(index);
+    const auto tool = kTools[index];
     connect(button, &QToolButton::clicked, this, [this, tool] { choose_tool(tool); });
     toolbar_layout_->addWidget(button);
     tool_buttons_[index] = button;
@@ -383,7 +392,7 @@ void OverlayEditorWidget::build_controls() {
     property_layout_->addWidget(button);
     color_buttons_[index] = button;
   }
-  size_combo_ = new QComboBox(property_bar_);
+  size_combo_ = new AnnotationSizeCombo(property_bar_);
   size_combo_->setFixedHeight(28);
   size_combo_->setMinimumWidth(76);
   connect(
@@ -446,8 +455,14 @@ void OverlayEditorWidget::choose_tool(const EditorTool tool) {
   if (text_editor_ != nullptr && tool != EditorTool::text) {
     if (!finish_pending_text_edit()) return;
   }
+  if (tool != tool_ && tool != EditorTool::select &&
+      document_.snapshot().selected_object_id)
+    if (!apply_document_command(SelectAnnotation{std::nullopt}))
+      return;
   tool_ = tool;
-  tool_buttons_[static_cast<std::size_t>(tool)]->setChecked(true);
+  update_pointer_cursor(mapFromGlobal(QCursor::pos()));
+  for (std::size_t i = 0; i < kTools.size(); ++i)
+    tool_buttons_[i]->setChecked(kTools[i] == tool);
   update_property_controls();
 }
 
@@ -472,10 +487,13 @@ void OverlayEditorWidget::choose_color(const std::uint32_t color_srgb_rgb) {
       AnnotationStyle style;
       if (object->kind == AnnotationKind::text) {
         const auto previous = std::get<TextStyle>(object->style);
-        style = TextStyle{color_srgb_rgb_, previous.font_size_pt};
+        style = TextStyle{color_srgb_rgb_, previous.font_size_dip};
+      } else if (object->kind == AnnotationKind::brush) {
+        style = BrushStyle{color_srgb_rgb_,
+                           std::get<BrushStyle>(object->style).diameter_dip};
       } else {
         const auto previous = std::get<ShapeStyle>(object->style);
-        style = ShapeStyle{color_srgb_rgb_, previous.line_width_px};
+        style = ShapeStyle{color_srgb_rgb_, previous.line_width_dip};
       }
       apply_document_command(RestyleAnnotation{id, style});
     }
@@ -484,8 +502,8 @@ void OverlayEditorWidget::choose_color(const std::uint32_t color_srgb_rgb) {
 
 void OverlayEditorWidget::choose_size(const std::uint16_t value) {
   if (text_editor_ != nullptr && pending_text_style_.has_value()) {
-    font_size_pt_ = value;
-    pending_text_style_->font_size_pt = value;
+    font_size_dip_ = value;
+    pending_text_style_->font_size_dip = value;
     if (pending_text_bounds_.has_value()) {
       pending_text_bounds_ = normalize_text_bounds(
           *pending_text_bounds_, text_editor_->text().toUtf8().toStdString(),
@@ -502,86 +520,57 @@ void OverlayEditorWidget::choose_size(const std::uint16_t value) {
         [id](const AnnotationObject& candidate) { return candidate.id == id; });
     if (object != objects.end()) {
       if (object->kind == AnnotationKind::text) {
-        font_size_pt_ = value;
+        font_size_dip_ = value;
         const auto previous = std::get<TextStyle>(object->style);
-        const auto style = TextStyle{previous.color_srgb_rgb, font_size_pt_};
+        const auto style = TextStyle{previous.color_srgb_rgb, font_size_dip_};
         apply_document_command(UpdateTextAnnotation{
             id,
             normalize_text_bounds(object->bounds, object->text, style),
             style,
             object->text});
+      } else if (object->kind == AnnotationKind::brush) {
+        brush_diameter_dip_ = value;
+        apply_document_command(RestyleAnnotation{
+            id, BrushStyle{std::get<BrushStyle>(object->style).color_srgb_rgb,
+                           value}});
       } else {
-        line_width_px_ = value;
+        line_width_dip_ = value;
         const auto previous = std::get<ShapeStyle>(object->style);
         apply_document_command(RestyleAnnotation{
-            id, ShapeStyle{previous.color_srgb_rgb, line_width_px_}});
+            id, ShapeStyle{previous.color_srgb_rgb, line_width_dip_}});
       }
     }
     return;
   }
   if (tool_ == EditorTool::text) {
-    font_size_pt_ = value;
+    font_size_dip_ = value;
+  } else if (tool_ == EditorTool::brush) {
+    brush_diameter_dip_ = value;
   } else {
-    line_width_px_ = value;
+    line_width_dip_ = value;
   }
 }
 
 bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& command) {
   flush_pending_annotation_move();
-  auto result = AnnotationDocument::apply(document_, command);
+  if (std::holds_alternative<UndoAnnotation>(command) ||
+      std::holds_alternative<RedoAnnotation>(command) ||
+      std::holds_alternative<DeleteAnnotation>(command))
+    interrupt_pointer_gesture();
+  auto result = prepare_annotation_edit(
+      document_, annotation_render_plan_.get(), command, edit_context(),
+      pending_reuse_ ? &*pending_reuse_ : nullptr);
   if (!result) {
-    return false;
-  }
-  auto plan = [&]() -> Result<AnnotationRenderPlan, Error> {
-    const auto& next = result.value().snapshot();
-    if (!annotation_render_plan_ ||
-        annotation_render_plan_->source_selection_rect_px != selection_.desktop_rect) {
-      return AnnotationRenderPlanner::build(
-          next, selection_.desktop_rect, point_pixel_scale_, text_rasterizer_,
-          &annotation_coverage_cache_);
-    }
-    AnnotationRenderPlan reused{next.revision, annotation_render_plan_->output_size_px,
-        {}, selection_.desktop_rect};
-    const auto previous = document_.snapshot();
-    for (const auto& object : next.objects) {
-      const auto same = std::find(previous.objects.begin(), previous.objects.end(), object);
-      const auto layer = std::find_if(annotation_render_plan_->ordered_layers.begin(),
-          annotation_render_plan_->ordered_layers.end(),
-          [&](const auto& value) { return value.object_id == object.id; });
-      if (same != previous.objects.end() && layer != annotation_render_plan_->ordered_layers.end()) {
-        reused.ordered_layers.push_back(*layer);
-      } else if (draft_annotation_ && *draft_annotation_ == object && transient_annotation_render_plan_) {
-        const auto draft = std::find_if(transient_annotation_render_plan_->ordered_layers.begin(),
-            transient_annotation_render_plan_->ordered_layers.end(),
-            [&](const auto& value) { return value.object_id == object.id; });
-        if (draft != transient_annotation_render_plan_->ordered_layers.end()) {
-          reused.ordered_layers.push_back(*draft);
-        } else return Result<AnnotationRenderPlan, Error>::failure(Error{
-            ErrorCode::state_inconsistent, "OverlayEditorWidget", Retryability::never, {}});
-      } else {
-        auto single = next; single.objects = {object};
-        auto built = AnnotationRenderPlanner::build(
-            single, selection_.desktop_rect, point_pixel_scale_,
-            text_rasterizer_, &annotation_coverage_cache_);
-        if (!built) return built;
-        reused.ordered_layers.insert(reused.ordered_layers.end(),
-            built.value().ordered_layers.begin(), built.value().ordered_layers.end());
-      }
-    }
-    return Result<AnnotationRenderPlan, Error>::success(std::move(reused));
-  }();
-  if (!plan) {
     show_status(
         QStringLiteral("标注渲染计划无效：%1")
-            .arg(QString::fromStdString(to_string(plan.error().code))),
+            .arg(QString::fromStdString(to_string(result.error().code))),
         true);
     return false;
   }
   ++annotation_preview_epoch_;
-  document_ = std::move(result.value());
+  document_ = std::move(result.value().document);
+  annotation_render_plan_ = std::move(result.value().plan);
   transient_annotation_render_plan_.reset();
-  annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(
-      std::move(plan.value()));
   update_property_controls();
   update();
   notify_preview_changed();
@@ -590,9 +579,9 @@ bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& comman
 
 void OverlayEditorWidget::request_action(const UiCommand command) {
   if (command == UiCommand::cancel_capture)
-    pending_annotation_move_.reset();
-  else
-    flush_pending_annotation_move();
+    interrupt_pointer_gesture();
+  else if (!finish_pending_pointer_edit())
+    return;
   if (command != UiCommand::cancel_capture && selection_.desktop_rect.empty()) return;
   // Explicit completion, not focus loss: property controls must keep editing
   // the same pending text. Snapshot consumers only see committed model/plan.
@@ -613,8 +602,11 @@ bool OverlayEditorWidget::rebuild_render_plan() {
       show_status(QStringLiteral("空选区不能包含标注"), true);
       return false;
     }
-    annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(
-        AnnotationRenderPlan{document_.snapshot().revision, {}, {}, {}});
+    auto prepared = prepare_selection_change(document_, nullptr, selection_,
+                                             edit_context());
+    if (!prepared)
+      return false;
+    annotation_render_plan_ = std::move(prepared.value().plan);
     return true;
   }
   auto plan = AnnotationRenderPlanner::build(
@@ -636,44 +628,14 @@ bool OverlayEditorWidget::apply_selection_candidate(SelectionSnapshot candidate)
   if (candidate == selection_) {
     return true;
   }
-  if (candidate.desktop_rect.empty()) {
-    if (!document_.snapshot().objects.empty()) {
-      return false;
-    }
-    selection_ = candidate;
-    transient_annotation_render_plan_.reset();
-    annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(
-        AnnotationRenderPlan{document_.snapshot().revision, {}, {}, {}});
-    notify_preview_changed();
-    return true;
-  }
 
-  std::optional<AnnotationRenderPlan> next_plan;
-  const bool can_rebase = annotation_render_plan_ != nullptr &&
-      annotation_render_plan_->source_document_revision == document_.snapshot().revision &&
-      !annotation_render_plan_->source_selection_rect_px.empty();
-  if (can_rebase) {
-    auto rebased = AnnotationRenderPlanner::rebase(
-        *annotation_render_plan_, candidate.desktop_rect);
-    if (!rebased) {
-      return false;
-    }
-    next_plan = std::move(rebased.value());
-  }
-  if (!next_plan.has_value()) {
-    auto built = AnnotationRenderPlanner::build(
-        document_.snapshot(), candidate.desktop_rect, point_pixel_scale_,
-        text_rasterizer_, &annotation_coverage_cache_);
-    if (!built) {
-      return false;
-    }
-    next_plan = std::move(built.value());
-  }
-
-  selection_ = candidate;
+  auto prepared = prepare_selection_change(
+      document_, annotation_render_plan_.get(), candidate, edit_context());
+  if (!prepared)
+    return false;
+  selection_ = prepared.value().selection;
+  annotation_render_plan_ = std::move(prepared.value().plan);
   transient_annotation_render_plan_.reset();
-  annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(
-      std::move(*next_plan));
   notify_preview_changed();
   return true;
 }
@@ -700,42 +662,48 @@ void OverlayEditorWidget::update_property_controls() {
   }
 
   bool use_text_sizes = tool_ == EditorTool::text;
+  bool use_brush_sizes = tool_ == EditorTool::brush;
   std::uint32_t displayed_color = color_srgb_rgb_;
-  std::uint16_t displayed_size = use_text_sizes ? font_size_pt_ : line_width_px_;
+  std::uint16_t displayed_size = use_text_sizes    ? font_size_dip_
+                                 : use_brush_sizes ? brush_diameter_dip_
+                                                   : line_width_dip_;
   if (editing_text) {
     use_text_sizes = true;
+    use_brush_sizes = false;
     displayed_color = pending_text_style_->color_srgb_rgb;
-    displayed_size = pending_text_style_->font_size_pt;
+    displayed_size = pending_text_style_->font_size_dip;
   } else if (selected_object != nullptr) {
     use_text_sizes = selected_object->kind == AnnotationKind::text;
+    use_brush_sizes = selected_object->kind == AnnotationKind::brush;
     if (use_text_sizes) {
       const auto style = std::get<TextStyle>(selected_object->style);
       displayed_color = style.color_srgb_rgb;
-      displayed_size = style.font_size_pt;
+      displayed_size = style.font_size_dip;
       color_srgb_rgb_ = displayed_color;
-      font_size_pt_ = displayed_size;
+      font_size_dip_ = displayed_size;
+    } else if (use_brush_sizes) {
+      auto style = std::get<BrushStyle>(selected_object->style);
+      displayed_color = style.color_srgb_rgb;
+      displayed_size = style.diameter_dip;
+      brush_diameter_dip_ = displayed_size;
+      color_srgb_rgb_ = displayed_color;
     } else {
       const auto style = std::get<ShapeStyle>(selected_object->style);
       displayed_color = style.color_srgb_rgb;
-      displayed_size = style.line_width_px;
+      displayed_size = style.line_width_dip;
       color_srgb_rgb_ = displayed_color;
-      line_width_px_ = displayed_size;
+      line_width_dip_ = displayed_size;
     }
   }
 
   const QSignalBlocker blocker(size_combo_);
   size_combo_->clear();
-  if (use_text_sizes) {
-    for (const auto value : kFontSizes) {
-      size_combo_->addItem(QString::number(value) + " pt", value);
-    }
-    size_combo_->setCurrentText(QString::number(displayed_size) + " pt");
-  } else {
-    for (const auto value : kLineWidths) {
-      size_combo_->addItem(QString::number(value) + " px", value);
-    }
-    size_combo_->setCurrentText(QString::number(displayed_size) + " px");
-  }
+  for (auto value :
+       annotation_sizes_dip(use_text_sizes    ? AnnotationKind::text
+                            : use_brush_sizes ? AnnotationKind::brush
+                                              : AnnotationKind::rectangle))
+    size_combo_->addItem(QString::number(value) + " DIP", value);
+  size_combo_->setCurrentText(QString::number(displayed_size) + " DIP");
   const auto selected_color = std::find(kColors.begin(), kColors.end(), displayed_color);
   if (selected_color != kColors.end()) {
     color_buttons_[static_cast<std::size_t>(selected_color - kColors.begin())]->setChecked(true);
@@ -826,26 +794,26 @@ void OverlayEditorWidget::draw_coverage_layer(
     const auto row = span.y - layer.bounds_px.y;
     const auto start = span.x - layer.bounds_px.x;
     if (row < 0 || row >= image.height() || start < 0 ||
-        start + static_cast<std::int32_t>(span.coverage_u8.size()) > image.width()) {
+        start + static_cast<std::int32_t>(span.length()) > image.width()) {
       continue;
     }
     auto* pixels = image.scanLine(row);
-    for (std::size_t offset = 0; offset < span.coverage_u8.size(); ++offset) {
+    for (std::size_t offset = 0; offset < span.length(); ++offset) {
       const auto column = start + static_cast<std::int32_t>(offset);
       pixels[column * 4] = static_cast<uchar>(color.red());
       pixels[column * 4 + 1] = static_cast<uchar>(color.green());
       pixels[column * 4 + 2] = static_cast<uchar>(color.blue());
-      pixels[column * 4 + 3] = span.coverage_u8[offset];
+      pixels[column * 4 + 3] = span.coverage_at(offset);
     }
   }
   painter.drawImage(to_widget_output_rect(layer.bounds_px), image);
 }
 
-void OverlayEditorWidget::paintEvent(QPaintEvent*) {
+void OverlayEditorWidget::paintEvent(QPaintEvent *event) {
   QPainter painter(this);
   // The translucent native child has a persistent backing store on macOS.
   painter.setCompositionMode(QPainter::CompositionMode_Source);
-  painter.fillRect(rect(), QColor(0, 0, 0, 0));
+  painter.fillRect(event->rect(), QColor(0, 0, 0, 0));
   painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
   // Clear old marks in the new hole before clipping new editor decoration.
   // The image itself belongs to the native HDR underlay.
@@ -855,9 +823,26 @@ void OverlayEditorWidget::paintEvent(QPaintEvent*) {
       ? transient_annotation_render_plan_
       : annotation_render_plan_;
   if (render_plan != nullptr && !clean_content_presented_) {
-    for (const auto& layer : render_plan->ordered_layers) {
-      draw_coverage_layer(painter, layer);
+    if (painted_plan_ != render_plan || painted_coverage_.size() != size()) {
+      painted_coverage_ = QImage(size(), QImage::Format_ARGB32_Premultiplied);
+      painted_coverage_.fill(Qt::transparent);
+      QPainter coverage_painter(&painted_coverage_);
+      for (const auto &layer : render_plan->ordered_layers)
+        draw_coverage_layer(coverage_painter, layer);
+      painted_plan_ = render_plan;
     }
+    painter.drawImage(QPoint(0, 0), painted_coverage_);
+  }
+
+  if (tool_ == EditorTool::brush && brush_cursor_position_) {
+    auto diameter = brush_diameter_dip_ * point_pixel_scale_ * width() /
+                    std::max(1, capture_size_px_.width);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(Qt::black, 3));
+    painter.drawEllipse(*brush_cursor_position_, diameter / 2, diameter / 2);
+    painter.setPen(QPen(Qt::white, 1));
+    painter.drawEllipse(*brush_cursor_position_, diameter / 2, diameter / 2);
   }
 
   for (const auto& object : document_.snapshot().objects) {
@@ -885,10 +870,33 @@ void OverlayEditorWidget::paintEvent(QPaintEvent*) {
       const auto draw_handle = [&](const QPointF point) {
         painter.drawEllipse(point, handle_radius, handle_radius);
       };
-      if (displayed_object.kind == AnnotationKind::arrow &&
+      if ((displayed_object.kind == AnnotationKind::arrow ||
+           displayed_object.kind == AnnotationKind::line) &&
           displayed_object.arrow_geometry.has_value()) {
         draw_handle(to_widget_point(displayed_object.arrow_geometry->start));
         draw_handle(to_widget_point(displayed_object.arrow_geometry->end));
+      } else if (displayed_object.kind == AnnotationKind::brush &&
+                 displayed_object.brush_geometry) {
+        auto b = brush_centerline_bounds(*displayed_object.brush_geometry);
+        auto tl = shape_widget_point({b.left, b.top}),
+             br = shape_widget_point({b.right, b.bottom});
+        bool x = b.right > b.left, y = b.bottom > b.top;
+        if (x && y) {
+          draw_handle(tl);
+          draw_handle({br.x(), tl.y()});
+          draw_handle(br);
+          draw_handle({tl.x(), br.y()});
+        }
+        if (x) {
+          draw_handle({tl.x(), (tl.y() + br.y()) / 2});
+          draw_handle({br.x(), (tl.y() + br.y()) / 2});
+        }
+        if (y) {
+          draw_handle({(tl.x() + br.x()) / 2, tl.y()});
+          draw_handle({(tl.x() + br.x()) / 2, br.y()});
+        }
+        if (!x && !y)
+          draw_handle(tl);
       } else if (is_rotatable(displayed_object)) {
         for (const auto point : oriented_handles) draw_handle(point);
       } else {
@@ -981,6 +989,7 @@ void OverlayEditorWidget::mousePressEvent(QMouseEvent* event) {
       const auto* object = selected_object();
       if (object != nullptr) {
         drag_anchor_ = capture_point;
+        brush_drag_anchor_ = to_brush_point(event->position());
         drag_current_ = drag_anchor_;
         annotation_adjustment_ = adjustment;
         annotation_drag_origin_ = *object;
@@ -1014,8 +1023,14 @@ void OverlayEditorWidget::mousePressEvent(QMouseEvent* event) {
     }
     apply_document_command(SelectAnnotation{std::nullopt});
   } else {
-    if (!capture_point_in_selection(capture_point)) {
+    if (tool_ != EditorTool::brush &&
+        !capture_point_in_selection(capture_point)) {
       event->ignore();
+      return;
+    }
+    if (tool_ == EditorTool::brush) {
+      begin_brush_stroke(event->position());
+      event->accept();
       return;
     }
     if (tool_ == EditorTool::text) {
@@ -1054,6 +1069,33 @@ void OverlayEditorWidget::flush_pending_annotation_move() {
 }
 
 void OverlayEditorWidget::mouseMoveEvent(QMouseEvent* event) {
+  if (brush_active_) {
+    if (brush_builder_.sealed()) {
+      event->accept();
+      return;
+    }
+    last_brush_point_ = to_brush_point(event->position());
+    pending_brush_points_.push_back(last_brush_point_);
+    if (!brush_preview_scheduled_) {
+      brush_preview_scheduled_ = true;
+      const auto epoch = annotation_preview_epoch_;
+      QTimer::singleShot(0, this, [this, epoch] {
+        if (epoch == annotation_preview_epoch_) {
+          brush_preview_scheduled_ = false;
+          flush_pending_brush_preview();
+        }
+      });
+    }
+    update_pointer_cursor(event->position());
+    event->accept();
+    return;
+  }
+  if (dragging_annotation_transform_ && annotation_drag_origin_ &&
+      annotation_drag_origin_->kind == AnnotationKind::brush) {
+    update_brush_transform(event->position());
+    event->accept();
+    return;
+  }
   // Rotation has path-dependent boundary latching; keep its event sequence.
   if (coalesce_annotation_moves_ && !processing_annotation_move_ &&
       !rotation_drag_ &&
@@ -1093,7 +1135,9 @@ void OverlayEditorWidget::mouseMoveEvent(QMouseEvent* event) {
     }
     layout_controls();
   } else if (dragging_annotation_transform_) {
-    if (rotation_drag_) (void)rotation_drag_->update(to_shape_point(event->position()),active_drawing_bounds());
+    if (rotation_drag_)
+      (void)rotation_drag_->update(to_shape_point(event->position()),
+                                   active_drawing_bounds(), annotation_scale());
     update_annotation_drag_preview(to_capture_point(event->position()));
   } else {
     drag_current_ = to_drawing_point(event->position());
@@ -1104,6 +1148,20 @@ void OverlayEditorWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void OverlayEditorWidget::mouseReleaseEvent(QMouseEvent* event) {
+  if (event->button() == Qt::LeftButton && brush_active_) {
+    finish_brush_stroke(to_brush_point(event->position()));
+    event->accept();
+    return;
+  }
+  if (event->button() == Qt::LeftButton && dragging_annotation_transform_ &&
+      annotation_drag_origin_ &&
+      annotation_drag_origin_->kind == AnnotationKind::brush) {
+    update_brush_transform(event->position());
+    finish_pending_pointer_edit();
+    event->accept();
+    return;
+  }
+
   // Release uses its own final coordinate below; no need to build the queued
   // move.
   if (event->button() == Qt::LeftButton) {
@@ -1149,7 +1207,9 @@ void OverlayEditorWidget::mouseReleaseEvent(QMouseEvent* event) {
     (void)candidate_applied;
     layout_controls();
   } else if (dragging_annotation_transform_) {
-    if (rotation_drag_) (void)rotation_drag_->update(to_shape_point(event->position()),active_drawing_bounds());
+    if (rotation_drag_)
+      (void)rotation_drag_->update(to_shape_point(event->position()),
+                                   active_drawing_bounds(), annotation_scale());
     update_annotation_drag_preview(to_capture_point(event->position()));
     const auto original = annotation_drag_origin_;
     const auto preview = annotation_drag_preview_;
@@ -1160,7 +1220,9 @@ void OverlayEditorWidget::mouseReleaseEvent(QMouseEvent* event) {
     rotation_drag_.reset();
     transient_annotation_render_plan_.reset();
     if (original.has_value() && preview.has_value() && *original != *preview) {
-      if (preview->kind == AnnotationKind::arrow && preview->arrow_geometry.has_value()) {
+      if ((preview->kind == AnnotationKind::arrow ||
+           preview->kind == AnnotationKind::line) &&
+          preview->arrow_geometry.has_value()) {
         apply_document_command(SetArrowGeometry{preview->id, *preview->arrow_geometry});
       } else if (preview->kind == AnnotationKind::text) {
         apply_document_command(UpdateTextAnnotation{
@@ -1215,6 +1277,7 @@ std::optional<SelectionAdjustment> OverlayEditorWidget::selection_adjustment_at(
 }
 
 void OverlayEditorWidget::leaveEvent(QEvent* event) {
+  if (tool_ == EditorTool::brush) update_pointer_cursor(QPointF(-1, -1));
   if (window_selection_) {
     const auto previous = initial_highlight();
     window_selection_->leave();
@@ -1233,6 +1296,14 @@ void OverlayEditorWidget::enterEvent(QEnterEvent* event) {
 }
 
 void OverlayEditorWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+  if (tool_ == EditorTool::brush && last_press_had_selection_ &&
+      !selection_.desktop_rect.empty()) {
+    if (event->button() == Qt::LeftButton &&
+        (!interaction_started_ || interaction_started_()))
+      begin_brush_stroke(event->position());
+    event->accept();
+    return;
+  }
   // A double click in a selected object's transform zone remains editing.
   if (tool_ == EditorTool::select) {
     const auto adjustment=annotation_adjustment_at(event->position());
@@ -1297,8 +1368,9 @@ void OverlayEditorWidget::finish_annotation(const PixelPoint end) {
         drag_anchor_.x,
         drag_anchor_.y,
         static_cast<std::int32_t>(std::ceil(320.0 * point_pixel_scale_)),
-        static_cast<std::int32_t>(std::ceil(
-            (static_cast<double>(font_size_pt_) * 1.4 + 12.0) * point_pixel_scale_)),
+        static_cast<std::int32_t>(
+            std::ceil((static_cast<double>(font_size_dip_) * 1.4 + 12.0) *
+                      point_pixel_scale_)),
     };
   }
   if (tool_ == EditorTool::text) {
@@ -1311,10 +1383,9 @@ void OverlayEditorWidget::finish_annotation(const PixelPoint end) {
       (bounds.width < minimum_shape_extent || bounds.height < minimum_shape_extent)) {
     return;
   }
-  if (tool_ == EditorTool::arrow &&
-      std::hypot(
-          static_cast<double>(end.x - drag_anchor_.x),
-          static_cast<double>(end.y - drag_anchor_.y)) <
+  if ((tool_ == EditorTool::arrow || tool_ == EditorTool::line) &&
+      std::hypot(static_cast<double>(end.x - drag_anchor_.x),
+                 static_cast<double>(end.y - drag_anchor_.y)) <
           std::ceil(6.0 * point_pixel_scale_)) {
     return;
   }
@@ -1325,17 +1396,20 @@ void OverlayEditorWidget::finish_annotation(const PixelPoint end) {
   switch (tool_) {
     case EditorTool::rectangle:
       object.kind = AnnotationKind::rectangle;
-      object.style = ShapeStyle{color_srgb_rgb_, line_width_px_};
+      object.style = ShapeStyle{color_srgb_rgb_, line_width_dip_};
       break;
     case EditorTool::ellipse:
       object.kind = AnnotationKind::ellipse;
-      object.style = ShapeStyle{color_srgb_rgb_, line_width_px_};
+      object.style = ShapeStyle{color_srgb_rgb_, line_width_dip_};
       break;
+    case EditorTool::line:
     case EditorTool::arrow:
-      object.kind = AnnotationKind::arrow;
-      object.style = ShapeStyle{color_srgb_rgb_, line_width_px_};
+      object.kind = tool_ == EditorTool::line ? AnnotationKind::line
+                                              : AnnotationKind::arrow;
+      object.style = ShapeStyle{color_srgb_rgb_, line_width_dip_};
       object.arrow_geometry = ArrowGeometry{drag_anchor_, end};
       break;
+    case EditorTool::brush:
     case EditorTool::text:
       return;
     case EditorTool::select:
@@ -1349,15 +1423,16 @@ PixelRect OverlayEditorWidget::normalize_text_bounds(
     const std::string& text,
     const std::optional<TextStyle> style) const {
   const auto drawing_bounds = active_drawing_bounds();
-  const auto effective_style = style.value_or(TextStyle{color_srgb_rgb_, font_size_pt_});
+  const auto effective_style =
+      style.value_or(TextStyle{color_srgb_rgb_, font_size_dip_});
   const auto minimum_height = static_cast<std::int32_t>(std::ceil(
-      (static_cast<double>(effective_style.font_size_pt) * 1.4 + 12.0) *
+      (static_cast<double>(effective_style.font_size_dip) * 1.4 + 12.0) *
       point_pixel_scale_));
   auto minimum_width = static_cast<std::int32_t>(std::ceil(80.0 * point_pixel_scale_));
   auto measured_height = minimum_height;
   if (text_rasterizer_ != nullptr && !text.empty()) {
     const auto metrics = text_rasterizer_->measure(TextMeasureRequest{
-        text, effective_style.font_size_pt, point_pixel_scale_});
+        text, effective_style.font_size_dip, point_pixel_scale_});
     if (metrics) {
       minimum_width = std::max(
           minimum_width, metrics.value().minimum_mask_size_px.width +
@@ -1376,13 +1451,13 @@ PixelRect OverlayEditorWidget::normalize_text_bounds(
   return bounds;
 }
 
-int OverlayEditorWidget::text_editor_font_pixel_size(const std::uint16_t font_size_pt) const {
+int OverlayEditorWidget::text_editor_font_pixel_size(
+    const std::uint16_t font_size_dip) const {
   const auto capture_to_widget = static_cast<double>(height()) /
       static_cast<double>(std::max(1, capture_size_px_.height));
   return std::max(
-      1,
-      static_cast<int>(std::lround(
-          static_cast<double>(font_size_pt) * point_pixel_scale_ * capture_to_widget)));
+      1, static_cast<int>(std::lround(static_cast<double>(font_size_dip) *
+                                      point_pixel_scale_ * capture_to_widget)));
 }
 
 void OverlayEditorWidget::begin_text_edit(const PixelRect bounds) {
@@ -1392,7 +1467,7 @@ void OverlayEditorWidget::begin_text_edit(const PixelRect bounds) {
   apply_document_command(SelectAnnotation{std::nullopt});
   editing_text_object_id_.reset();
   pending_text_bounds_ = bounds;
-  pending_text_style_ = TextStyle{color_srgb_rgb_, font_size_pt_};
+  pending_text_style_ = TextStyle{color_srgb_rgb_, font_size_dip_};
   text_editor_ = new QLineEdit(this);
   text_editor_->setObjectName("annotationTextEditor");
   text_editor_->setPlaceholderText(QStringLiteral("输入文字，Enter 确认，Esc 取消"));
@@ -1441,7 +1516,8 @@ bool OverlayEditorWidget::commit_text_edit() {
   const auto text = text_editor_->text().trimmed();
   const auto bounds = normalize_text_bounds(
       *pending_text_bounds_, text.toUtf8().toStdString(), pending_text_style_);
-  const auto style = pending_text_style_.value_or(TextStyle{color_srgb_rgb_, font_size_pt_});
+  const auto style =
+      pending_text_style_.value_or(TextStyle{color_srgb_rgb_, font_size_dip_});
   const auto editing_id = editing_text_object_id_;
   if (text.isEmpty()) {
     cancel_text_edit();
@@ -1492,7 +1568,8 @@ void OverlayEditorWidget::update_pending_text_editor_style() {
   font.setHintingPreference(QFont::PreferNoHinting);
   font.setStyleStrategy(static_cast<QFont::StyleStrategy>(
       QFont::PreferAntialias | QFont::NoFontMerging));
-  font.setPixelSize(text_editor_font_pixel_size(pending_text_style_->font_size_pt));
+  font.setPixelSize(
+      text_editor_font_pixel_size(pending_text_style_->font_size_dip));
   text_editor_->setFont(font);
   text_editor_->setStyleSheet(QString(
       "QLineEdit { color: #%1; background: rgba(8,21,37,220);"
@@ -1538,14 +1615,14 @@ PixelRect OverlayEditorWidget::annotation_bounds() const {
     auto bottom = std::numeric_limits<std::int32_t>::min();
     for (const auto& layer : annotation_render_plan_->ordered_layers) {
       for (const auto& span : layer.spans) {
-        if (span.coverage_u8.empty()) {
+        if (span.length() == 0) {
           continue;
         }
         left = std::min(left, span.x);
         top = std::min(top, span.y);
         right = std::max(
             right,
-            span.x + static_cast<std::int32_t>(span.coverage_u8.size()));
+            span.x + static_cast<std::int32_t>(span.length()));
         bottom = std::max(bottom, span.y + 1);
       }
     }
@@ -1600,7 +1677,9 @@ std::optional<AnnotationAdjustment> OverlayEditorWidget::annotation_adjustment_a
   const auto near = [point](const QPointF target) {
     return std::hypot(point.x() - target.x(), point.y() - target.y()) <= tolerance;
   };
-  if (object->kind == AnnotationKind::arrow && object->arrow_geometry.has_value()) {
+  if ((object->kind == AnnotationKind::arrow ||
+       object->kind == AnnotationKind::line) &&
+      object->arrow_geometry.has_value()) {
     const auto start = to_widget_point(object->arrow_geometry->start);
     const auto end = to_widget_point(object->arrow_geometry->end);
     if (near(start)) return AnnotationAdjustment::arrow_start;
@@ -1622,6 +1701,39 @@ std::optional<AnnotationAdjustment> OverlayEditorWidget::annotation_adjustment_a
     return std::nullopt;
   }
 
+  if (object->kind == AnnotationKind::brush && object->brush_geometry) {
+    auto b = brush_centerline_bounds(*object->brush_geometry);
+    auto tl = shape_widget_point({b.left, b.top}),
+         br = shape_widget_point({b.right, b.bottom});
+    const bool x = b.right > b.left, y = b.bottom > b.top;
+    if (x && y) {
+      if (near(tl))
+        return AnnotationAdjustment::north_west;
+      if (near({br.x(), tl.y()}))
+        return AnnotationAdjustment::north_east;
+      if (near(br))
+        return AnnotationAdjustment::south_east;
+      if (near({tl.x(), br.y()}))
+        return AnnotationAdjustment::south_west;
+    }
+    if (y) {
+      if (near({(tl.x() + br.x()) / 2, tl.y()}))
+        return AnnotationAdjustment::north;
+      if (near({(tl.x() + br.x()) / 2, br.y()}))
+        return AnnotationAdjustment::south;
+    }
+    if (x) {
+      if (near({tl.x(), (tl.y() + br.y()) / 2}))
+        return AnnotationAdjustment::west;
+      if (near({br.x(), (tl.y() + br.y()) / 2}))
+        return AnnotationAdjustment::east;
+    }
+    auto p = to_shape_point(point);
+    return brush_hit_test(*object, {p.x, p.y}, tolerance * point_pixel_scale_,
+                          annotation_scale())
+               ? std::optional{AnnotationAdjustment::move}
+               : std::nullopt;
+  }
   const auto bounds = to_widget_rect(object->bounds);
   const auto extended = bounds.adjusted(-tolerance, -tolerance, tolerance, tolerance);
   if (!extended.contains(point)) {
@@ -1639,6 +1751,13 @@ std::optional<AnnotationAdjustment> OverlayEditorWidget::annotation_adjustment_a
   if (near_right) return AnnotationAdjustment::east;
   if (near_bottom) return AnnotationAdjustment::south;
   if (near_left) return AnnotationAdjustment::west;
+  if (object->kind == AnnotationKind::brush) {
+    auto p = to_shape_point(point);
+    return brush_hit_test(*object, {p.x, p.y}, tolerance * point_pixel_scale_,
+                          annotation_scale())
+               ? std::optional{AnnotationAdjustment::move}
+               : std::nullopt;
+  }
   if (bounds.contains(point)) return AnnotationAdjustment::move;
   return std::nullopt;
 }
@@ -1652,12 +1771,17 @@ AnnotationObject OverlayEditorWidget::adjusted_annotation(
   const auto limits = active_drawing_bounds();
   if (is_rotatable(origin)) {
     if (adjustment == AnnotationAdjustment::move)
-      return move_shape(origin,{static_cast<double>(current.x-anchor.x),
-                                static_cast<double>(current.y-anchor.y)},limits);
-    return resize_shape(origin,adjustment,
-        {static_cast<double>(anchor.x),static_cast<double>(anchor.y)},
-        {static_cast<double>(current.x),static_cast<double>(current.y)},limits,
-        std::max(4,static_cast<int>(std::ceil(4.0*point_pixel_scale_))));
+      return move_shape(origin,
+                        {static_cast<double>(current.x - anchor.x),
+                         static_cast<double>(current.y - anchor.y)},
+                        limits, annotation_scale());
+    return resize_shape(
+        origin, adjustment,
+        {static_cast<double>(anchor.x), static_cast<double>(anchor.y)},
+        {static_cast<double>(current.x), static_cast<double>(current.y)},
+        limits,
+        std::max(4, static_cast<int>(std::ceil(4.0 * point_pixel_scale_))),
+        annotation_scale());
   }
   if (adjustment == AnnotationAdjustment::move) {
     const auto requested_x = current.x - anchor.x;
@@ -1746,21 +1870,22 @@ void OverlayEditorWidget::update_new_annotation_preview(const PixelPoint current
   AnnotationObject preview;
   preview.id = next_object_id_;
   preview.bounds = normalized_rect(drag_anchor_, current);
-  preview.style = ShapeStyle{color_srgb_rgb_, line_width_px_};
+  preview.style = ShapeStyle{color_srgb_rgb_, line_width_dip_};
   preview.kind = tool_ == EditorTool::ellipse ? AnnotationKind::ellipse
-      : tool_ == EditorTool::arrow ? AnnotationKind::arrow : AnnotationKind::rectangle;
-  if (preview.kind == AnnotationKind::arrow) preview.arrow_geometry = ArrowGeometry{drag_anchor_, current};
+                 : tool_ == EditorTool::arrow ? AnnotationKind::arrow
+                 : tool_ == EditorTool::line  ? AnnotationKind::line
+                                              : AnnotationKind::rectangle;
+  if (preview.kind == AnnotationKind::arrow ||
+      preview.kind == AnnotationKind::line)
+    preview.arrow_geometry = ArrowGeometry{drag_anchor_, current};
   if (draft_annotation_ && *draft_annotation_ == preview) return;
-  auto built = AnnotationRenderPlanner::build(
-      AnnotationDocumentSnapshot{
-          document_.snapshot().revision, {preview}, std::nullopt, false, false},
-      selection_.desktop_rect, point_pixel_scale_, text_rasterizer_,
-      &annotation_coverage_cache_);
-  if (!built || built.value().ordered_layers.empty()) return;
-  auto next = *annotation_render_plan_;
-  next.ordered_layers.push_back(std::move(built.value().ordered_layers.front()));
+  auto built = prepare_annotation_preview(
+      document_, annotation_render_plan_.get(),
+      ObjectPreview{PreviewIntent::create, preview, {}}, edit_context());
+  if (!built)
+    return;
   draft_annotation_ = preview;
-  transient_annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(std::move(next));
+  transient_annotation_render_plan_ = std::move(built.value());
   if (clean_content_presented_) notify_preview_changed();
 }
 
@@ -1771,46 +1896,54 @@ void OverlayEditorWidget::update_annotation_drag_preview(const PixelPoint curren
   auto preview = rotation_drag_
       ? rotation_drag_->preview()
       : adjusted_annotation(*annotation_drag_origin_, *annotation_adjustment_, drag_anchor_, current);
-  auto snapshot = document_.snapshot();
-  const auto found = std::find_if(
-      snapshot.objects.begin(), snapshot.objects.end(),
-      [&preview](const AnnotationObject& candidate) { return candidate.id == preview.id; });
-  if (found == snapshot.objects.end()) {
+  auto built = prepare_annotation_preview(
+      document_, annotation_render_plan_.get(),
+      ObjectPreview{PreviewIntent::replace, preview, {}}, edit_context());
+  if (!built)
     return;
-  }
-  *found = preview;
-  if (annotation_render_plan_ == nullptr ||
-      annotation_render_plan_->source_document_revision != snapshot.revision ||
-      annotation_render_plan_->source_selection_rect_px != selection_.desktop_rect) {
-    return;
-  }
-  auto preview_snapshot = snapshot;
-  preview_snapshot.objects = {preview};
-  auto preview_plan = AnnotationRenderPlanner::build(
-      preview_snapshot, selection_.desktop_rect, point_pixel_scale_,
-      text_rasterizer_, &annotation_coverage_cache_);
-  if (!preview_plan || preview_plan.value().ordered_layers.size() != 1U) {
-    return;
-  }
-  auto next_plan = *annotation_render_plan_;
-  const auto layer = std::find_if(
-      next_plan.ordered_layers.begin(), next_plan.ordered_layers.end(),
-      [&preview](const AnnotationCoverageLayer& value) {
-        return value.object_id == preview.id;
-      });
-  if (layer == next_plan.ordered_layers.end()) {
-    return;
-  }
-  *layer = std::move(preview_plan.value().ordered_layers.front());
   annotation_drag_preview_ = std::move(preview);
-  transient_annotation_render_plan_ = std::make_shared<const AnnotationRenderPlan>(
-      std::move(next_plan));
+  transient_annotation_render_plan_ = std::move(built.value());
   drag_current_ = current;
   layout_annotation_controls();
   if (clean_content_presented_) notify_preview_changed();
 }
 
 void OverlayEditorWidget::update_pointer_cursor(const QPointF point) {
+  const auto raw = to_shape_point(point);
+  const auto clip = selection_.desktop_rect;
+  const bool brush_area = point.x() >= 0 && point.y() >= 0 &&
+      point.x() < width() && point.y() < height() &&
+      childAt(point.toPoint()) == nullptr &&
+      raw.x >= clip.x && raw.y >= clip.y &&
+      raw.x <= clip.right() && raw.y <= clip.bottom();
+  if (brush_cursor_position_ &&
+      (tool_ != EditorTool::brush || interaction_locked_ ||
+       selection_.desktop_rect.empty() || !brush_area)) {
+    brush_cursor_position_.reset();
+    update();  // Erase the old ring, including when leaving for a child control.
+  }
+  if (tool_ == EditorTool::brush && !selection_.desktop_rect.empty() &&
+      !interaction_locked_ && brush_area) {
+    auto diameter = brush_diameter_dip_ * point_pixel_scale_ * width() /
+                    std::max(1, capture_size_px_.width);
+    auto region = [diameter](QPointF p) {
+      return QRectF(p.x() - diameter / 2 - 3, p.y() - diameter / 2 - 3,
+                    diameter + 6, diameter + 6)
+          .toAlignedRect();
+    };
+    if (brush_cursor_position_)
+      update(region(*brush_cursor_position_));
+    brush_cursor_position_ = point;
+    update(region(point));
+    setCursor(Qt::CrossCursor);
+    return;
+  }
+
+  if (tool_ == EditorTool::brush && !selection_.desktop_rect.empty()) {
+    setCursor(Qt::ArrowCursor);
+    return;
+  }
+
   if (interaction_locked_) {
     setCursor(Qt::ArrowCursor);
     return;
@@ -1915,6 +2048,18 @@ void OverlayEditorWidget::layout_annotation_controls() {
 std::optional<ObjectId> OverlayEditorWidget::hit_test(const PixelPoint point) const {
   const auto& objects = document_.snapshot().objects;
   for (auto iterator = objects.rbegin(); iterator != objects.rend(); ++iterator) {
+    if (iterator->kind == AnnotationKind::brush) {
+      if (brush_hit_test(*iterator, {double(point.x), double(point.y)},
+                         9 * point_pixel_scale_, annotation_scale()))
+        return iterator->id;
+      continue;
+    }
+    if (iterator->arrow_geometry) {
+      if (line_hit_test(*iterator, {double(point.x), double(point.y)},
+                        9 * point_pixel_scale_, annotation_scale()))
+        return iterator->id;
+      continue;
+    }
     if (is_rotatable(*iterator)) {
       if (shape_contains(*iterator,{static_cast<double>(point.x),static_cast<double>(point.y)})) return iterator->id;
       continue;
@@ -1991,3 +2136,147 @@ PixelRect OverlayEditorWidget::active_drawing_bounds() const {
 }
 
 }  // namespace hdrshot
+
+namespace hdrshot {
+StrokePoint OverlayEditorWidget::to_brush_point(QPointF point) const {
+  const auto p = to_shape_point(point);
+  const auto clip = selection_.desktop_rect;
+  return {std::clamp(p.x, double(clip.x), double(clip.right())),
+          std::clamp(p.y, double(clip.y), double(clip.bottom()))};
+}
+bool OverlayEditorWidget::begin_brush_stroke(QPointF point) {
+  if (brush_active_)
+    return false;
+  auto raw = to_shape_point(point);
+  auto clip = selection_.desktop_rect;
+  if (raw.x < clip.x || raw.y < clip.y || raw.x > clip.right() ||
+      raw.y > clip.bottom())
+    return false;
+  if (!apply_document_command(SelectAnnotation{std::nullopt}))
+    return false;
+  auto first = to_brush_point(point);
+  auto result = brush_builder_.begin(
+      next_object_id_, {color_srgb_rgb_, brush_diameter_dip_}, first,
+      selection_.desktop_rect, annotation_scale());
+  if (!result)
+    return false;
+  brush_active_ = true;
+  dragging_annotation_ = true;
+  last_brush_point_ = first;
+  pending_brush_points_.clear();
+  flush_pending_brush_preview();
+  update_pointer_cursor(point);
+  return true;
+}
+void OverlayEditorWidget::flush_pending_brush_preview() {
+  if (!brush_active_)
+    return;
+  if (!pending_brush_points_.empty()) {
+    auto added = brush_builder_.append(pending_brush_points_);
+    if (!added)
+      return;
+    pending_brush_points_.clear();
+  }
+  auto snapshot = brush_builder_.snapshot();
+  if (!snapshot)
+    return;
+  auto preview =
+      prepare_annotation_preview(document_, annotation_render_plan_.get(),
+                                 snapshot.value(), edit_context());
+  if (!preview)
+    return;
+  transient_annotation_render_plan_ = std::move(preview.value());
+  notify_preview_changed();
+  update();
+}
+bool OverlayEditorWidget::finish_brush_stroke(StrokePoint final) {
+  if (!brush_active_)
+    return true;
+  if (!pending_brush_points_.empty()) {
+    auto added = brush_builder_.append(pending_brush_points_);
+    if (!added)
+      return false;
+    pending_brush_points_.clear();
+  }
+  auto completed = brush_builder_.finish(final);
+  if (!completed)
+    return false;
+  last_brush_point_ = final;
+  const auto &value = completed.value();
+  pending_reuse_ = value.reusable;
+  const auto committed = apply_document_command(CreateAnnotation{value.object});
+  pending_reuse_.reset();
+  if (!committed)
+    return false;
+  ++next_object_id_.value;
+  brush_active_ = false;
+  dragging_annotation_ = false;
+  brush_preview_scheduled_ = false;
+  brush_builder_.cancel();
+  drag_current_.reset();
+  update();
+  return true;
+}
+void OverlayEditorWidget::update_brush_transform(QPointF point) {
+  if (!annotation_drag_origin_ || !annotation_adjustment_)
+    return;
+  auto candidate = resize_brush(
+      *annotation_drag_origin_, *annotation_adjustment_, brush_drag_anchor_,
+      to_brush_point(point), selection_.desktop_rect, annotation_scale());
+  auto preview = prepare_annotation_preview(
+      document_, annotation_render_plan_.get(),
+      ObjectPreview{PreviewIntent::replace, candidate, {}}, edit_context());
+  if (!preview)
+    return;
+  annotation_drag_preview_ = std::move(candidate);
+  transient_annotation_render_plan_ = std::move(preview.value());
+  notify_preview_changed();
+  layout_annotation_controls();
+  update();
+}
+bool OverlayEditorWidget::finish_pending_pointer_edit() {
+  if (brush_active_)
+    return finish_brush_stroke(last_brush_point_);
+  flush_pending_annotation_move();
+  if (dragging_annotation_transform_ && annotation_drag_preview_) {
+    const auto value = *annotation_drag_preview_;
+    bool result = true;
+    if (annotation_drag_origin_ && value != *annotation_drag_origin_) {
+      if (value.brush_geometry)
+        result = apply_document_command(
+            SetBrushGeometry{value.id, *value.brush_geometry});
+      else if (value.arrow_geometry)
+        result = apply_document_command(
+            SetArrowGeometry{value.id, *value.arrow_geometry});
+      else if (value.kind == AnnotationKind::text)
+        result = apply_document_command(
+            UpdateTextAnnotation{value.id, value.bounds,
+                                 std::get<TextStyle>(value.style), value.text});
+      else
+        result = apply_document_command(
+            SetShapeGeometry{value.id, value.bounds, value.transform});
+    }
+    if (!result)
+      return false;
+    dragging_annotation_transform_ = false;
+    annotation_adjustment_.reset();
+    annotation_drag_origin_.reset();
+    annotation_drag_preview_.reset();
+    rotation_drag_.reset();
+    transient_annotation_render_plan_.reset();
+    notify_preview_changed();
+    update();
+  }
+  if (dragging_annotation_ && drag_current_) {
+    const auto count = document_.snapshot().objects.size();
+    finish_annotation(*drag_current_);
+    if (draft_annotation_ && document_.snapshot().objects.size() == count)
+      return false;
+    dragging_annotation_ = false;
+    draft_annotation_.reset();
+    transient_annotation_render_plan_.reset();
+    drag_current_.reset();
+  }
+  return true;
+}
+} // namespace hdrshot

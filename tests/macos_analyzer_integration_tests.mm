@@ -83,7 +83,11 @@ ExportSnapshot fixture(bool hdr = true) {
   snapshot.selection = {1, {16, 8, 224, 144}};
   snapshot.annotations.revision = 1;
   snapshot.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
-      AnnotationRenderPlan{1, {224, 144}, {}, snapshot.selection.desktop_rect});
+      AnnotationRenderPlan{1,
+                           {224, 144},
+                           {},
+                           snapshot.selection.desktop_rect,
+                           AnnotationScale::from(1).value()});
   return snapshot;
 }
 AnalyzerWindow *latest_window() {

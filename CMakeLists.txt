@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.8 LANGUAGES CXX)
+project(HDRShot VERSION 0.1.9 LANGUAGES CXX)
 set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
 if(HDRSHOT_UPDATE_TEST_VERSION)
   if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
@@ -168,6 +168,8 @@ target_include_directories(hdrshot_frame_cropper PUBLIC src)
 hdrshot_enable_warnings(hdrshot_frame_cropper)
 
 add_library(hdrshot_annotation_rasterizer STATIC
+  src/domain/annotation/brush_coverage_kernel.cpp
+  src/domain/annotation/brush_stroke_builder.cpp
   src/domain/annotation/annotation_pixel_plan_validator.cpp
   src/domain/annotation/annotation_render_plan.cpp
 )
@@ -321,12 +323,18 @@ target_include_directories(hdrshot_geometry PUBLIC src)
 hdrshot_enable_warnings(hdrshot_geometry)
 
 add_library(hdrshot_annotation_model STATIC
+  src/domain/annotation/annotation_style_policy.cpp
   src/domain/annotation/annotation_document.cpp
   src/domain/annotation/annotation_geometry.cpp
 )
 target_link_libraries(hdrshot_annotation_model PUBLIC hdrshot_core)
 target_include_directories(hdrshot_annotation_model PUBLIC src)
 hdrshot_enable_warnings(hdrshot_annotation_model)
+add_library(hdrshot_annotation_edit STATIC src/application/annotation_edit_service.cpp)
+target_link_libraries(hdrshot_annotation_edit PUBLIC hdrshot_annotation_model hdrshot_annotation_rasterizer hdrshot_ports hdrshot_core)
+target_include_directories(hdrshot_annotation_edit PUBLIC src)
+hdrshot_enable_warnings(hdrshot_annotation_edit)
+
 
 add_library(hdrshot_color STATIC
   src/domain/color/bt2020_srgb_icc_profile.cpp
@@ -448,10 +456,11 @@ if(HDRSHOT_ENABLE_QT_HOST)
 
   add_library(hdrshot_qt_overlay_ui STATIC
     src/ui/qt/overlay_editor_widget.cpp
+    src/ui/qt/annotation_size_combo.cpp
     src/ui/qt/save_success_feedback.cpp
   )
   target_link_libraries(hdrshot_qt_overlay_ui
-    PUBLIC hdrshot_annotation_model hdrshot_annotation_rasterizer hdrshot_geometry hdrshot_input_mapper hdrshot_capture_session hdrshot_export_workflow hdrshot_analysis_core Qt6::Widgets
+    PUBLIC hdrshot_annotation_edit hdrshot_annotation_model hdrshot_annotation_rasterizer hdrshot_geometry hdrshot_input_mapper hdrshot_capture_session hdrshot_export_workflow hdrshot_analysis_core Qt6::Widgets
   )
   target_include_directories(hdrshot_qt_overlay_ui PUBLIC src)
   hdrshot_enable_warnings(hdrshot_qt_overlay_ui)
@@ -1136,6 +1145,13 @@ if(BUILD_TESTING)
   hdrshot_enable_warnings(hdrshot_annotation_model_tests)
   add_test(NAME hdrshot_annotation_model_tests COMMAND hdrshot_annotation_model_tests)
 
+  foreach(name brush_sparse_transaction brush_stroke annotation_edit_service brush_stroke_performance annotation_reuse_verifier annotation_oracle_verifier)
+    add_executable(hdrshot_${name}_tests tests/${name}_tests.cpp)
+    target_link_libraries(hdrshot_${name}_tests PRIVATE hdrshot_annotation_edit)
+    target_include_directories(hdrshot_${name}_tests PRIVATE tests)
+    hdrshot_enable_warnings(hdrshot_${name}_tests)
+    add_test(NAME hdrshot_${name}_tests COMMAND hdrshot_${name}_tests)
+  endforeach()
   add_executable(hdrshot_annotation_geometry_tests tests/annotation_geometry_tests.cpp)
   target_link_libraries(hdrshot_annotation_geometry_tests PRIVATE hdrshot_annotation_model)
   target_include_directories(hdrshot_annotation_geometry_tests PRIVATE tests)
@@ -1330,10 +1346,11 @@ if(BUILD_TESTING)
     hdrshot_enable_warnings(hdrshot_macos_ultra_hdr_fixture_tests)
     add_test(
       NAME hdrshot_macos_ultra_hdr_fixture_tests
-      COMMAND hdrshot_macos_ultra_hdr_fixture_tests
-    )
-    set_tests_properties(
-      hdrshot_macos_ultra_hdr_fixture_tests PROPERTIES SKIP_RETURN_CODE 77
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_uhdr_fixture_test.py"
+        --project-root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+        -- "$<TARGET_FILE:hdrshot_macos_ultra_hdr_fixture_tests>"
     )
 
   if(TARGET hdrshot_qt_capture_runtime)
@@ -1367,7 +1384,11 @@ if(BUILD_TESTING)
 
     if(HDRSHOT_ENABLE_QT_HOST)
       add_executable(hdrshot_macos_magnifier_benchmark tools/macos_magnifier_benchmark.cpp)
-      target_link_libraries(hdrshot_macos_magnifier_benchmark PRIVATE hdrshot_macos_metal_presenter
+      target_link_libraries(hdrshot_macos_magnifier_benchmark PRIVATE hdrshot_annotation_edit hdrshot_macos_metal_presenter
+        hdrshot_macos_export_pixel_processor hdrshot_export_workflow hdrshot_frame_pipeline Qt6::Core)
+      add_executable(hdrshot_macos_brush_paired_benchmark tools/macos_magnifier_benchmark.cpp tools/annotation_benchmark_style_policy.cpp)
+      target_compile_definitions(hdrshot_macos_brush_paired_benchmark PRIVATE HDRSHOT_BRUSH_BENCHMARK_ADMISSION=1)
+      target_link_libraries(hdrshot_macos_brush_paired_benchmark PRIVATE hdrshot_annotation_edit hdrshot_macos_metal_presenter
         hdrshot_macos_export_pixel_processor hdrshot_export_workflow hdrshot_frame_pipeline Qt6::Core)
     endif()
 
@@ -1455,7 +1476,7 @@ if(BUILD_TESTING)
   set_tests_properties(hdrshot_annotation_sparse_tests PROPERTIES TIMEOUT 30)
 
   add_executable(hdrshot_async_clean_content_tests tests/async_clean_content_tests.cpp)
-  target_link_libraries(hdrshot_async_clean_content_tests PRIVATE hdrshot_export_workflow)
+  target_link_libraries(hdrshot_async_clean_content_tests PRIVATE hdrshot_annotation_edit hdrshot_export_workflow)
   target_include_directories(hdrshot_async_clean_content_tests PRIVATE tests)
   add_test(NAME hdrshot_async_clean_content_tests COMMAND hdrshot_async_clean_content_tests)
   set_tests_properties(hdrshot_async_clean_content_tests PROPERTIES TIMEOUT 15)
@@ -1511,6 +1532,9 @@ endif()
 # Current production performance workloads run with every normal regression.
 # Candidate encoders, parameter sweeps and retired executors remain explicit tools.
 if(BUILD_TESTING)
+  add_test(NAME hdrshot_fixture_inputs_tests
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fixture_inputs_tests.py"
+      --cmake "${CMAKE_COMMAND}" --ctest "${CMAKE_CTEST_COMMAND}")
   add_test(NAME hdrshot_test_execution_policy_tests
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_execution_policy_tests.py")
   function(hdrshot_performance name target)

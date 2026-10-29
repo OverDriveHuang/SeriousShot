@@ -155,7 +155,8 @@ class FixtureSelectionTests(unittest.TestCase):
             file.write_bytes(file.read_bytes() + b'changed')
             self.assertIn(policy.UHDR_FIXTURE_TEST, self.plan()['selected'])
         self.fixture.unlink()
-        self.assertIn(policy.UHDR_FIXTURE_TEST, self.plan()['selected'])
+        with self.assertRaisesRegex(ValueError, 'file does not exist'):
+            self.plan()
         result = policy.summarize(f'<testsuite><testcase name="{policy.UHDR_FIXTURE_TEST}"><skipped/></testcase></testsuite>', [policy.UHDR_FIXTURE_TEST])
         self.assertFalse(policy.complete(result))
 

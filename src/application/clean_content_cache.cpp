@@ -1,6 +1,9 @@
 #include "application/clean_content_cache.hpp"
 #include "domain/annotation/annotation_compositing.hpp"
+#include "domain/annotation/annotation_allocation_checkpoint.hpp"
 #include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cmath>
 
 namespace hdrshot {
@@ -81,6 +84,7 @@ Result<CleanContentRef, Error> CleanContentCache::get(FrozenDesktopRef source, D
 Result<CleanContentRef, Error> CleanContentCache::get(
     FrozenDesktopRef source, DisplayId display, const AnnotationRenderPlan& plan) {
   std::scoped_lock lock(mutex_);
+  try {
   if (!source) return Result<CleanContentRef, Error>::failure(content_error("missing_source"));
   const auto segment = std::find_if(source->canonical_segments.begin(), source->canonical_segments.end(),
       [display](const auto& s) { return s.display_id == display; });
@@ -88,9 +92,15 @@ Result<CleanContentRef, Error> CleanContentCache::get(
   if (plan.source_selection_rect_px.empty() && !plan.ordered_layers.empty())
     return Result<CleanContentRef, Error>::failure(content_error("layers_without_selection"));
   const PixelRect full{0, 0, segment->size_px.width, segment->size_px.height};
-  auto global = plan.source_selection_rect_px.empty()
-      ? Result<AnnotationRenderPlan, Error>::success(AnnotationRenderPlan{plan.source_document_revision, segment->size_px, {}, full})
-      : AnnotationRenderPlanner::rebase(plan, full);
+  auto global =
+      plan.source_selection_rect_px.empty()
+          ? Result<AnnotationRenderPlan, Error>::success(
+                AnnotationRenderPlan{plan.source_document_revision,
+                                     segment->size_px,
+                                     {},
+                                     full,
+                                     AnnotationScale::from(1).value()})
+          : AnnotationRenderPlanner::rebase(plan, full);
   if (!global) return Result<CleanContentRef, Error>::failure(global.error());
   if (current_ && current_->source == source && current_->display_id == display &&
       layers_ == global.value().ordered_layers) {
@@ -100,11 +110,17 @@ Result<CleanContentRef, Error> CleanContentCache::get(
   // Resolve only the coverage bounding rectangle, not every selected screen pixel.
   int left=full.width, top=full.height, right=0, bottom=0;
   for (const auto& layer : global.value().ordered_layers) for (const auto& span : layer.spans) {
-    if (span.coverage_u8.empty()) continue;
+    if (span.length() == 0) continue;
     left=std::min(left,span.x);top=std::min(top,span.y);
-    right=std::max(right,span.x+static_cast<int>(span.coverage_u8.size()));bottom=std::max(bottom,span.y+1);
+    right=std::max(right,span.x+static_cast<int>(span.length()));bottom=std::max(bottom,span.y+1);
   }
   const PixelRect content_rect{left,top,right-left,bottom-top};
+  const auto elapsed_ms = [](auto start) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+  };
+  auto stage_start = std::chrono::steady_clock::now();
   auto pixels = Result<AnnotationPixelPlan, Error>::success(AnnotationPixelPlan{});
   if (!content_rect.empty()) {
     auto local = AnnotationRenderPlanner::rebase(global.value(), content_rect);
@@ -112,6 +128,10 @@ Result<CleanContentRef, Error> CleanContentCache::get(
     pixels = AnnotationRenderPlanner::build_pixel_plan(local.value());
   }
   if (!pixels) return Result<CleanContentRef, Error>::failure(pixels.error());
+  const auto pixel_plan_ms = elapsed_ms(stage_start);
+  stage_start = std::chrono::steady_clock::now();
+  std::size_t vector_growths = 0;
+  annotation_allocation_checkpoint(AnnotationAllocationStage::clean_snapshot);
   auto next = std::make_shared<CleanContentSnapshot>();
   next->source = source; next->display_id = display;
   next->content_revision = counters_.content_builds + 1;
@@ -120,11 +140,35 @@ Result<CleanContentRef, Error> CleanContentCache::get(
   if (!frame) return Result<CleanContentRef, Error>::failure(frame.error());
   std::vector<CleanCompositionSample> work;
   std::vector<PositionedCleanSample> native_work;
+  std::size_t sample_count = 0, owned_count = 0, opaque_span_count = 0;
+  for (const auto &span : next->owned) {
+    if (std::size_t(span.length) > std::numeric_limits<std::size_t>::max() - owned_count)
+      return Result<CleanContentRef,Error>::failure(content_error("sample_count_overflow"));
+    owned_count += std::size_t(span.length);
+    if (!span.edge_samples.empty()) sample_count += std::size_t(span.length);
+    else ++opaque_span_count;
+  }
+  // Stable geometric capacity classes avoid allocator retention of a distinct
+  // large block for every growing stroke prefix, while allocating only once.
+  const auto reserve_count =
+      sample_count <=
+              (std::size_t{1} << (std::numeric_limits<std::size_t>::digits - 1))
+          ? std::bit_ceil(sample_count)
+          : sample_count;
+  if (frame.value().linear_source)
+    native_work.reserve(reserve_count);
+  else
+    work.reserve(reserve_count);
   for (auto& span : next->owned) {
     span.x += content_rect.x; span.y += content_rect.y;
+    if (span.edge_samples.empty()) continue;
     for (std::int32_t i = 0; i < span.length; ++i) {
-      CleanCompositionSample sample{annotation_linear_sample(span, static_cast<std::size_t>(i)), {}};
+      CleanCompositionSample sample{
+          span.edge_samples[static_cast<std::size_t>(i)],
+          {}};
       if (frame.value().linear_source) {
+        if (native_work.size() == native_work.capacity())
+          ++vector_growths;
         native_work.push_back({sample.annotation, static_cast<std::uint32_t>(span.x + i),
             static_cast<std::uint32_t>(span.y)});
         continue;
@@ -138,9 +182,13 @@ Result<CleanContentRef, Error> CleanContentCache::get(
           sample.source[c] = ExtendedP3Mapper::source_linear(value.value(), frame.value().encoding.transfer);
         }
       }
+      if (work.size() == work.capacity())
+        ++vector_growths;
       work.push_back(sample);
     }
   }
+  const auto sample_prepare_ms = elapsed_ms(stage_start);
+  stage_start = std::chrono::steady_clock::now();
   std::size_t offset = 0;
   if (!native_work.empty()) {
     auto composed = executor_->compose_native(frame.value().linear_source, native_work);
@@ -148,13 +196,14 @@ Result<CleanContentRef, Error> CleanContentCache::get(
     if (!composed.value() || composed.value()->sample_count() != native_work.size())
       return Result<CleanContentRef, Error>::failure(content_error("native_executor_shape_mismatch"));
     for (auto& span : next->owned) {
+      if (span.edge_samples.empty()) continue;
       span.clean_composited = true;
       span.native_samples = composed.value();
       span.native_sample_offset = offset;
       std::vector<std::array<float, 4>>().swap(span.edge_samples);
       offset += static_cast<std::size_t>(span.length);
     }
-  } else {
+  } else if (!work.empty()) {
     auto composed = executor_->compose(work);
     if (!composed) return Result<CleanContentRef, Error>::failure(composed.error());
     if (composed.value().size() != work.size()) return Result<CleanContentRef, Error>::failure(content_error("executor_shape_mismatch"));
@@ -165,12 +214,22 @@ Result<CleanContentRef, Error> CleanContentCache::get(
         return Result<CleanContentRef, Error>::failure(content_error("executor_invalid_linear_sample"));
     }
     for (auto& span : next->owned) {
+      if (span.edge_samples.empty()) continue;
       span.clean_composited = true;
       span.edge_samples.assign(composed.value().begin() + static_cast<std::ptrdiff_t>(offset),
                                composed.value().begin() + static_cast<std::ptrdiff_t>(offset) + span.length);
       offset += static_cast<std::size_t>(span.length);
     }
   }
+  counters_.pixel_plan_ms = pixel_plan_ms;
+  counters_.sample_prepare_ms = sample_prepare_ms;
+  counters_.compose_submit_ms = elapsed_ms(stage_start);
+  counters_.last_owned_pixels = owned_count;
+  counters_.opaque_span_count = opaque_span_count;
+  counters_.effective_upload_bytes = native_work.size() * sizeof(PositionedCleanSample);
+  counters_.sample_capacity_bytes = native_work.capacity() * sizeof(PositionedCleanSample) + work.capacity() * sizeof(CleanCompositionSample);
+  counters_.last_sample_count = offset;
+  counters_.sample_vector_growths = vector_growths;
   counters_.composed_pixels += offset;
   counters_.retained_sample_bytes = offset * sizeof(std::array<float, 4>);
   ++counters_.content_builds;
@@ -178,5 +237,8 @@ Result<CleanContentRef, Error> CleanContentCache::get(
   last_plan_.reset();
   current_ = next;
   return Result<CleanContentRef, Error>::success(current_);
+  } catch (const std::bad_alloc&) {
+    return Result<CleanContentRef,Error>::failure(content_error("allocation_failed"));
+  }
 }
 } // namespace hdrshot

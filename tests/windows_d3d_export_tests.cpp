@@ -10,6 +10,7 @@
 #include <ultrahdr/jpegdecoderhelper.h>
 #include <zlib.h>
 #include "test_support.hpp"
+#include "windows_mixed_clean_test_support.hpp"
 #include <iostream>
 #include <bit>
 #include <cstring>
@@ -43,6 +44,26 @@ void sdr_encoding_and_no_clli() {
     const auto expected=ExtendedP3Mapper::quantize_unorm16(ExtendedP3Mapper::encode_extended_srgb(linear));
     HDRSHOT_CHECK_NEAR(result.value().rgb_u16[i*3],expected,2);
   }
+}
+void mixed_native_clean_export_uses_constants_offsets_and_source_once() {
+  auto fixture = test::windows_mixed_clean_fixture();
+  const auto rendered = gpu->render({&fixture.roi, &fixture.plan});
+  HDRSHOT_CHECK(rendered.has_value());
+  const auto encoded = gpu->process({&fixture.roi, &fixture.plan,
+      {OutputClass::hdr, EncodingIntent::hdr_pq, 16, "test"},
+      PqDiffuseWhite::nits_203, HdrPqPrecision::bits_16});
+  HDRSHOT_CHECK(encoded.has_value());
+  for (std::size_t p = 0; p < test::WindowsMixedCleanFixture::expected.size(); ++p)
+    for (std::size_t c = 0; c < 3; ++c) {
+      const auto expected = test::WindowsMixedCleanFixture::expected[p][c];
+      HDRSHOT_CHECK_NEAR(ExtendedP3Mapper::decode_binary16(
+          rendered.value().rgba_half[p * 4 + c]).value(), expected, .001);
+      const auto pq = PqReferenceWhiteMapper::map_linear_edr(
+          expected, 203, HdrPqPrecision::bits_16).value().png_u16;
+      HDRSHOT_CHECK_NEAR(encoded.value().rgb_u16[p * 3 + c], pq, 8);
+    }
+  HDRSHOT_CHECK_NEAR(*rendered.value().source_visible_maximum_linear_component, .75, 2e-6);
+  HDRSHOT_CHECK_NEAR(rendered.value().maximum_linear_component, 2.75, 2e-6);
 }
 void hdr_pq_precision_and_clli() {
   auto source=frame({0,0.18F,0.5F,1.0F,2.0F,5.0F,64.0F});
@@ -335,6 +356,7 @@ int main() {
   }
   gpu=std::move(result.value());
   return hdrshot::test::run({{"SDR transfer and no cLLI",sdr_encoding_and_no_clli},
+      {"mixed native clean export constant offset and single composition",mixed_native_clean_export_uses_constants_offsets_and_source_once},
       {"HDR precision and clipping",hdr_pq_precision_and_clli},
       {"cLLI 64-bit carry and partial group",clli_carry_and_partial_workgroup},
       {"UHDR AA coverage and nonfinite rejection",uhdr_aa_ownership_and_invalid_source},

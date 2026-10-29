@@ -85,7 +85,11 @@ int main(int argc, char** argv) { @autoreleasepool {
 
     auto presenter=MacMetalEdrPresenter::create(); if(!presenter) return 4;
     presenters.push_back(std::move(presenter.value())); caches.push_back(std::make_unique<CleanContentCache>(gpu));
-    AnnotationRenderPlan render{1,{width,height},{},{0,0,width,height}};
+    AnnotationRenderPlan render{1,
+                                {width, height},
+                                {},
+                                {0, 0, width, height},
+                                AnnotationScale::from(1).value()};
     AnnotationCoverageLayer layer{ObjectId{1},AnnotationKind::rectangle,{500,400,1000,600},0xff6600,{},"bench"};
     for(int y=400;y<1000;++y) {
       if(y<404||y>=996) layer.spans.push_back({y,500,std::vector<std::uint8_t>(1000,192)});

@@ -9,6 +9,8 @@ import re
 import subprocess
 import xml.etree.ElementTree as ET
 
+from test_fixture_inputs import register_uhdr_fixture, resolve_uhdr_fixture
+
 OPTIONAL_TESTS = set()
 UHDR_FIXTURE_TEST = 'hdrshot_macos_ultra_hdr_fixture_tests'
 UPDATE_TESTS = {'hdrshot_update_tests', 'hdrshot_update_runtime_tests',
@@ -85,6 +87,9 @@ def fixture_fingerprint(project, tree, path):
         digest.update((platform.system() + platform.release() + platform.version() + platform.machine()).encode())
         files = [tree / UHDR_FIXTURE_TEST, tree / 'CMakeCache.txt',
                  project / 'CMakeLists.txt', Path(path)]
+        files.extend(project / 'scripts' / name for name in
+                     ('test_fixture_inputs.py', 'run_uhdr_fixture_test.py')
+                     if (project / 'scripts' / name).is_file())
         files.extend(sorted((project / 'cmake').glob('libultrahdr*.cmake')))
         for file in files:
             digest.update(str(file.resolve()).encode() + b'\0' + file.read_bytes() + b'\0')
@@ -101,14 +106,11 @@ def select_fixture(project, tree, force=False, path=None):
     if not isinstance(previous, dict):
         previous = {}
     explicit_path = path is not None
-    path = str(path) if explicit_path else os.environ.get('HDRSHOT_ULTRAHDR_FIXTURE') or previous.get('path')
-    if not isinstance(path, str) or not path:
-        path = None
-    if path:
-        path = str(Path(path).expanduser().resolve())
+    resolved = resolve_uhdr_fixture(project, path, tree)
+    path = resolved['path']
     value = fixture_fingerprint(project, tree, path)
     reuse = not (force or explicit_path) and value is not None and previous.get('fingerprint') == value
-    return {'fingerprint': value, 'path': path, 'reuse': reuse,
+    return {'fingerprint': value, 'path': path, 'source': resolved['source'], 'reuse': reuse,
             'reason': 'verified identical codec, system and image' if reuse else
                       'manual request, changed inputs or no verified fixture result'}
 
@@ -119,6 +121,8 @@ def remember_fixture(project, tree, plan, passed):
         return
     verified = (UHDR_FIXTURE_TEST in passed and fixture['fingerprint'] and
                 fixture_fingerprint(project, tree, fixture['path']) == fixture['fingerprint'])
+    if verified:
+        register_uhdr_fixture(project, fixture['path'])
     # A failed forced rerun invalidates prior success, but retains the local path.
     path = fixture_state_path(tree)
     if not tree.is_dir():

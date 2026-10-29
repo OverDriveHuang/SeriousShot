@@ -232,7 +232,7 @@ if(BUILD_TESTING)
   endif()
   add_executable(hdrshot_windows_d3d_export_tests tests/windows_d3d_export_tests.cpp)
   target_link_libraries(hdrshot_windows_d3d_export_tests PRIVATE hdrshot_windows_d3d_export
-      hdrshot_ultra_hdr_codec ${HDRSHOT_ULTRAHDR_TARGET})
+      hdrshot_windows_capture hdrshot_ultra_hdr_codec ${HDRSHOT_ULTRAHDR_TARGET})
   target_include_directories(hdrshot_windows_d3d_export_tests SYSTEM PRIVATE
       "$<TARGET_PROPERTY:core,INCLUDE_DIRECTORIES>")
   target_include_directories(hdrshot_windows_d3d_export_tests PRIVATE tests)

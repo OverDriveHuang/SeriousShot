@@ -1,12 +1,12 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-10-27 08:39:29 CST
+最后更新：2026-10-29 08:29:45 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
 SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正常截、SDR色彩管理是否正确，以及图片发出去后能否被正确显示**。
 
-- **选区里直接标注**：画圈、框选、箭头、文字，完成后复制或保存，不必先截再编辑。
+- **选区里直接标注**：添加矩形、椭圆、直线、箭头、文字或七色画笔笔迹；标注可移动、缩放、改色和调整粗细，支持撤销与重做。
 - **HDR 与 SDR 都严肃处理**：保留 HDR 信息；HDR、SDR 色彩元数据保留。
 - **两种输出选择**：PNG 用于保留细节；Ultra HDR JPEG 通过 ISO 21496-1 增益图兼顾 HDR 呈现与普通 JPEG 查看。
 - **截图后马上分析**：Waveform、直方图、Vectorscope、吸管、区域 Mask 和 False Color。
@@ -16,20 +16,20 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 ### 相比 macOS 自带截图
 
 - **兼容性更好**：macOS 26 在受支持机型上提供 [HEIF 格式的 HDR 截图](https://support.apple.com/en-au/102646)。SeriousShot 提供 PNG 和 Ultra HDR JPEG，便于接入常见的图片查看、编辑与分享流程；Ultra HDR JPEG 在不支持增益图的查看器中仍可作为普通 SDR JPEG 打开。
-- **截图时直接写写画画**：不必先截完，再进入标记。在选区中画圈、加箭头、写文字，确认后一次复制或保存。
+- **截图时直接写写画画**：不必先截完，再进入标记。在选区中添加形状、直线、七色画笔笔迹、箭头和文字，确认后一次复制或保存。
 
 ### 相比 Windows 截图工具与 Xbox Game Bar
 
 - **HDR截图兼容性更好**：对于使用 JXR（JPEG XR）的 Windows HDR 捕获流程，输出 PNG 或 Ultra HDR JPEG。
 - **SDR 也输出到标准色彩空间**：对于直接保存显示缓冲区像素、缺少 ICC，或依赖显示器专属 ICC 的传统截图流程，本软件将像素转换到标准 Display P3，并嵌入匹配的矩阵／曲线型 ICC（matrix-shaper profile）。图片的颜色解释不再依赖原显示器的专属配置，也更便于支持标准 ICC 的软件处理。这里包含实际像素转换，不是只替换 ICC 标签。
-- **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接画圈、加箭头和文字，把截图、标注、输出合在一起。
+- **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接添加形状、直线、画笔笔迹、箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-当前版本 [0.1.8](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.8) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
+当前版本 [0.1.9](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.9) 提供 Windows x64 ZIP；macOS arm64 DMG 仍为 [0.1.8](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.8)。
 
 ## 截图、标注、分享，一次完成
 
-启动截图后选择区域，在当前选区中添加矩形、圆形／椭圆、箭头或文字；标注可以调整，支持撤销与重做。最后选择复制、保存或另存为，也可以直接进入分析器。
+启动截图后选择区域，在当前选区中添加矩形、椭圆、直线、箭头、文字或画笔笔迹。画笔提供七种颜色；画笔粗细为 2、4、24、32、48、72 DIP，直线、矩形、椭圆和箭头粗细为 1、2、3、4、6 DIP。DIP 是设备无关像素，用作线条的逻辑尺寸；可移动、缩放标注，修改颜色和粗细，并撤销或重做编辑。最后选择复制、保存或另存为，也可以直接进入分析器。
 
 ## 截图置顶、操作反馈与失败恢复
 
@@ -82,12 +82,32 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### Windows 解压运行与更新
 
-下载 [0.1.8 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.8)，完整解压到一个可写目录，不要直接在压缩包中启动。
+下载 [0.1.9 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.9)，完整解压到一个可写目录，不要直接在压缩包中启动。
 0.1.5 起支持检查、下载、校验并在原目录安装更新；点击安装后程序退出，更新完成后自动重新启动。从 0.1.4 或更早版本升级，以及从 testing 测试版切换到正式版时，请先退出旧版，手工下载并完整解压正式包，再从正式目录启动。首次运行后按需设置截图快捷键、输出格式与保存位置。Windows 10 的亮度兼容选项见下方系统支持说明。
 
-已安装 Windows 0.1.5～0.1.7 的用户可在软件更新中检查并下载 0.1.8，校验完成后点击安装。若旧版检查受到接口限流，请从 Release 页面手工下载。
+已安装 Windows 0.1.5 或更新版本的用户可在软件更新中检查并下载 0.1.9，校验完成后点击安装。若旧版检查受到接口限流，请从 Release 页面手工下载。
 
-10月26日下载的旧0.1.8不会收到同版本更新提示。请退出旧版，下载10月27日的新完整ZIP并解压运行；原有设置会保留。
+### 命令行捕获
+
+命令行支持列出显示器和捕获画面。Windows 在解压后的程序目录运行：
+
+```powershell
+.\SeriousShot.exe --help
+.\SeriousShot.exe --list-displays
+.\SeriousShot.exe --capture
+$id = Read-Host '输入 --list-displays 列出的显示器 ID'
+.\SeriousShot.exe --capture --display $id 100 80 900 680
+```
+
+macOS 可直接运行应用包内的程序：
+
+```sh
+/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --help
+/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --list-displays
+/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --capture
+```
+
+`--list-displays` 会列出显示器 ID、主显示器标记、桌面逻辑坐标和尺寸。`--capture` 默认捕获主显示器；可用 `--display ID` 指定显示器，也可在后面提供 `x1 y1 x2 y2` 捕获矩形区域。`ID` 应替换为 `--list-displays` 输出中的实际 ID。坐标使用桌面逻辑点，向右、向下为正；副屏位于主屏左侧或上方时，坐标可能为负数，填写区域时请按目标屏幕在桌面上的位置确定。超出显示器的部分会裁切。输出保持捕获的物理分辨率，并使用应用中保存的格式与输出设置。成功时标准输出返回保存文件的完整路径并以 0 退出；用法错误以 2 退出，捕获失败以 1 退出。
 
 ### macOS 软件更新
 

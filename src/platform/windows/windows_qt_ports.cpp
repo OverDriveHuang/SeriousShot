@@ -167,6 +167,17 @@ bool WindowsGlobalHotkeyPort::nativeEventFilter(const QByteArray&,void* message,
   }
   return false;
 }
+namespace {
+struct ForwardedMousePositions {
+  QPointF target_local, global;
+};
+ForwardedMousePositions
+forwarded_mouse_positions(QWidget &host, QWidget &target, QPointF host_local) {
+  const auto global = QPointF(host.mapToGlobal(QPoint(0, 0))) + host_local;
+  return {global - QPointF(target.mapToGlobal(QPoint(0, 0))), global};
+}
+} // namespace
+
 struct WindowsQtOverlayWindow::NativeInput {
   QPointer<QWidget> host;
   QPointer<QWidget> grabbed;
@@ -317,8 +328,9 @@ struct WindowsQtOverlayWindow::NativeInput {
       }
       const auto type=message==WM_LBUTTONDBLCLK ? QEvent::MouseButtonDblClick :
           (down ? QEvent::MouseButtonPress : (up ? QEvent::MouseButtonRelease:QEvent::MouseMove));
-      const auto global=QPointF(host->mapToGlobal(local.toPoint()));
-      QMouseEvent event(type,QPointF(target->mapFromGlobal(global.toPoint())),global,button,buttons,modifiers);
+      const auto positions = forwarded_mouse_positions(*host, *target, local);
+      QMouseEvent event(type, positions.target_local, positions.global, button,
+                        buttons, modifiers);
       QApplication::sendEvent(target,&event);
       self->update_cursor(target);
       if(up && buttons==Qt::NoButton) {

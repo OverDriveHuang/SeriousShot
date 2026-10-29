@@ -1,4 +1,6 @@
 #include "application/async_clean_content_cache.hpp"
+#include "application/annotation_edit_service.hpp"
+#include "domain/annotation/brush_stroke_builder.hpp"
 #include "test_support.hpp"
 #include <future>
 #include <algorithm>
@@ -31,9 +33,17 @@ FrozenDesktopRef source() {
   s.rgba_float.assign(8*4*4,.5F);f->canonical_segments.push_back(std::move(s));return f;
 }
 std::shared_ptr<const AnnotationRenderPlan> plan(int revision,unsigned color) {
-  return std::make_shared<AnnotationRenderPlan>(AnnotationRenderPlan{
-      std::uint64_t(revision),{8,4},{{{1},AnnotationKind::rectangle,{1,1,2,1},color,
-      {{1,1,{128,255}}},"fixture"}},{0,0,8,4}});
+  return std::make_shared<AnnotationRenderPlan>(
+      AnnotationRenderPlan{std::uint64_t(revision),
+                           {8, 4},
+                           {{{1},
+                             AnnotationKind::rectangle,
+                             {1, 1, 2, 1},
+                             color,
+                             {{1, 1, {128, 255}}},
+                             "fixture"}},
+                           {0, 0, 8, 4},
+                           AnnotationScale::from(1).value()});
 }
 void preview_coalesces_but_exact_requests_survive_and_match() {
   Tasks tasks;const auto f=source();AsyncCleanContentCache cache(tasks);
@@ -96,8 +106,39 @@ void enqueue_and_close_never_wait_for_composition() {
   HDRSHOT_CHECK(worker.wait_for(std::chrono::seconds(2))==std::future_status::ready);worker.get();tasks.publish();
   HDRSHOT_CHECK(cancelled==2 && exact==1);
 }
+void real_brush_prefix_exact_survives_builder_and_cache_close() {
+  Tasks tasks;
+  auto f=std::make_shared<FrozenDesktop>(*source());
+  f->canonical_segments.front().size_px={64,48};
+  f->canonical_segments.front().rgba_float.assign(64*48*4,.5F);
+  const auto scale=AnnotationScale::from(1.25).value();
+  AnnotationEditContext context{{1,{0,0,64,48}},scale};
+  auto doc=AnnotationDocument::empty();
+  BrushStrokeBuilder builder;
+  HDRSHOT_CHECK(builder.begin({1},{0xFF4D67,4},{3.2,3.4},context.selection.desktop_rect,scale).has_value());
+  auto prefix=prepare_annotation_preview(doc,nullptr,builder.snapshot().value(),context).value();
+  StrokePoint samples[]{{45.4,3.7},{45.8,39.2},{5.3,39.8}};
+  HDRSHOT_CHECK(builder.append(samples).has_value());
+  auto final=builder.finish({5.7,40.1}).value();
+  auto committed=prepare_annotation_edit(doc,nullptr,CreateAnnotation{final.object},context).value();
+  auto cache=std::make_unique<AsyncCleanContentCache>(tasks);
+  int cancelled=0,exact=0;
+  CleanContentRef actual;
+  cache->preview(f,{7},prefix,[&](auto result){HDRSHOT_CHECK(!result);++cancelled;});
+  cache->exact(f,{7},committed.plan,[&](auto result){HDRSHOT_CHECK(result.has_value());actual=result.value();++exact;});
+  builder.cancel();
+  cache.reset();
+  tasks.build();
+  tasks.publish(true);
+  HDRSHOT_CHECK(cancelled==1 && exact==1 && actual);
+  CleanContentCache reference;
+  auto expected=reference.get(f,{7},committed.plan);
+  HDRSHOT_CHECK(expected && actual->owned==expected.value()->owned);
+  HDRSHOT_CHECK(committed.document.snapshot().objects[0].brush_geometry->path->points.size()==5);
+}
 }
 int main(){return test::run({
+  {"real brush exact owns complete trajectory across close",real_brush_prefix_exact_survives_builder_and_cache_close},
   {"latest preview and durable exact document versions",preview_coalesces_but_exact_requests_survive_and_match},
   {"composition error, exception, retry and close",errors_retry_and_close_keep_exact_requests},
   {"GUI queue/close never acquires worker composition lock",enqueue_and_close_never_wait_for_composition}

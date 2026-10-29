@@ -50,7 +50,11 @@ ExportSnapshot compact_snapshot(const ExportSnapshot &original,
   result.selection = {original.selection.revision, rect};
   result.annotations.objects.clear();
   result.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
-      AnnotationRenderPlan{result.annotations.revision, size, {}, rect});
+      AnnotationRenderPlan{result.annotations.revision,
+                           size,
+                           {},
+                           rect,
+                           AnnotationScale::from(1).value()});
   auto clean = std::make_shared<CleanContentSnapshot>();
   clean->source = desktop;
   clean->display_id = result.target_display_id;
@@ -106,7 +110,7 @@ AnalysisWorkflow::prepare(const ExportSnapshot &snapshot,
   // retaining a full display or compositing partially-covered edges twice.
   if (std::any_of(plan.value().annotation_owned_spans.begin(),
                   plan.value().annotation_owned_spans.end(),
-                  [](const auto &span) { return !span.clean_composited; }))
+                  [](const auto &span) { return !span.clean_composited && !span.edge_samples.empty(); }))
     return Result<PreparedAnalysis, Error>::failure(
         failure("clean_annotations_required"));
   const RangeProbeOptimization optimization{

@@ -65,7 +65,8 @@ void run(const int width, const int height) {
       source.rgba_half[i * 4 + 3] = 0x3C00;
     }
     const auto view = FrameCropper::view(source);
-    auto plan = AnnotationRenderPlanner::build_pixel_plan({0, {width, height}, {}});
+    auto plan = AnnotationRenderPlanner::build_pixel_plan(
+        {0, {width, height}, {}, {}, AnnotationScale::from(1).value()});
     if (!plan) throw std::runtime_error("fixture plan failed");
     for (int iteration = 0; iteration < 3; ++iteration) {
       @autoreleasepool {

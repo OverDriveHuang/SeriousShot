@@ -37,8 +37,9 @@ CanonicalFrameView frame(
 }
 
 AnnotationPixelPlan empty_plan() {
-  const auto result = AnnotationRenderPlanner::build_pixel_plan(
-      AnnotationRenderPlan{0, PixelSize{2, 1}, {}});
+  const auto result =
+      AnnotationRenderPlanner::build_pixel_plan(AnnotationRenderPlan{
+          0, PixelSize{2, 1}, {}, {}, AnnotationScale::from(1).value()});
   HDRSHOT_CHECK(result.has_value());
   return result.value();
 }
@@ -119,18 +120,18 @@ void opaque_annotation_skips_hidden_non_finite_source() {
   const auto source = frame(0x7C00, 0x3C00);
   const auto view = FrameCropper::view(source);
   const auto pixel_plan = AnnotationRenderPlanner::build_pixel_plan(
-      AnnotationRenderPlan{
-          1,
-          PixelSize{2, 1},
-          {AnnotationCoverageLayer{
-              ObjectId{3},
-              AnnotationKind::rectangle,
-              PixelRect{0, 0, 1, 1},
-              0xFFFFFF,
-              {CoverageSpan{0, 0, {255U}}},
-              "test",
-          }},
-      });
+      AnnotationRenderPlan{1,
+                           PixelSize{2, 1},
+                           {AnnotationCoverageLayer{
+                               ObjectId{3},
+                               AnnotationKind::rectangle,
+                               PixelRect{0, 0, 1, 1},
+                               0xFFFFFF,
+                               {CoverageSpan{0, 0, {255U}}},
+                               "test",
+                           }},
+                           {},
+                           AnnotationScale::from(1).value()});
   HDRSHOT_CHECK(pixel_plan.has_value());
   auto metal = processor();
   const auto actual = metal->process(ExportPixelProcessRequest{
@@ -145,18 +146,18 @@ void hdr_annotation_is_composited_and_counted_without_reading_hidden_source() {
   const auto source = frame(0x7C00, 0x3E00);
   const auto view = FrameCropper::view(source);
   const auto pixel_plan = AnnotationRenderPlanner::build_pixel_plan(
-      AnnotationRenderPlan{
-          1,
-          PixelSize{2, 1},
-          {AnnotationCoverageLayer{
-              ObjectId{3},
-              AnnotationKind::rectangle,
-              PixelRect{0, 0, 1, 1},
-              0xFF0000,
-              {CoverageSpan{0, 0, {255U}}},
-              "test",
-          }},
-      });
+      AnnotationRenderPlan{1,
+                           PixelSize{2, 1},
+                           {AnnotationCoverageLayer{
+                               ObjectId{3},
+                               AnnotationKind::rectangle,
+                               PixelRect{0, 0, 1, 1},
+                               0xFF0000,
+                               {CoverageSpan{0, 0, {255U}}},
+                               "test",
+                           }},
+                           {},
+                           AnnotationScale::from(1).value()});
   HDRSHOT_CHECK(pixel_plan.has_value());
   const auto expected = OutputRowProducer::produce_all(
       source, pixel_plan.value(), hdr_plan(), 203.0,
@@ -233,9 +234,18 @@ void partial_coverage_matches_cpu() {
   const auto view=FrameCropper::view(source);
   auto metal=processor();
   for(const auto amount : {1U,64U,128U,192U,255U}) {
-    const auto plan=AnnotationRenderPlanner::build_pixel_plan({1,{2,1},
-        {{ObjectId{1},AnnotationKind::text,{0,0,1,1},0xFFFFFF,
-          {{0,0,{static_cast<std::uint8_t>(amount)}}},"AA"}}}).value();
+    const auto plan = AnnotationRenderPlanner::build_pixel_plan(
+                          {1,
+                           {2, 1},
+                           {{ObjectId{1},
+                             AnnotationKind::text,
+                             {0, 0, 1, 1},
+                             0xFFFFFF,
+                             {{0, 0, {static_cast<std::uint8_t>(amount)}}},
+                             "AA"}},
+                           {},
+                           AnnotationScale::from(1).value()})
+                          .value();
     for(const auto output : {sdr_plan(),hdr_plan()}) {
       const auto expected=OutputRowProducer::produce_all(source,plan,output,203);
       const auto actual=metal->process({&view,&plan,output,PqDiffuseWhite::nits_203,HdrPqPrecision::bits_16});
@@ -258,9 +268,18 @@ void partial_coverage_matches_cpu() {
   }
   source.rgba_half[0]=0x7E00;
   for(const auto amount : {128U,255U}) {
-    const auto plan=AnnotationRenderPlanner::build_pixel_plan({1,{2,1},
-        {{ObjectId{1},AnnotationKind::text,{0,0,1,1},0xFFFFFF,
-          {{0,0,{static_cast<std::uint8_t>(amount)}}},"AA"}}}).value();
+    const auto plan = AnnotationRenderPlanner::build_pixel_plan(
+                          {1,
+                           {2, 1},
+                           {{ObjectId{1},
+                             AnnotationKind::text,
+                             {0, 0, 1, 1},
+                             0xFFFFFF,
+                             {{0, 0, {static_cast<std::uint8_t>(amount)}}},
+                             "AA"}},
+                           {},
+                           AnnotationScale::from(1).value()})
+                          .value();
     HDRSHOT_CHECK(metal->process({&view,&plan,hdr_plan(),PqDiffuseWhite::nits_203}).has_value()==(amount==255));
     HDRSHOT_CHECK(metal->render({&view,&plan,203}).has_value()==(amount==255));
   }

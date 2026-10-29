@@ -17,8 +17,16 @@ CanonicalFrameView frame(float linear) {
   return out;
 }
 AnnotationRenderPlan coverage(std::vector<std::uint8_t> values = {0,64,128,192,255}) {
-  return {1, {5,1}, {{ObjectId{1}, AnnotationKind::text, {0,0,5,1},
-      0xFFFFFF, {{0,0,std::move(values)}}, "coverage-test"}}};
+  return {1,
+          {5, 1},
+          {{ObjectId{1},
+            AnnotationKind::text,
+            {0, 0, 5, 1},
+            0xFFFFFF,
+            {{0, 0, std::move(values)}},
+            "coverage-test"}},
+          {},
+          AnnotationScale::from(1).value()};
 }
 AnnotationPixelPlan pixel_plan(const AnnotationRenderPlan& render) {
   auto result = AnnotationRenderPlanner::build_pixel_plan(render);

@@ -31,8 +31,9 @@ CanonicalFrameView frame(const std::uint16_t first, const std::uint16_t second) 
 }
 
 AnnotationPixelPlan empty_plan() {
-  const auto result = AnnotationRenderPlanner::build_pixel_plan(
-      AnnotationRenderPlan{0, PixelSize{2, 1}, {}});
+  const auto result =
+      AnnotationRenderPlanner::build_pixel_plan(AnnotationRenderPlan{
+          0, PixelSize{2, 1}, {}, {}, AnnotationScale::from(1).value()});
   HDRSHOT_CHECK(result.has_value());
   return result.value();
 }
@@ -88,10 +89,14 @@ void opaque_annotation_row_does_not_read_hidden_invalid_source_or_alpha() {
   const auto render_plan = AnnotationRenderPlan{
       2,
       PixelSize{2, 1},
-      {AnnotationCoverageLayer{
-          ObjectId{9}, AnnotationKind::rectangle, PixelRect{0, 0, 1, 1},
-          0xFFFFFF, {CoverageSpan{0, 0, {255U}}}, "test"}},
-  };
+      {AnnotationCoverageLayer{ObjectId{9},
+                               AnnotationKind::rectangle,
+                               PixelRect{0, 0, 1, 1},
+                               0xFFFFFF,
+                               {CoverageSpan{0, 0, {255U}}},
+                               "test"}},
+      {},
+      AnnotationScale::from(1).value()};
   const auto pixel_plan = AnnotationRenderPlanner::build_pixel_plan(render_plan);
   HDRSHOT_CHECK(pixel_plan.has_value());
   const auto result = OutputRowProducer::produce_all(

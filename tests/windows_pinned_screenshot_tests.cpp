@@ -76,8 +76,12 @@ ExportSnapshot fixture(bool hdr) {
   snapshot.session_id={22};snapshot.operation_id={1};
   snapshot.frozen_desktop=desktop;snapshot.target_display_id={1};
   snapshot.selection={1,{16,8,240,144}};snapshot.annotations.revision=1;
-  snapshot.annotation_render_plan=std::make_shared<AnnotationRenderPlan>(
-      AnnotationRenderPlan{1,{240,144},{},snapshot.selection.desktop_rect});
+  snapshot.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(
+      AnnotationRenderPlan{1,
+                           {240, 144},
+                           {},
+                           snapshot.selection.desktop_rect,
+                           AnnotationScale::from(1).value()});
   return snapshot;
 }
 void native_content() {

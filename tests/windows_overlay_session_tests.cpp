@@ -9,6 +9,7 @@
 
 #include <QApplication>
 #include <QBackingStore>
+#include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFrame>
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -664,6 +666,54 @@ void continuous_annotation_preview() {
               << "},\"target_width\":" << size.width << ",\"target_height\":" << size.height
               << ",\"active_dpr\":" << scale << "}\n";
     HDRSHOT_CHECK(moves > 10 && during >= 3 && !presenter->failed->load());
+  }
+  // Exercise the real native underlay -> Qt forwarding path. Physical one-pixel
+  // changes must survive fractional DPR division, including release
+  // coordinates.
+  for (int diameter : {4, 48, 72}) {
+    host->findChild<QToolButton *>("toolBrush")->click();
+    auto *sizes = host->findChild<QComboBox *>();
+    HDRSHOT_CHECK(sizes);
+    sizes->setCurrentIndex(sizes->findData(diameter));
+    const HWND underlay = static_cast<HWND>(host->native_surface());
+    const auto send = [&](UINT message, int x, int y, WPARAM buttons) {
+      SendMessageW(underlay, message, buttons, MAKELPARAM(x, y));
+    };
+    int x = qRound(200 * scale), y = qRound(200 * scale);
+    send(WM_LBUTTONDOWN, x, y, MK_LBUTTON);
+    send(WM_MOUSEMOVE, x + 1, y, MK_LBUTTON);
+    send(WM_MOUSEMOVE, x + 2, y + 1, MK_LBUTTON);
+    const int before = presenter->completed->load();
+    QElapsedTimer motion;
+    motion.start();
+    int moves = 2;
+    while (motion.elapsed() < 1200) {
+      double t = motion.elapsed() / 1200.;
+      send(WM_MOUSEMOVE, qRound((220 + 180 * std::sin(t * 12)) * scale),
+           qRound((220 + 120 * std::sin(t * 24)) * scale), MK_LBUTTON);
+      QApplication::processEvents(QEventLoop::AllEvents, 2);
+      Sleep(4);
+      ++moves;
+    }
+    send(WM_LBUTTONUP, x + 3, y + 2, 0);
+    const auto snapshot = editor->annotations();
+    const auto &object = snapshot.objects.back();
+    HDRSHOT_CHECK(object.kind == AnnotationKind::brush);
+    const auto &points = object.brush_geometry->path->points;
+    HDRSHOT_CHECK(points.size() > 10);
+    HDRSHOT_CHECK_NEAR(points[1].x - points[0].x, 1., 1e-8);
+    HDRSHOT_CHECK_NEAR(points[2].x - points[1].x, 1., 1e-8);
+    HDRSHOT_CHECK_NEAR(points.back().x, double(x + 3), 1e-8);
+    auto revision = editor->annotations().revision;
+    HDRSHOT_CHECK(wait_until([&] {
+      return presenter->last &&
+             presenter->last->model.annotation_document.revision == revision;
+    }));
+    std::cout << "brush native diameter_dip=" << diameter << " moves=" << moves
+              << " completed=" << presenter->completed->load() - before
+              << " active_dpr=" << scale << '\n';
+    HDRSHOT_CHECK(presenter->completed->load() - before >= 3);
+    host->findChild<QToolButton *>("toolSelect")->click();
   }
   // Exact copy must own the final release geometry and fully composed pixels.
   host->findChild<QToolButton*>("actionCopy")->click();

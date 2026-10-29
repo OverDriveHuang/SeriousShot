@@ -93,8 +93,21 @@ bool contains_ascii(
 SourceFixture load_pq_png_as_extended_display_p3(const char* path) {
   NSString* native_path = [NSString stringWithUTF8String:path];
   HDRSHOT_CHECK(native_path != nil);
-  NSData* source_bytes = [NSData dataWithContentsOfFile:native_path];
+  NSError* read_error = nil;
+  NSData* source_bytes = [NSData dataWithContentsOfFile:native_path
+      options:0 error:&read_error];
+  if (source_bytes == nil) {
+    std::cerr << "fixture input unreadable: " << path << ": "
+              << (read_error != nil ? read_error.localizedDescription.UTF8String : "unknown read error")
+              << "; register a readable PQ PNG and retry the same CTest target\n";
+  }
   HDRSHOT_CHECK(source_bytes != nil);
+  if (!contains_ascii(
+      {static_cast<const std::uint8_t*>(source_bytes.bytes), source_bytes.length},
+      "kCGColorSpaceITUR_2100_PQ")) {
+    std::cerr << "fixture input invalid/corrupt or PQ metadata contract mismatch: "
+              << path << "; register the original PQ PNG and retry the same CTest target\n";
+  }
   HDRSHOT_CHECK(contains_ascii(
       {static_cast<const std::uint8_t*>(source_bytes.bytes), source_bytes.length},
       "kCGColorSpaceITUR_2100_PQ"));
@@ -102,9 +115,17 @@ SourceFixture load_pq_png_as_extended_display_p3(const char* path) {
   NSURL* url = [NSURL fileURLWithPath:native_path];
   CGImageSourceRef source = CGImageSourceCreateWithURL(
       (__bridge CFURLRef)url, nullptr);
+  if (source == nullptr) {
+    std::cerr << "fixture input invalid/corrupt: ImageIO cannot open " << path
+              << "; register the original PQ PNG and retry the same CTest target\n";
+  }
   HDRSHOT_CHECK(source != nullptr);
   CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0U, nullptr);
   CFRelease(source);
+  if (image == nullptr) {
+    std::cerr << "fixture input invalid/corrupt: ImageIO cannot decode " << path
+              << "; register the original PQ PNG and retry the same CTest target\n";
+  }
   HDRSHOT_CHECK(image != nullptr);
   const auto width = CGImageGetWidth(image);
   const auto height = CGImageGetHeight(image);
@@ -330,8 +351,11 @@ int main() {
   @autoreleasepool {
     const char* fixture = std::getenv("HDRSHOT_ULTRAHDR_FIXTURE");
     if (fixture == nullptr || fixture[0] == '\0') {
-      std::cout << "[SKIP] HDRSHOT_ULTRAHDR_FIXTURE is not set\n";
-      return 77;
+      std::cerr << "test input not configured: HDRSHOT_ULTRAHDR_FIXTURE is unset; "
+                   "run ctest --test-dir BUILD -R ^hdrshot_macos_ultra_hdr_fixture_tests$ "
+                   "--output-on-failure via the fixture wrapper, or register a location with "
+                   "python3 scripts/test_fixture_inputs.py register --uhdr-fixture /path/to/PQ.png\n";
+      return 1;
     }
     return hdrshot::test::run({
         {"specified PQ PNG survives Ultra HDR encode/decode",

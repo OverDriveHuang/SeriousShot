@@ -42,18 +42,21 @@ void create_move_restyle_undo_redo() {
       RestyleAnnotation{ObjectId{1}, ShapeStyle{kBlue, 6}}));
   HDRSHOT_CHECK(document.snapshot().revision == 3);
   HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style).color_srgb_rgb == kBlue);
-  HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style).line_width_px == 6);
+  HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style)
+                    .line_width_dip == 6);
 
   document = unwrap(AnnotationDocument::apply(document, UndoAnnotation{}));
   HDRSHOT_CHECK(document.snapshot().revision == 4);
   HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style).color_srgb_rgb == kRed);
-  HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style).line_width_px == 4);
+  HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style)
+                    .line_width_dip == 4);
   HDRSHOT_CHECK(document.snapshot().redo_available);
 
   document = unwrap(AnnotationDocument::apply(document, RedoAnnotation{}));
   HDRSHOT_CHECK(document.snapshot().revision == 5);
   HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style).color_srgb_rgb == kBlue);
-  HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style).line_width_px == 6);
+  HDRSHOT_CHECK(std::get<ShapeStyle>(document.snapshot().objects.front().style)
+                    .line_width_dip == 6);
   HDRSHOT_CHECK(!document.snapshot().redo_available);
 }
 
@@ -65,7 +68,7 @@ void undo_then_new_command_clears_redo() {
   HDRSHOT_CHECK(document.snapshot().redo_available);
   document = unwrap(AnnotationDocument::apply(
       document,
-      RestyleAnnotation{ObjectId{1}, ShapeStyle{kBlue, 8}}));
+      RestyleAnnotation{ObjectId{1}, ShapeStyle{kBlue, 6}}));
   HDRSHOT_CHECK(!document.snapshot().redo_available);
   const auto redo = AnnotationDocument::apply(document, RedoAnnotation{});
   HDRSHOT_CHECK(!redo.has_value());

@@ -1,5 +1,6 @@
 #include "platform/macos/metal_edr_presenter.hpp"
 #include "application/clean_content_cache.hpp"
+#include "domain/annotation/annotation_compositing.hpp"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Metal/Metal.h>
@@ -185,7 +186,7 @@ float3 extended_srgb_to_linear(float3 encoded) {
 
 float3 clean_color(texture2d<float, access::read> source,
     constant ShaderParameters& params, device const uint4* spans,
-    device const float4* samples, device const uint2* rows, device const float4* float_source, uint2 gid) {
+    device const float4* samples, device const uint2* rows, device const float4* float_source, device const float4* palette, uint2 gid) {
   const uint pixel = gid.y * params.width + gid.x;
   const uint2 row = rows[gid.y];
   uint lo = row.x, hi = row.x + row.y;
@@ -194,7 +195,7 @@ float3 clean_color(texture2d<float, access::read> source,
     const uint4 span = spans[mid];
     if (pixel < span.x) hi = mid;
     else if (pixel >= span.x + span.y) lo = mid + 1;
-    else return samples[span.z + pixel - span.x].rgb;
+    else return span.w == 2u ? palette[span.z].rgb : samples[span.z + pixel - span.x].rgb;
   }
   const float3 value = params.source_is_float32 != 0u ? float_source[pixel].rgb : source.read(gid).rgb;
   return params.source_is_linear != 0u ? value : extended_srgb_to_linear(value);
@@ -202,7 +203,7 @@ float3 clean_color(texture2d<float, access::read> source,
 float3 apply_ui(float3 color, constant ShaderParameters& params, uint2 gid);
 float3 overlay_color(texture2d<float, access::read> source, constant ShaderParameters& params,
     device const uint4* spans, device const float4* samples, device const uint2* rows,
-    device const float4* float_source, uint2 gid) {
+    device const float4* float_source, device const float4* palette, uint2 gid) {
   constant int* m=params.magnifier;
   int2 p=int2(gid)-int2(m[0],m[1]);
   if(m[7]!=0 && all(p>=int2(0)) && p.x<m[2] && p.y<m[3]) {
@@ -226,7 +227,7 @@ float3 overlay_color(texture2d<float, access::read> source, constant ShaderParam
     if(box || cross) return float3(params.ui_white_edr);
     return box_outline || cross_outline?float3(0.0f):color;
   }
-  return apply_ui(clean_color(source,params,spans,samples,rows,float_source,gid),params,gid);
+  return apply_ui(clean_color(source,params,spans,samples,rows,float_source,palette,gid),params,gid);
 }
 float3 apply_ui(float3 color, constant ShaderParameters& params, uint2 gid) {
   const int x = int(gid.x);
@@ -262,9 +263,10 @@ kernel void compose_overlay(
     device const float4* samples [[buffer(2)]],
     device const uint2* rows [[buffer(3)]],
     device const float4* float_source [[buffer(4)]],
+    device const float4* palette [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (gid.x >= params.width || gid.y >= params.height) return;
-  output.write(half4(half3(overlay_color(source, params, spans, samples, rows, float_source, gid)), 1.0h), gid);
+  output.write(half4(half3(overlay_color(source, params, spans, samples, rows, float_source, palette, gid)), 1.0h), gid);
 }
 
 struct VertexOut {
@@ -287,10 +289,10 @@ fragment half4 fullscreen_fragment(
     VertexOut in [[stage_in]], texture2d<float, access::read> source [[texture(0)]],
     constant ShaderParameters& params [[buffer(0)]], device const uint4* spans [[buffer(1)]],
     device const float4* samples [[buffer(2)]], device const uint2* rows [[buffer(3)]],
-    device const float4* float_source [[buffer(4)]]) {
+    device const float4* float_source [[buffer(4)]], device const float4* palette [[buffer(5)]]) {
   const uint2 gid = min(uint2(in.uv * float2(params.width, params.height)),
                        uint2(params.width - 1, params.height - 1));
-  return half4(half3(overlay_color(source, params, spans, samples, rows, float_source, gid)), 1.0h);
+  return half4(half3(overlay_color(source, params, spans, samples, rows, float_source, palette, gid)), 1.0h);
 }
 
 fragment half4 card_fragment(
@@ -298,12 +300,12 @@ fragment half4 card_fragment(
     texture2d<float, access::read> ui [[texture(1)]],
     constant ShaderParameters& params [[buffer(0)]], device const uint4* spans [[buffer(1)]],
     device const float4* samples [[buffer(2)]], device const uint2* rows [[buffer(3)]],
-    device const float4* float_source [[buffer(4)]]) {
+    device const float4* float_source [[buffer(4)]], device const float4* palette [[buffer(5)]]) {
   const uint2 gid = uint2(in.position.xy);
   int2 p = int2(gid) - int2(params.magnifier[0], params.magnifier[1]);
   float3 color = float3(0.025f);
   if (all(p >= int2(0)) && p.x < params.magnifier[2] && p.y < params.magnifier[3])
-    color = overlay_color(source, params, spans, samples, rows, float_source, gid);
+    color = overlay_color(source, params, spans, samples, rows, float_source, palette, gid);
   const float4 text = ui.read(gid);
   const float3 rgb = extended_srgb_to_linear(text.rgb);
   const float3 p3 = float3(
@@ -337,7 +339,7 @@ struct MacMetalEdrPresenter::Impl {
   std::shared_ptr<const LinearFloatPixels> cached_float_owner;
   LinearSourceRef cached_native_owner;
   CleanContentRef cached_clean;
-  id<MTLBuffer> clean_spans{nil}, clean_samples{nil}, clean_rows{nil};
+  id<MTLBuffer> clean_spans{nil}, clean_samples{nil}, clean_rows{nil}, clean_palette{nil};
   std::uint32_t clean_span_count{};
   ShaderParameters parameters{};
   std::uint64_t cached_source_frame_key{};
@@ -438,46 +440,65 @@ struct MacMetalEdrPresenter::Impl {
 
     if (cached_clean != request.clean_content || clean_spans == nil || source_changed) {
       std::vector<std::array<std::uint32_t, 4>> spans;
-      std::vector<std::array<float, 4>> samples;
+      std::vector<std::array<float, 4>> samples, palette;
+      std::map<std::uint32_t,std::uint32_t> colors;
       LinearSampleRef native_samples;
       std::vector<std::array<std::uint32_t, 2>> rows(request.height_px);
+      int previous_y=-1,previous_end=0;
+      const auto invalid=[&](const char* reason) { return Result<id<MTLTexture>,Error>::failure(
+          presenter_error(ErrorCode::invalid_input,Retryability::never,{{"reason",reason}})); };
       if (request.clean_content) for (const auto& span : request.clean_content->owned) {
-        if (span.y < 0 || span.y >= static_cast<int>(request.height_px) || span.x < 0 ||
-            span.length <= 0 || static_cast<std::int64_t>(span.x) + span.length >
-                static_cast<std::int64_t>(request.width_px))
-          return Result<id<MTLTexture>, Error>::failure(presenter_error(ErrorCode::invalid_input,
-              Retryability::never, {{"reason", "clean_span_out_of_bounds"}}));
-        auto& row = rows[static_cast<std::size_t>(span.y)];
-        if (row[1] == 0) row[0] = static_cast<std::uint32_t>(spans.size());
+        if(span.y<0 || span.y>=int(request.height_px)||span.x<0||span.length<=0||
+           std::int64_t(span.x)+span.length>request.width_px||span.y<previous_y||
+           (span.y==previous_y&&span.x<previous_end)||spans.size()>=UINT32_MAX)
+          return invalid("clean_span_out_of_bounds");
+        previous_y=span.y;previous_end=span.x+span.length;
+        auto& row=rows[std::size_t(span.y)];
+        if(!row[1]) row[0]=std::uint32_t(spans.size());
         ++row[1];
-        if (span.native_samples) {
-          if ((native_samples && native_samples != span.native_samples) || !samples.empty() ||
-              !span.clean_composited || !span.edge_samples.empty() ||
-              span.native_sample_offset > span.native_samples->sample_count() ||
-              static_cast<std::size_t>(span.length) >
-                  span.native_samples->sample_count() - span.native_sample_offset ||
-              span.native_sample_offset > UINT32_MAX - static_cast<std::uint32_t>(span.length))
-            return Result<id<MTLTexture>, Error>::failure(presenter_error(ErrorCode::invalid_input,
-                Retryability::never, {{"reason", "invalid_native_samples"}}));
-          native_samples = span.native_samples;
-        } else if (native_samples || span.edge_samples.size() != static_cast<std::size_t>(span.length))
-          return Result<id<MTLTexture>, Error>::failure(presenter_error(ErrorCode::invalid_input,
-              Retryability::never, {{"reason", "invalid_clean_samples"}}));
-        spans.push_back({static_cast<std::uint32_t>(static_cast<std::size_t>(span.y) *
-                request.width_px + static_cast<std::size_t>(span.x)),
-            static_cast<std::uint32_t>(span.length), static_cast<std::uint32_t>(
-                span.native_samples ? span.native_sample_offset : samples.size()), 0});
-        if (!span.native_samples) samples.insert(samples.end(), span.edge_samples.begin(), span.edge_samples.end());
+        std::size_t offset=0;std::uint32_t kind=0;
+        if(span.native_samples) {
+          if((native_samples&&native_samples!=span.native_samples)||!samples.empty()||
+             !span.clean_composited||!span.edge_samples.empty()||
+             span.native_sample_offset>span.native_samples->sample_count()||
+             std::size_t(span.length)>span.native_samples->sample_count()-span.native_sample_offset||
+             span.native_sample_offset>UINT32_MAX-std::size_t(span.length))
+            return invalid("invalid_native_samples");
+          native_samples=span.native_samples;offset=span.native_sample_offset;kind=1;
+        } else if(span.edge_samples.empty()) {
+          if(span.clean_composited||span.native_sample_offset) return invalid("invalid_constant_span");
+          auto [it,inserted]=colors.try_emplace(span.color_srgb_rgb,std::uint32_t(palette.size()));
+          offset=it->second;kind=2;
+          if(inserted) palette.push_back(annotation_linear_sample(span,0));
+        } else {
+          if(native_samples||!span.clean_composited||span.edge_samples.size()!=std::size_t(span.length)||
+             span.native_sample_offset||samples.size()>UINT32_MAX-std::size_t(span.length))
+            return invalid("invalid_clean_samples");
+          for(auto sample:span.edge_samples) {
+            if(sample[3]!=0) return invalid("invalid_clean_source_weight");
+            for(int c=0;c<3;++c) if(!std::isfinite(sample[c])||sample[c]<0) return invalid("invalid_clean_rgb");
+          }
+          offset=samples.size();samples.insert(samples.end(),span.edge_samples.begin(),span.edge_samples.end());
+        }
+        spans.push_back({std::uint32_t(std::size_t(span.y)*request.width_px+span.x),
+                         std::uint32_t(span.length),std::uint32_t(offset),kind});
       }
-      clean_span_count = static_cast<std::uint32_t>(spans.size());
-      if (spans.empty()) spans.push_back({0, 0, 0, 0});
-      if (samples.empty()) samples.push_back({0, 0, 0, 0});
-      clean_spans = [device newBufferWithBytes:spans.data() length:spans.size() * 16 options:MTLResourceStorageModeShared];
-      clean_samples = native_samples ? macos_sample_buffer(native_samples)
-          : [device newBufferWithBytes:samples.data() length:samples.size() * 16 options:MTLResourceStorageModeShared];
-      clean_rows = [device newBufferWithBytes:rows.data() length:rows.size() * 8 options:MTLResourceStorageModeShared];
-      if (!clean_spans || !clean_samples || !clean_rows) return Result<id<MTLTexture>, Error>::failure(
-          presenter_error(ErrorCode::presenter_failed, Retryability::after_recreate, {{"reason", "clean_upload_failed"}}));
+      const auto next_span_count=std::uint32_t(spans.size());
+      if(spans.empty()) spans.push_back({0,0,0,0});
+      if(samples.empty()) samples.push_back({0,0,0,0});
+      if(palette.empty()) palette.push_back({0,0,0,0});
+      auto native_buffer=native_samples?macos_sample_buffer(native_samples):nil;
+      if(native_samples&&(!native_buffer||native_buffer.device!=device||native_samples->sample_count()>native_buffer.length/16))
+        return invalid("invalid_native_buffer");
+      if(spans.size()>device.maxBufferLength/16||samples.size()>device.maxBufferLength/16||
+         palette.size()>device.maxBufferLength/16||rows.size()>device.maxBufferLength/8)
+        return invalid("clean_buffer_size_overflow");
+      auto new_spans=[device newBufferWithBytes:spans.data() length:spans.size()*16 options:MTLResourceStorageModeShared];
+      auto new_samples=native_samples?native_buffer:[device newBufferWithBytes:samples.data() length:samples.size()*16 options:MTLResourceStorageModeShared];
+      auto new_rows=[device newBufferWithBytes:rows.data() length:rows.size()*8 options:MTLResourceStorageModeShared];
+      auto new_palette=[device newBufferWithBytes:palette.data() length:palette.size()*16 options:MTLResourceStorageModeShared];
+      if(!new_spans||!new_samples||!new_rows||!new_palette) return invalid("clean_upload_failed");
+      clean_spans=new_spans;clean_samples=new_samples;clean_rows=new_rows;clean_palette=new_palette;clean_span_count=next_span_count;
       cached_clean = request.clean_content;
     }
     parameters = ShaderParameters{
@@ -512,6 +533,7 @@ struct MacMetalEdrPresenter::Impl {
     [encoder setBuffer:clean_spans offset:0 atIndex:1];
     [encoder setBuffer:clean_samples offset:0 atIndex:2];
     [encoder setBuffer:clean_rows offset:0 atIndex:3];
+    [encoder setBuffer:clean_palette offset:0 atIndex:5];
     [encoder setBuffer:cached_source_buffer offset:source_buffer_offset atIndex:4];
     const auto thread_width = compute_pipeline.threadExecutionWidth;
     const auto thread_height = std::max<std::size_t>(
@@ -553,6 +575,7 @@ struct MacMetalEdrPresenter::Impl {
     [encoder setFragmentBuffer:clean_spans offset:0 atIndex:1];
     [encoder setFragmentBuffer:clean_samples offset:0 atIndex:2];
     [encoder setFragmentBuffer:clean_rows offset:0 atIndex:3];
+    [encoder setFragmentBuffer:clean_palette offset:0 atIndex:5];
     [encoder setFragmentBuffer:cached_source_buffer offset:source_buffer_offset atIndex:4];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [encoder endEncoding];
@@ -714,6 +737,7 @@ Result<MacMetalOverlayReadback, Error> MacMetalEdrPresenter::render_offscreen(
     [encoder setFragmentBuffer:impl_->clean_spans offset:0 atIndex:1];
     [encoder setFragmentBuffer:impl_->clean_samples offset:0 atIndex:2];
     [encoder setFragmentBuffer:impl_->clean_rows offset:0 atIndex:3];
+    [encoder setFragmentBuffer:impl_->clean_palette offset:0 atIndex:5];
     [encoder setFragmentBuffer:impl_->cached_source_buffer offset:impl_->source_buffer_offset atIndex:4];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [encoder endEncoding];
@@ -834,6 +858,7 @@ Result<MacMetalPresentReceipt, Error> MacMetalEdrPresenter::present_to_layer(
   [encoder setFragmentBuffer:impl_->clean_spans offset:0 atIndex:1];
   [encoder setFragmentBuffer:impl_->clean_samples offset:0 atIndex:2];
     [encoder setFragmentBuffer:impl_->clean_rows offset:0 atIndex:3];
+    [encoder setFragmentBuffer:impl_->clean_palette offset:0 atIndex:5];
     [encoder setFragmentBuffer:impl_->cached_source_buffer offset:impl_->source_buffer_offset atIndex:4];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [encoder endEncoding];

@@ -64,7 +64,11 @@ int main(int argc,char** argv) { @autoreleasepool {
     }
     if (native) input.source_normalizer=normalizer; else input.linear_storage=macos_linear_storage();
     inputs.push_back(std::move(input));
-    AnnotationRenderPlan plan{1,{width,height},{},{0,0,width,height}};
+    AnnotationRenderPlan plan{1,
+                              {width, height},
+                              {},
+                              {0, 0, width, height},
+                              AnnotationScale::from(1).value()};
     if (aa) {
       AnnotationCoverageLayer layer{ObjectId{1},AnnotationKind::rectangle,{500,400,1000,600},0xff6600,{},"bench"};
       for (int y=400;y<1000;++y) {

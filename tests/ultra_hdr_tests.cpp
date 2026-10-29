@@ -2,6 +2,8 @@
 #include "domain/color/extended_p3_mapper.hpp"
 #include "domain/color/display_p3_icc_profile.hpp"
 #include "domain/output/ultra_hdr_input_renderer.hpp"
+#include "domain/annotation/brush_stroke_builder.hpp"
+#include "domain/annotation/annotation_render_plan.hpp"
 #include "test_support.hpp"
 #include "ultra_hdr_metadata_test_support.hpp"
 #include "ultra_hdr_icc_oracle.hpp"
@@ -125,6 +127,53 @@ void cpu_renderer_rejects_invalid_pixel_ownership() {
 }
 
 using hdrshot::test::check_dual_metadata;
+
+void real_brush_and_line_encode_decode_with_dual_metadata() {
+  auto fixture=linear_gradient_fixture();
+  BrushStrokeBuilder builder;
+  HDRSHOT_CHECK(builder.begin({71},{0xFF4D67,4},{4,8},{0,0,32,16},
+                              AnnotationScale::from(1).value()).has_value());
+  auto stroke=builder.finish({23,8});
+  HDRSHOT_CHECK(stroke.has_value());
+  AnnotationObject line{{72},AnnotationKind::line,{25,2,4,10},
+      ShapeStyle{0x25C06D,2},{},ArrowGeometry{{25,2},{29,12}}};
+  auto coverage=AnnotationRenderPlanner::build(
+      {1,{stroke.value().object,line},{},false,false},{0,0,32,16},1);
+  HDRSHOT_CHECK(coverage.has_value());
+  auto pixels=AnnotationRenderPlanner::build_pixel_plan(coverage.value());
+  HDRSHOT_CHECK(pixels.has_value());
+  CpuUltraHdrInputRenderer renderer;
+  auto rendered=renderer.render({&fixture.view,&pixels.value(),203.});
+  HDRSHOT_CHECK(rendered && rendered.value().maximum_linear_component>1.);
+  const auto center=std::size_t(8*32+12)*4;
+  auto input_red=ExtendedP3Mapper::decode_binary16(rendered.value().rgba_half[center]);
+  auto input_green=ExtendedP3Mapper::decode_binary16(rendered.value().rgba_half[center+1]);
+  HDRSHOT_CHECK(input_red && input_green && input_red.value()>input_green.value());
+  LibUltraHdrEncoder encoder;
+  auto encoded=encoder.encode({&rendered.value(),UltraHdrJpegQuality::maximum});
+  HDRSHOT_CHECK(encoded && encoded.value().kind==JpegOutputKind::ultra_hdr);
+  DecoderHandle decoder{uhdr_create_decoder(),&uhdr_release_decoder};
+  HDRSHOT_CHECK(decoder != nullptr);
+  uhdr_compressed_image_t input{};
+  input.data=encoded.value().bytes.data();
+  input.data_sz=input.capacity=encoded.value().bytes.size();
+  HDRSHOT_CHECK(uhdr_dec_set_image(decoder.get(),&input).error_code==UHDR_CODEC_OK);
+  HDRSHOT_CHECK(uhdr_dec_set_out_img_format(decoder.get(),UHDR_IMG_FMT_64bppRGBAHalfFloat).error_code==UHDR_CODEC_OK);
+  HDRSHOT_CHECK(uhdr_dec_set_out_color_transfer(decoder.get(),UHDR_CT_LINEAR).error_code==UHDR_CODEC_OK);
+  HDRSHOT_CHECK(uhdr_dec_set_out_max_display_boost(decoder.get(),4.f).error_code==UHDR_CODEC_OK);
+  HDRSHOT_CHECK(uhdr_dec_probe(decoder.get()).error_code==UHDR_CODEC_OK);
+  hdrshot::test::check_p3_base_and_alternate(decoder.get());
+  HDRSHOT_CHECK(uhdr_decode(decoder.get()).error_code==UHDR_CODEC_OK);
+  hdrshot::test::check_dual_reconstruction(decoder.get(),true);
+  const auto *decoded=uhdr_get_decoded_image(decoder.get());
+  HDRSHOT_CHECK(decoded && decoded->w==32 && decoded->h==16 &&
+                decoded->cg==UHDR_CG_DISPLAY_P3 && decoded->ct==UHDR_CT_LINEAR);
+  const auto *data=static_cast<const std::uint16_t*>(decoded->planes[UHDR_PLANE_PACKED]);
+  const auto offset=std::size_t(8*decoded->stride[UHDR_PLANE_PACKED]+12)*4;
+  auto red=ExtendedP3Mapper::decode_binary16(data[offset]);
+  auto green=ExtendedP3Mapper::decode_binary16(data[offset+1]);
+  HDRSHOT_CHECK(red && green && red.value()>green.value());
+}
 
 void codec_writes_dual_metadata_and_decodes_linear_hdr() {
   auto fixture = linear_gradient_fixture();
@@ -545,6 +594,7 @@ int main(int argc, char** argv) {
     return hdrshot::test::run(files);
   }
   return hdrshot::test::run(std::vector<TestCase>{
+      {"real brush and line survive production Ultra HDR codec",real_brush_and_line_encode_decode_with_dual_metadata},
       {"AA residual edges clip in SDR JPEG", explicit_edge_clipping_stays_sdr},
       {"SDR input is an ordinary JPEG", sdr_input_is_an_ordinary_jpeg},
       {"First half step above one remains HDR", first_half_step_above_one_still_encodes_hdr},

@@ -1,6 +1,7 @@
 #include "platform/cpu/cpu_analysis_port.hpp"
 #include "platform/windows/windows_analysis_backend.hpp"
 #include "test_support.hpp"
+#include "windows_mixed_clean_test_support.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -280,6 +281,20 @@ void six_k_dispatch_covers_every_pixel() {
                    .count()
             << ",\"retained_bytes\":" << result.value()->retained_bytes << "}\n";
 }
+void mixed_native_clean_analysis_uses_hand_oracle() {
+  auto native = make_windows_analysis_backend();
+  HDRSHOT_CHECK(native.has_value());
+  auto fixture = test::windows_mixed_clean_fixture();
+  auto prepared = native.value().port->prepare(fixture.roi, fixture.plan);
+  HDRSHOT_CHECK(prepared.has_value());
+  auto actual = prepared.value()->read_region({0, 0, 5, 1});
+  HDRSHOT_CHECK(actual.has_value());
+  HDRSHOT_CHECK(actual.value().size() == 20);
+  for (std::size_t p = 0; p < test::WindowsMixedCleanFixture::expected.size(); ++p)
+    for (std::size_t c = 0; c < 4; ++c)
+      HDRSHOT_CHECK_NEAR(actual.value()[p * 4 + c],
+          test::WindowsMixedCleanFixture::expected[p][c], 2e-6);
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -289,6 +304,7 @@ int main(int argc, char **argv) {
     detail_projection_is_lazy_and_reused();
     report_uses_hdr_source_and_fixed_overlay();
     clean_roi_bakes_annotation_once();
+    mixed_native_clean_analysis_uses_hand_oracle();
     if (argc > 1 && std::string_view(argv[1]) == "--6k")
       six_k_dispatch_covers_every_pixel();
     std::cout << "Windows D3D analysis parity passed\n";

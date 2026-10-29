@@ -1,3 +1,4 @@
+#include "domain/annotation/annotation_compositing.hpp"
 #include "application/analysis_session.hpp"
 #include "application/analysis_workflow.hpp"
 #include "domain/annotation/annotation_pixel_plan_validator.hpp"
@@ -431,8 +432,12 @@ ExportSnapshot snapshot(bool annotated = false, bool visible_hdr = false) {
   result.pq_diffuse_white = PqDiffuseWhite::nits_100;
   result.hdr_pq_precision = HdrPqPrecision::bits_16;
   result.ultra_hdr_jpeg_quality = UltraHdrJpegQuality::compact;
-  auto plan = std::make_shared<AnnotationRenderPlan>(AnnotationRenderPlan{
-      result.annotations.revision, {3, 2}, {}, result.selection.desktop_rect});
+  auto plan = std::make_shared<AnnotationRenderPlan>(
+      AnnotationRenderPlan{result.annotations.revision,
+                           {3, 2},
+                           {},
+                           result.selection.desktop_rect,
+                           AnnotationScale::from(1).value()});
   if (annotated) {
     plan->ordered_layers.push_back({ObjectId{27},
                                     AnnotationKind::text,
@@ -558,14 +563,14 @@ void clean_annotations_are_in_analysis_and_keep_original_output_ownership() {
   auto pixels = prepared.value().input.source->read_region({0, 0, 3, 2});
   HDRSHOT_CHECK(pixels && pixels.value()[0] > 1.0F);
   for (const auto &span : executor.received_plan.annotation_owned_spans) {
-    HDRSHOT_CHECK(span.clean_composited);
+    HDRSHOT_CHECK(span.clean_composited || (span.edge_samples.empty() && !span.native_samples));
     for (int x = 0; x < span.length; ++x)
       for (std::size_t c = 0; c < 3; ++c)
         HDRSHOT_CHECK_NEAR(
             pixels
                 .value()[static_cast<std::size_t>(span.y * 3 + span.x + x) * 4 +
                          c],
-            span.edge_samples[static_cast<std::size_t>(x)][c], 0);
+            annotation_linear_sample(span,std::size_t(x))[c], 0);
   }
   const auto &compact = prepared.value().original;
   auto plan = compact.clean_content->roi_plan(compact.selection.desktop_rect,

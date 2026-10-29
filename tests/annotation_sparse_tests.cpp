@@ -44,12 +44,28 @@ int main() {
         }
       }
       auto ref = test_reference::rasterize_shape(a, {500, 400});
-      auto fast = cache.get(a, {500, 400});
+      auto fast = cache.get(a, {500, 400}, AnnotationScale::from(1).value());
       require(bool(ref) && bool(fast), "shape valid");
+      if (ref.value() != fast.value()) {
+        std::cerr << "shape mismatch case=" << i << " move=" << move
+                  << " width=" << std::get<ShapeStyle>(a.style).line_width_dip
+                  << " reference bounds=" << ref.value().bounds_px.x << ','
+                  << ref.value().bounds_px.y << ','
+                  << ref.value().bounds_px.width << ','
+                  << ref.value().bounds_px.height
+                  << " actual bounds=" << fast.value().bounds_px.x << ','
+                  << fast.value().bounds_px.y << ','
+                  << fast.value().bounds_px.width << ','
+                  << fast.value().bounds_px.height << " spans_equal="
+                  << (ref.value().spans == fast.value().spans) << '\n';
+      }
       require(ref.value() == fast.value(), "shape pixels differ");
       ++shapes;
-      AnnotationRenderPlan plan{
-          1, {500, 400}, {fast.value()}, {0, 0, 500, 400}};
+      AnnotationRenderPlan plan{1,
+                                {500, 400},
+                                {fast.value()},
+                                {0, 0, 500, 400},
+                                AnnotationScale::from(1).value()};
       auto b = a;
       b.id = {2};
       b.style = ShapeStyle{0x30ff80, 7};
@@ -71,12 +87,30 @@ int main() {
       ++pixels;
     }
   }
+  for (double factor : {1.25, 1.5, 2.})
+    for (auto kind : {AnnotationKind::rectangle, AnnotationKind::ellipse,
+                      AnnotationKind::arrow}) {
+      auto object = arrow(70, 60, 210, 180, 4);
+      object.kind = kind;
+      if (kind != AnnotationKind::arrow)
+        object.arrow_geometry.reset();
+      auto reference =
+          test_reference::rasterize_shape(object, {300, 240}, factor);
+      auto actual = AnnotationRenderPlanner::rasterize_shape(
+          object, {300, 240}, AnnotationScale::from(factor).value());
+      require(reference && actual && reference.value() == actual.value(),
+              "DIP scaled independent oracle differs");
+    }
   std::cout << shapes << " coverage/translation cases and " << pixels
             << " overlap pixel plans equal reference\n";
   // Empty plans and cache clipping changes must preserve complete source
   // ownership.
   for (auto size : {PixelSize{1, 1}, PixelSize{100, 70}}) {
-    AnnotationRenderPlan plan{1, size, {}, {0, 0, size.width, size.height}};
+    AnnotationRenderPlan plan{1,
+                              size,
+                              {},
+                              {0, 0, size.width, size.height},
+                              AnnotationScale::from(1).value()};
     auto a = test_reference::build_pixel_plan(plan),
          b = AnnotationRenderPlanner::build_pixel_plan(plan);
     require(a && b && a.value() == b.value(), "empty plan differs");
@@ -86,7 +120,7 @@ int main() {
     for (auto size :
          {PixelSize{200, 200}, PixelSize{160, 160}, PixelSize{200, 200}}) {
       auto ref = test_reference::rasterize_shape(a, size),
-           got = cache.get(a, size);
+           got = cache.get(a, size, AnnotationScale::from(1).value());
       require(ref && got && ref.value() == got.value(),
               "cache clipped differently");
     }

@@ -22,7 +22,8 @@ void center_and_inverse_and_handles() {
   const auto h=shape_handles(value);
   point_near(shape_to_local(value,h[0]),{-100,-50});
   point_near(shape_to_local(value,h[4]),{100,50});
-  const auto rotated=rotate_shape_until_boundary(value,0.5,limits);
+  const auto rotated = rotate_shape_until_boundary(
+      value, 0.5, limits, AnnotationScale::from(1).value());
   point_near(shape_center(rotated),shape_center(value));
   HDRSHOT_CHECK(rotated.bounds==value.bounds);
   HDRSHOT_CHECK(rotated.style==value.style);
@@ -53,24 +54,29 @@ void all_resize_handles_preserve_opposite_anchor() {
     const auto points=shape_handles(value);
     const auto local=shape_to_local(value,points[i]);
     const auto pointer=shape_to_world(value,{local.x*1.25,local.y*1.5});
-    const auto resized=resize_shape(value,handles[i],points[i],pointer,limits,4);
+    const auto resized =
+        resize_shape(value, handles[i], points[i], pointer, limits, 4,
+                     AnnotationScale::from(1).value());
     near(resized.transform.rotation_radians,value.transform.rotation_radians);
     point_near(shape_handles(resized)[(i+4)%8],points[(i+4)%8]);
-    HDRSHOT_CHECK(shape_fits(resized,limits));
+    HDRSHOT_CHECK(
+        shape_fits(resized, limits, AnnotationScale::from(1).value()));
   }
 }
 void rotation_stops_at_first_invalid_arc() {
   auto value=shape(); value.bounds={30,80,240,140};
   const PixelRect tight{0,0,300,300};
-  HDRSHOT_CHECK(shape_fits(value,tight));
+  HDRSHOT_CHECK(shape_fits(value, tight, AnnotationScale::from(1).value()));
   // End 180 degrees is valid, but a diagonal in between is not.
   value.bounds={15,80,270,140};
-  const auto result=rotate_shape_until_boundary(value,pi,tight);
+  const auto result = rotate_shape_until_boundary(
+      value, pi, tight, AnnotationScale::from(1).value());
   HDRSHOT_CHECK(result.transform.rotation_radians>0 && result.transform.rotation_radians<pi/2);
-  HDRSHOT_CHECK(shape_fits(result,tight));
+  HDRSHOT_CHECK(shape_fits(result, tight, AnnotationScale::from(1).value()));
   auto too_far=result; too_far.transform.rotation_radians+=0.0001;
-  HDRSHOT_CHECK(!shape_fits(too_far,tight));
-  const auto reversed=rotate_shape_until_boundary(result,-0.1,tight);
+  HDRSHOT_CHECK(!shape_fits(too_far, tight, AnnotationScale::from(1).value()));
+  const auto reversed = rotate_shape_until_boundary(
+      result, -0.1, tight, AnnotationScale::from(1).value());
   near(reversed.transform.rotation_radians,result.transform.rotation_radians-0.1);
   point_near(shape_center(result),shape_center(value));
 }
@@ -83,13 +89,14 @@ void ellipse_bounds_are_recomputed_from_contour_not_selection_box() {
   const auto bounds=shape_bounds(value);
   near(bounds.left,200-extent); near(bounds.right,200+extent);
   near(bounds.top,200-extent); near(bounds.bottom,200+extent);
-  HDRSHOT_CHECK(shape_fits(value,tight));
+  HDRSHOT_CHECK(shape_fits(value, tight, AnnotationScale::from(1).value()));
   // The rotated editing box has an outside corner, but no visible ellipse
   // stroke is outside. Do not stop rotation at that empty control-box corner.
   const auto handles=shape_handles(value);
   HDRSHOT_CHECK(handles[2].x>tight.right());
   auto axis_aligned=value; axis_aligned.transform.rotation_radians=0;
-  HDRSHOT_CHECK(!shape_fits(axis_aligned,tight));
+  HDRSHOT_CHECK(
+      !shape_fits(axis_aligned, tight, AnnotationScale::from(1).value()));
   for (int i=0;i<1000;++i) {
     const auto angle=2*pi*i/1000;
     const auto point=shape_to_world(value,{100*std::cos(angle),10*std::sin(angle)});
@@ -102,7 +109,8 @@ void circle_wrap_and_drag_history() {
   const auto center=shape_center(value);
   const auto pointer=[&](double angle) { return ShapePoint{center.x+100*std::cos(angle),center.y+100*std::sin(angle)}; };
   ShapeRotationDrag drag(value,pointer(pi-0.02));
-  const auto result=drag.update(pointer(-pi+0.03),limits);
+  const auto result = drag.update(pointer(-pi + 0.03), limits,
+                                  AnnotationScale::from(1).value());
   near(result.transform.rotation_radians,0.05);
   near(shape_bounds(result).left,shape_bounds(value).left);
   auto document=AnnotationDocument::apply(AnnotationDocument::empty(),CreateAnnotation{value}).value();
@@ -111,10 +119,11 @@ void circle_wrap_and_drag_history() {
   HDRSHOT_CHECK(undone.snapshot().objects.front()==value);
   const auto redone=AnnotationDocument::apply(undone,RedoAnnotation{}).value();
   HDRSHOT_CHECK(redone.snapshot().objects.front()==result);
-  const auto restyled=AnnotationDocument::apply(redone,RestyleAnnotation{value.id,ShapeStyle{0xFFFFFF,8}}).value();
+  const auto restyled=AnnotationDocument::apply(redone,RestyleAnnotation{value.id,ShapeStyle{0xFFFFFF,6}}).value();
   HDRSHOT_CHECK(restyled.snapshot().objects.front().transform==result.transform);
-  const auto moved=move_shape(result,{10000,10000},limits);
-  HDRSHOT_CHECK(shape_fits(moved,limits));
+  const auto moved = move_shape(result, {10000, 10000}, limits,
+                                AnnotationScale::from(1).value());
+  HDRSHOT_CHECK(shape_fits(moved, limits, AnnotationScale::from(1).value()));
   near(moved.transform.rotation_radians,result.transform.rotation_radians);
 }
 void invalid_transform_is_transactional() {

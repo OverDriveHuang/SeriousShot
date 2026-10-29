@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/annotation/annotation_document.hpp"
+#include "domain/annotation/annotation_units.hpp"
 #include <array>
 #include <optional>
 
@@ -30,25 +31,54 @@ struct ShapeBounds {
 [[nodiscard]] ShapeBounds shape_bounds(const AnnotationObject& object, double margin = 0);
 [[nodiscard]] PixelRect shape_pixel_bounds(const AnnotationObject& object, double margin = 0);
 [[nodiscard]] bool shape_contains(const AnnotationObject& object, ShapePoint point);
-[[nodiscard]] bool shape_fits(const AnnotationObject& object, PixelRect limits);
+[[nodiscard]] bool shape_fits(const AnnotationObject &object, PixelRect limits,
+                              AnnotationScale scale);
 [[nodiscard]] std::optional<AnnotationAdjustment> shape_adjustment_at(
     const AnnotationObject& object, ShapePoint point,
     double resize_tolerance_px, double rotation_band_px);
-[[nodiscard]] AnnotationObject move_shape(
-    const AnnotationObject& origin, ShapePoint delta, PixelRect limits);
-[[nodiscard]] AnnotationObject resize_shape(
-    const AnnotationObject& origin, AnnotationAdjustment handle,
-    ShapePoint anchor, ShapePoint pointer, PixelRect limits, int minimum_extent);
-[[nodiscard]] AnnotationObject rotate_shape_until_boundary(
-    const AnnotationObject& origin, double delta_radians, PixelRect limits);
+[[nodiscard]] AnnotationObject move_shape(const AnnotationObject &origin,
+                                          ShapePoint delta, PixelRect limits,
+                                          AnnotationScale scale);
+[[nodiscard]] AnnotationObject
+resize_shape(const AnnotationObject &origin, AnnotationAdjustment handle,
+             ShapePoint anchor, ShapePoint pointer, PixelRect limits,
+             int minimum_extent, AnnotationScale scale);
+[[nodiscard]] AnnotationObject
+rotate_shape_until_boundary(const AnnotationObject &origin,
+                            double delta_radians, PixelRect limits,
+                            AnnotationScale scale);
 
 class ShapeRotationDrag {
  public:
   ShapeRotationDrag(const AnnotationObject& origin, ShapePoint pointer);
-  [[nodiscard]] const AnnotationObject& update(ShapePoint pointer, PixelRect limits);
+  [[nodiscard]] const AnnotationObject &
+  update(ShapePoint pointer, PixelRect limits, AnnotationScale scale);
   [[nodiscard]] const AnnotationObject& preview() const { return preview_; }
  private:
   AnnotationObject preview_;
   double pointer_angle_{};
 };
+struct LineSegmentGeometry {
+  StrokePoint start, end;
+};
+std::vector<LineSegmentGeometry>
+annotation_line_segments(const AnnotationObject &, AnnotationScale);
+bool line_hit_test(const AnnotationObject &, StrokePoint, double,
+                   AnnotationScale);
+Result<double, Error> stroke_width_px(const AnnotationObject &,
+                                      AnnotationScale);
+double stroke_margin(const AnnotationObject &, AnnotationScale);
+Result<PixelRect, Error> brush_geometry_bounds(const BrushGeometry &);
+ShapeBounds brush_centerline_bounds(const BrushGeometry &);
+bool brush_centerline_inside(const BrushGeometry &, PixelRect);
+PixelRect brush_paint_bounds(const AnnotationObject &, AnnotationScale,
+                             PixelRect);
+bool brush_hit_test(const AnnotationObject &, StrokePoint, double tolerance_px,
+                    AnnotationScale);
+AnnotationObject resize_brush(const AnnotationObject &, AnnotationAdjustment,
+                              StrokePoint anchor, StrokePoint pointer,
+                              PixelRect limits, AnnotationScale);
+inline StrokePoint brush_world_point(const BrushGeometry &g, StrokePoint p) {
+  return {g.origin_x + p.x * g.scale_x, g.origin_y + p.y * g.scale_y};
+}
 } // namespace hdrshot

@@ -10,6 +10,7 @@
 #include "domain/output/source_range_probe.hpp"
 #include "domain/output/ultra_hdr_input_renderer.hpp"
 #include "platform/macos/macos_gpu_source.hpp"
+#include "platform/macos/macos_annotation_pack_checkpoint.hpp"
 #include "platform/macos/macos_analysis_backend.hpp"
 #include "platform/macos/macos_linear_storage.hpp"
 #include "platform/macos/macos_metal_export_pixel_processor.hpp"
@@ -95,7 +96,8 @@ SelectionRoiView roi(const FrozenDesktopRef& source, PixelRect rect = kFull) {
 }
 
 AnnotationRenderPlan empty_render(PixelRect rect = kFull) {
-  return {1, {rect.width, rect.height}, {}, rect};
+  return {
+      1, {rect.width, rect.height}, {}, rect, AnnotationScale::from(1).value()};
 }
 
 AnnotationPixelPlan empty_pixels(PixelRect rect = kFull) {
@@ -107,9 +109,17 @@ AnnotationPixelPlan empty_pixels(PixelRect rect = kFull) {
 AnnotationRenderPlan aa_render() {
   // Display-local coverage starts at x=2. Cropping at x=3 must increment the
   // native sample offset, including spans after the first row's samples.
-  return {4, kSize, {{ObjectId{8}, AnnotationKind::text, {2, 2, 6, 2}, 0x3aee91,
-      {{2, 2, {1, 64, 128, 192, 254, 255}}, {3, 2, {255, 192, 128, 64, 1, 255}}},
-      "native-source-AA"}}, kFull};
+  return {4,
+          kSize,
+          {{ObjectId{8},
+            AnnotationKind::text,
+            {2, 2, 6, 2},
+            0x3aee91,
+            {{2, 2, {1, 64, 128, 192, 254, 255}},
+             {3, 2, {255, 192, 128, 64, 1, 255}}},
+            "native-source-AA"}},
+          kFull,
+          AnnotationScale::from(1).value()};
 }
 
 MacMetalOverlayRequest preview_request(const FrozenDesktopRef& source,
@@ -225,7 +235,8 @@ void check_clean_plan(const AnnotationPixelPlan& native, const AnnotationPixelPl
     const auto& a = actual.annotation_owned_spans[i];
     const auto& b = cpu.annotation_owned_spans[i];
     HDRSHOT_CHECK(a.x == b.x && a.y == b.y && a.length == b.length && a.object_id == b.object_id);
-    HDRSHOT_CHECK(a.clean_composited && !a.native_samples && a.native_sample_offset == 0);
+    HDRSHOT_CHECK(a.clean_composited == b.clean_composited && !a.native_samples && a.native_sample_offset == 0);
+    HDRSHOT_CHECK(a.color_srgb_rgb==b.color_srgb_rgb);
     HDRSHOT_CHECK(a.edge_samples.size() == b.edge_samples.size());
     for (std::size_t p = 0; p < a.edge_samples.size(); ++p) {
       HDRSHOT_CHECK(a.edge_samples[p][3] == 0.0F);
@@ -345,7 +356,8 @@ void native_clean_first_preview_roi_offsets_and_immutable_revisions() {
   auto clean = native_cache.get(native, kDisplay, render);
   HDRSHOT_CHECK(clean.has_value());
   for (const auto& span : clean.value()->owned) {
-    HDRSHOT_CHECK(span.native_samples && span.edge_samples.empty() && span.clean_composited);
+    HDRSHOT_CHECK(span.edge_samples.empty());
+    HDRSHOT_CHECK(bool(span.native_samples)==span.clean_composited);
   }
   // No read_samples/materialize/wait before this first native clean preview.
   const auto shown = native_presenter->render_offscreen(preview_request(native, clean.value()), true);
@@ -357,8 +369,8 @@ void native_clean_first_preview_roi_offsets_and_immutable_revisions() {
   const auto reference = cpu_presenter->render_offscreen(preview_request(cpu, cpu_clean.value()), true);
   HDRSHOT_CHECK(reference.has_value());
   HDRSHOT_CHECK(shown.value().rgba_linear_display_p3 == reference.value().rgba_linear_display_p3);
-  HDRSHOT_CHECK(native_cache.counters().composed_pixels == 12);
-  HDRSHOT_CHECK(native_cache.counters().retained_sample_bytes == 12 * 16);
+  HDRSHOT_CHECK(native_cache.counters().composed_pixels == 9);
+  HDRSHOT_CHECK(native_cache.counters().retained_sample_bytes == 9 * 16);
 
   const PixelRect clipped{3, 2, 3, 2};
   const auto partial = clean.value()->roi_plan(clipped, 8);
@@ -369,10 +381,11 @@ void native_clean_first_preview_roi_offsets_and_immutable_revisions() {
   for (const auto& span : partial.value().annotation_owned_spans) {
     HDRSHOT_CHECK(span.x == 0 && span.length == 3);
     const auto original = std::find_if(clean.value()->owned.begin(), clean.value()->owned.end(),
-        [&](const auto& value) { return value.y == span.y + clipped.y; });
+        [&](const auto& value) { return value.y == span.y + clipped.y && value.native_samples &&
+            value.x<=clipped.x && value.x+value.length>=clipped.x+span.length; });
     HDRSHOT_CHECK(original != clean.value()->owned.end());
     HDRSHOT_CHECK(span.native_samples == original->native_samples);
-    HDRSHOT_CHECK(span.native_sample_offset == original->native_sample_offset + 1);
+    HDRSHOT_CHECK(span.native_sample_offset == original->native_sample_offset + std::size_t(clipped.x-original->x));
   }
   const auto old_pixels = materialize_annotation_plan(clean.value()->roi_plan(kFull, 4).value());
   HDRSHOT_CHECK(old_pixels.has_value());
@@ -383,7 +396,7 @@ void native_clean_first_preview_roi_offsets_and_immutable_revisions() {
   const auto reused = native_cache.get(native, kDisplay, selection.value());
   HDRSHOT_CHECK(reused && reused.value() == clean.value());
   HDRSHOT_CHECK(native_cache.counters().content_builds == 1);
-  HDRSHOT_CHECK(native_cache.counters().composed_pixels == 12);
+  HDRSHOT_CHECK(native_cache.counters().composed_pixels == 9);
   HDRSHOT_CHECK(native_cache.counters().cache_hits == 1);
   render.ordered_layers.front().color_srgb_rgb = 0xff0000;
   const auto changed = native_cache.get(native, kDisplay, render);
@@ -607,6 +620,32 @@ class DescriptorTestSource final : public LinearSource {
   PixelSize size_;
   std::size_t bytes_;
 };
+
+void mixed_export_pack_failure_preserves_native_snapshot() {
+  auto source=interpret(source_pixels(),true);auto metal=processor();CleanContentCache cache(metal);
+  auto clean=cache.get(source,kDisplay,aa_render());HDRSHOT_CHECK(clean.has_value());
+  auto plan=clean.value()->roi_plan(kFull,4);HDRSHOT_CHECK(plan.has_value());
+  auto before=materialize_annotation_plan(plan.value());HDRSHOT_CHECK(before.has_value());
+  auto view=roi(source);
+  for(auto stage:{MacAnnotationPackFailure::allocation,MacAnnotationPackFailure::encoder,MacAnnotationPackFailure::completion}) {
+    for(bool png:{false,true}) {
+      mac_annotation_pack_failure=stage;
+      const auto expected_reason=stage==MacAnnotationPackFailure::allocation?"pack_allocation_failed":
+          stage==MacAnnotationPackFailure::encoder?"pack_encoder_failed":"annotation_pack_failed";
+      if(png) {
+        auto failed=metal->process({&view,&plan.value(),output_plan(true),PqDiffuseWhite::nits_203});
+        HDRSHOT_CHECK(!failed && failed.error().safe_context.at("reason")==expected_reason);
+      } else {
+        auto failed=metal->render({&view,&plan.value(),kUltraHdrReferenceWhiteNits});
+        HDRSHOT_CHECK(!failed && failed.error().safe_context.at("reason")==expected_reason);
+      }
+      HDRSHOT_CHECK(mac_annotation_pack_failure==MacAnnotationPackFailure::none);
+      auto after=materialize_annotation_plan(plan.value());HDRSHOT_CHECK(after && after.value()==before.value());
+      if(png) HDRSHOT_CHECK(metal->process({&view,&plan.value(),output_plan(true),PqDiffuseWhite::nits_203}).has_value());
+      else HDRSHOT_CHECK(metal->render({&view,&plan.value(),kUltraHdrReferenceWhiteNits}).has_value());
+    }
+  }
+}
 
 void invalid_bounds_and_native_sample_offsets_fail_without_publication() {
   const auto source = interpret(source_pixels(), true);
@@ -953,7 +992,7 @@ void magnifier_native_source_nearest_neighbor_edges_and_overlay_separation() {
   auto display=presenter();
   auto clean=std::make_shared<CleanContentSnapshot>();
   clean->source=desktop; clean->display_id=kDisplay; clean->content_revision=99;
-  for(PixelPoint p : {PixelPoint{63,61},PixelPoint{0,0},PixelPoint{127,127}})
+  for(PixelPoint p : {PixelPoint{0,0},PixelPoint{63,61},PixelPoint{127,127}})
     clean->owned.push_back({p.y,p.x,1,ObjectId{99},0xff0000,{{10.F,0.F,0.F,0.F}},true});
   auto annotated=preview_request(desktop,clean);
   annotated.selection_px={0,0,128,128}; annotated.ui_border_width_px=0;
@@ -1056,6 +1095,7 @@ int main() {
         {"native source-visible range outside ROI AA-only HDR and SDR", range_ignores_hdr_outside_roi_and_annotation_owned_aa},
         {"cancelled native owners and detached export lifetime", cancel_releases_owners_and_detached_export_retains_old_resources},
         {"invalid RGB normalization failures reach every native consumer", invalid_rgb_propagates_from_normalization_to_consumers},
+        {"mixed native export pack failures preserve old snapshots and recover",mixed_export_pack_failure_preserves_native_snapshot},
         {"native bounds and sample offset validation", invalid_bounds_and_native_sample_offsets_fail_without_publication},
     });
   }
