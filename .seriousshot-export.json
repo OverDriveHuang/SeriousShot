@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-29T23:00:01+08:00",
+  "timestamp": "2026-10-29T23:52:52+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -47,7 +47,7 @@
       "mode": 420
     },
     "assets/fonts/README.md": {
-      "sha256": "82a22637ac6b61ce1288fed4e7be5a029ba3fdfd513cfd155b04912113cbd289",
+      "sha256": "006302fb8c9bd91145ba1d4a69a647ddb1750c94e190bf830dd7023af747963a",
       "mode": 420
     },
     "assets/icons/SeriousShot.icns": {
@@ -1999,7 +1999,7 @@
       "mode": 420
     },
     "tools/run_text_raster_probe.ps1": {
-      "sha256": "acca04002c559d79f045e42391e255a42ab0dd4a2f18b301f903ec08c8139959",
+      "sha256": "6f8b8f91d4124146c01586cea50cccd99e1894ed9d5a68402b561dbad87f6159",
       "mode": 420
     },
     "tools/text_raster_probe.cpp": {

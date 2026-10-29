@@ -3,7 +3,7 @@ $project = Split-Path $PSScriptRoot -Parent
 Push-Location $project
 try {
     . ./scripts/windows-dev-environment.ps1
-    $qt = (Resolve-Path '.build-tools/Qt/6.11.1/msvc2022_64').Path
+    $qt = (Resolve-Path '.build-tools/Qt/6.11.2/msvc2022_64').Path
     $stamp = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'China Standard Time').ToString('yyyy-MM-dd_HH-mm-ss')
     $probe = "build/text-raster-probe/$stamp"
     $output = "build/text-raster-probe-results/$stamp"
