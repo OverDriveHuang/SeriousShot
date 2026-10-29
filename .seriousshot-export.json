@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "ff55272938c36108f0a6bf3bdd63f8e5e1281f4319cd957a320e035aed46bca1",
+      "sha256": "84555d8ded27504fda71b3bd5f6db64dd548c4b1cdeb99ade9bb5d514e872827",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -122,24 +122,24 @@
       "sha256": "fa3e31ab5bc8bd5a9543951ec1e6ba0db531b5df1cf21552a3d878248f44e914",
       "mode": 420
     },
-    "docs/images/analyzer-2026-09-20.png": {
-      "sha256": "b57539e66f6de0a2927d6fdcca3dfd90a044c90c4191d90b2f5014576ead658c",
+    "docs/images/analyzer-20261029-150731.png": {
+      "sha256": "c3856fcdef8ca1a47463f147721542750c5ca842c3db06702687a14661f28f88",
       "mode": 420
     },
-    "docs/images/analyzer-2026-10-11.png": {
-      "sha256": "b23d032dcf16adf7a9bd24cfa1bfef0c3aaedb5ac79eb327557713797da80416",
+    "docs/images/annotation-toolbar-20261029-150731.png": {
+      "sha256": "2fbb718e3acc4ce41ea834294b5ad2af95dd4f3f685848516f3fb9277f0306ea",
       "mode": 420
     },
-    "docs/images/settings-2026-09-21.png": {
-      "sha256": "d2937cd7d641db64e882c2b0f4944f9485eaecaf80ebe2a20b397a4e1a81d013",
+    "docs/images/settings-analysis-20261029-150731.png": {
+      "sha256": "c7f3e04dff0bef61f862f33aef8a2705dcad53b74c4cfb1df078c6022e244333",
       "mode": 420
     },
-    "docs/images/settings-analysis-2026-10-11.png": {
-      "sha256": "174b31bca4fb70fa64adc9c9368a08c9aaac5c1ca1b7fc59024517a405fdb821",
+    "docs/images/settings-general-20261029-150731.png": {
+      "sha256": "673484c29c39a850c11cca87d82d1763a75833de88ad494eba4f16245d473012",
       "mode": 420
     },
-    "docs/images/settings-general-2026-10-11.png": {
-      "sha256": "d245f712529d75a7083ad5271c85de9b92b9e12b26a13ba70d0e5d3c8b9fff59",
+    "docs/images/settings-pinned-20261029-150731.png": {
+      "sha256": "0e0234b97b224a82f580f2e7b78a60aa55b1e1eaf0d2b32c42f0f436771f58b3",
       "mode": 420
     },
     "scripts/analyzer_gamut_samples.cpp": {
