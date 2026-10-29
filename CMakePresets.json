@@ -28,7 +28,7 @@
       "binaryDir": "${sourceDir}/build-windows-qt",
       "cacheVariables": {
         "HDRSHOT_ENABLE_QT_HOST": "ON",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/.build-tools/Qt/6.11.1/msvc2022_64"
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.build-tools/Qt/6.11.2/msvc2022_64"
       }
     },
     {

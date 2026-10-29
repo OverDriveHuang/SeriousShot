@@ -9,9 +9,9 @@ try {
         $localPython = Join-Path $project '.build-tools/python/runtime/tools/python.exe'
         $PythonExecutable = if (Test-Path -LiteralPath $localPython) { $localPython } else { (Get-Command python -ErrorAction Stop).Source }
     }
-    $qt = Join-Path $project '.build-tools/Qt/6.11.1/msvc2022_64'
+    $qt = Join-Path $project '.build-tools/Qt/6.11.2/msvc2022_64'
     if (-not (Test-Path "$qt/lib/cmake/Qt6/Qt6Config.cmake")) {
-        throw 'Qt 6.11.1 is missing. Run scripts/install-windows-qt.py with requests and py7zr.'
+        throw 'Qt 6.11.2 is missing. Run scripts/install-windows-qt.py with requests and py7zr.'
     }
     if (-not (Test-Path '.build-tools/zlib/install/include/zlib.h')) {
         throw 'zlib 1.3.1 is missing. Follow the Windows backend build instructions.'
@@ -63,7 +63,7 @@ try {
         Copy-Item -LiteralPath 'build-windows-qt/_deps/ultrahdr-src/third_party/turbojpeg/LICENSE.md' -Destination "$licenses/libjpeg-turbo-LICENSE.md"
         Copy-Item -LiteralPath '.build-tools/zlib/src/LICENSE' -Destination "$licenses/zlib-LICENSE.txt"
         Copy-Item -LiteralPath "$qt/sbom" -Destination $licenses.FullName -Recurse
-        "Local development build. Release license/source-distribution review remains pending. Qt 6.11.1 is dynamically linked; https://www.qt.io/licensing/open-source-lgpl-obligations" |
+        "Local development build. Release license/source-distribution review remains pending. Qt 6.11.2 is dynamically linked; https://www.qt.io/licensing/open-source-lgpl-obligations" |
             Set-Content -LiteralPath "$destination/DEVELOPMENT_BUILD.txt" -Encoding utf8
         Get-FileHash -LiteralPath "$destination/SeriousShot.exe" -Algorithm SHA256 | Format-List | Out-String |
             Set-Content -LiteralPath "$destination/SHA256.txt"

@@ -10,19 +10,19 @@ import py7zr
 
 root = Path(__file__).resolve().parents[1] / '.build-tools' / 'Qt'
 base = ('https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/'
-        'qt6_6111/qt6_6111_msvc2022_64/qt.qt6.6111.win64_msvc2022_64/')
+        'qt6_6112/qt6_6112_msvc2022_64/qt.qt6.6112.win64_msvc2022_64/')
 suffix = '-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z'
 root.mkdir(parents=True, exist_ok=True)
-sdk = root / '6.11.1' / 'msvc2022_64'
+sdk = root / '6.11.2' / 'msvc2022_64'
 sdk.mkdir(parents=True, exist_ok=True)
 hashes = {
-    'qtbase': '6f554628540ab947d48294e208cc3caae7f023d2',
-    'qttools': 'f8f33d511bbf38b85aa701425b41455b3512b36d',
-    'qtsvg': '353d70f58e5cd55d4217e3ec806a4b5dad4d320b',
-    'qttranslations': '0ed00fbd45f905f27ad18f35c0e5410857846209',
+    'qtbase': '1fca9483183d426c1a3a984f1382382fa51f48de',
+    'qttools': '0a94da47fb97103660b5bfec7361ae51b05f7323',
+    'qtsvg': 'f458d7f238795d61a3e53fa5211cf2d6b1aa08ef',
+    'qttranslations': '2826dd1fcb9489d243c25a812f3edd7319ca2e45',
 }
 for component in ('qtbase', 'qttools', 'qtsvg', 'qttranslations'):
-    name = '6.11.1-0-202605090529' + component + suffix
+    name = '6.11.2-0-202608131017' + component + suffix
     checksum = requests.get(base + name + '.sha1', timeout=60)
     checksum.raise_for_status()
     expected = checksum.text.strip().split()[0].lower()

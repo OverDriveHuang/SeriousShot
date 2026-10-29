@@ -4,7 +4,7 @@
 
 [返回产品介绍](../README.md)
 
-当前使用 C++20、CMake；macOS 使用 Qt 6.11.2（含 QTBUG-147602 修复），Windows 保持 Qt 6.11.1。第三方源码使用固定提交或版本与 SHA-256 校验；更新模块另需 libsodium 1.0.22 和 libarchive 3.8.9，由项目脚本准备在本地 `.build-tools/`，首次构建需要网络。以下是开发构建，不是已完成签名、部署与发行审查的安装包。
+当前使用 C++20、CMake；macOS 和 Windows 使用 Qt 6.11.2（含 macOS QTBUG-147602 修复）。第三方源码使用固定提交或版本与 SHA-256 校验；更新模块另需 libsodium 1.0.22 和 libarchive 3.8.9，由项目脚本准备在本地 `.build-tools/`，首次构建需要网络。以下是开发构建，不是已完成签名、部署与发行审查的安装包。
 
 ## macOS
 
@@ -24,7 +24,7 @@ python3 scripts/build-macos.py
 
 ## Windows
 
-需要 Windows 11、MSVC x64 / Windows SDK、CMake、Ninja 和 Qt 6.11.1。需要 Python 3.9 或更高版本；Qt 安装脚本还需要 requests 与 py7zr。将 zlib 1.3.1 的源码和安装结果分别准备至 `.build-tools/zlib/src` 与 `.build-tools/zlib/install`，或按本机环境调整 preset 的 `ZLIB_ROOT`。
+需要 Windows 11、MSVC x64 / Windows SDK、CMake、Ninja 和 Qt 6.11.2。需要 Python 3.9 或更高版本；Qt 安装脚本还需要 requests 与 py7zr。将 zlib 1.3.1 的源码和安装结果分别准备至 `.build-tools/zlib/src` 与 `.build-tools/zlib/install`，或按本机环境调整 preset 的 `ZLIB_ROOT`。
 
 ```powershell
 . ./scripts/windows-dev-environment.ps1

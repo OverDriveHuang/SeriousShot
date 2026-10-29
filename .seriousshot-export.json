@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-29T13:31:42+08:00",
+  "timestamp": "2026-10-29T23:00:01+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -11,7 +11,7 @@
       "mode": 420
     },
     "CMakePresets.json": {
-      "sha256": "abdaf4017c29517f27ca828005bc5eefff29b2da42ddc04e9bdaab820838b583",
+      "sha256": "a81ccd7463a6fa81de2f173acc1b56d6b8d2a18fff113865a5304b6cd7d09120",
       "mode": 420
     },
     "README.md": {
@@ -19,7 +19,7 @@
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "acf28ff428b675d28f8737b78196aa56cc5f20284caec975458eea33543f2a84",
+      "sha256": "5dc6982151e0d1154dd859c18e492a5e397595d5c3090d35316efbf995965075",
       "mode": 420
     },
     "assets/color_profiles/CC0-1.0.txt": {
@@ -115,7 +115,7 @@
       "mode": 420
     },
     "docs/BUILDING.md": {
-      "sha256": "c672f8a09fa8fdb6e68119f157ff77702b223e53d8fb4f860f9052693692824a",
+      "sha256": "7896adefbacbe31d3a982af86a75123af41802ddebf973cb31ffb684c6fc7b40",
       "mode": 420
     },
     "docs/UPDATES.md": {
@@ -155,7 +155,7 @@
       "mode": 420
     },
     "scripts/build-windows.ps1": {
-      "sha256": "aad7f0973174bea72c1956f390ff6f39948403d078df782d17d5228909db199b",
+      "sha256": "8b84efbef6481804236f8694c63dc49da204c0ca18629e24469f96eb97da1aeb",
       "mode": 420
     },
     "scripts/build_update_dependencies.py": {
@@ -171,7 +171,7 @@
       "mode": 420
     },
     "scripts/install-windows-qt.py": {
-      "sha256": "b8495225b0501728e589edca2ac4b65961ab212394fdb4eb63cd73dc24e368d7",
+      "sha256": "b03f81f17771f7f4fd39e2141382ebf6aa9d12417e0e405d73f9572d01c5ff27",
       "mode": 420
     },
     "scripts/macos_update_poc.py": {
