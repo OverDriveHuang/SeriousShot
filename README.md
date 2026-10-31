@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-10-31 18:05:04 CST
+最后更新：2026-10-31 19:55:11 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -170,4 +170,8 @@ Windows 颜色处理区分传统 SDR（Legacy）、自动色彩管理（ACM）�
 
 从源码构建请看[开发构建说明](docs/BUILDING.md)。问题反馈请附操作系统版本、内置／外接显示器、HDR 开关状态与复现步骤；分享截图前请移除私人信息。
 
-项目主许可证尚未指定；第三方组件许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+## 许可证
+
+SeriousShot 采用 [MIT 许可证](LICENSE)，Copyright (c) 2026 OverDrive。允许修改、分发和商业使用，须按许可证保留版权及许可声明。
+
+第三方组件遵循各自的许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

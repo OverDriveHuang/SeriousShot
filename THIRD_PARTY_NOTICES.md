@@ -1,14 +1,17 @@
 # Third-party notices
 
-最后更新：2026-10-29 13:15:32 CST
+最后更新：2026-10-31 19:55:11 CST
 
 SeriousShot currently uses the following third-party components.
 Release bundles must include this notice and the referenced license texts.
 
-This source snapshot does not bundle the downloaded Qt/codec SDKs or grant a
-project-wide license. Binary distribution remains a separate packaging and
-compliance step; the following list is not a substitute for the full notices
-of the exact binaries shipped.
+SeriousShot's own code is licensed under the [MIT License](LICENSE),
+Copyright (c) 2026 OverDrive. Third-party components retain their respective
+licenses; the project license does not replace or relicense them.
+
+This source snapshot does not bundle the downloaded Qt/codec SDKs. Binary
+distribution remains a separate packaging and compliance step; the following
+list is not a substitute for the full notices of the exact binaries shipped.
 
 ## Qt and bundled FreeType
 

@@ -14,12 +14,16 @@
       "sha256": "a81ccd7463a6fa81de2f173acc1b56d6b8d2a18fff113865a5304b6cd7d09120",
       "mode": 420
     },
+    "LICENSE": {
+      "sha256": "1109075a8422c49be352830746ed9a456a9f1129a64d3c3f2c49d2567b4fa723",
+      "mode": 420
+    },
     "README.md": {
-      "sha256": "0cf681b2d8d3949c58c513cf95211ca9672027e21fd299b006085aaafcc2c88e",
+      "sha256": "158006bfe4607c3e4cda107c71e8540f8ad5732dcb417a1c316d0c2dda022467",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "5dc6982151e0d1154dd859c18e492a5e397595d5c3090d35316efbf995965075",
+      "sha256": "889f8897f6ca96344bf9af80f54e1ed41ca18ed1151547eb87a0ad6c6acdd2b7",
       "mode": 420
     },
     "assets/color_profiles/CC0-1.0.txt": {
