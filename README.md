@@ -94,28 +94,6 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 下载 [0.2.0 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.0)，完整解压到一个可写目录，不要直接在压缩包中启动。
 
-### 命令行捕获
-
-命令行支持列出显示器和捕获画面。Windows 在解压后的程序目录运行：
-
-```powershell
-.\SeriousShot.exe --help
-.\SeriousShot.exe --list-displays
-.\SeriousShot.exe --capture
-$id = Read-Host '输入 --list-displays 列出的显示器 ID'
-.\SeriousShot.exe --capture --display $id 100 80 900 680
-```
-
-macOS 可直接运行应用包内的程序：
-
-```sh
-/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --help
-/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --list-displays
-/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --capture
-```
-
-`--list-displays` 会列出显示器 ID、主显示器标记、桌面逻辑坐标和尺寸。`--capture` 默认捕获主显示器；可用 `--display ID` 指定显示器，也可在后面提供 `x1 y1 x2 y2` 捕获矩形区域。`ID` 应替换为 `--list-displays` 输出中的实际 ID。坐标使用桌面逻辑点，向右、向下为正；副屏位于主屏左侧或上方时，坐标可能为负数，填写区域时请按目标屏幕在桌面上的位置确定。超出显示器的部分会裁切。输出保持捕获的物理分辨率，并使用应用中保存的格式与输出设置。成功时标准输出返回保存文件的完整路径并以 0 退出；用法错误以 2 退出，捕获失败以 1 退出。
-
 ### macOS 软件更新
 
 0.1.5 起支持检查新版本、下载并校验安装包；下载完成后打开 DMG，退出旧版并拖拽替换 Applications 中的应用。首次从 0.1.4 或更早版本升级，需要手工下载并安装当前版本。
@@ -138,6 +116,29 @@ Mac 0.2.0 使用 Apple Developer ID 签名，并完成 App 与 DMG 公证。从�
 3. 返回新版，再按一次截图快捷键，让系统重新请求授权。
 4. 再进入录屏权限设置，手动打开 SeriousShot 的权限。
 5. 系统询问是否退出并重新打开应用时，确认重启 **SeriousShot**；之后再次截图。
+
+
+### 命令行捕获
+
+命令行支持列出显示器和捕获画面。Windows 在解压后的程序目录运行：
+
+```powershell
+.\SeriousShot.exe --help
+.\SeriousShot.exe --list-displays
+.\SeriousShot.exe --capture
+$id = Read-Host '输入 --list-displays 列出的显示器 ID'
+.\SeriousShot.exe --capture --display $id 100 80 900 680
+```
+
+macOS 可直接运行应用包内的程序：
+
+```sh
+/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --help
+/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --list-displays
+/Applications/SeriousShot.app/Contents/MacOS/SeriousShot --capture
+```
+
+`--list-displays` 会列出显示器 ID、主显示器标记、桌面逻辑坐标和尺寸。`--capture` 默认捕获主显示器；可用 `--display ID` 指定显示器，也可在后面提供 `x1 y1 x2 y2` 捕获矩形区域。`ID` 应替换为 `--list-displays` 输出中的实际 ID。坐标使用桌面逻辑点，向右、向下为正；副屏位于主屏左侧或上方时，坐标可能为负数，填写区域时请按目标屏幕在桌面上的位置确定。超出显示器的部分会裁切。输出保持捕获的物理分辨率，并使用应用中保存的格式与输出设置。成功时标准输出返回保存文件的完整路径并以 0 退出；用法错误以 2 退出，捕获失败以 1 退出。
 
 
 ## 系统支持
