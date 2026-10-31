@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "727cb0f12b20e243e00566fe641ee83e75e5e6ccfe8f60a8f88ae4ec4d6415d6",
+      "sha256": "c0ac655df89556b42da33660227e14c9eb74164b6a91d731c0f6b80a7ad2424a",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -130,16 +130,16 @@
       "sha256": "2fbb718e3acc4ce41ea834294b5ad2af95dd4f3f685848516f3fb9277f0306ea",
       "mode": 420
     },
-    "docs/images/settings-analysis-20261029-150731.png": {
-      "sha256": "c7f3e04dff0bef61f862f33aef8a2705dcad53b74c4cfb1df078c6022e244333",
+    "docs/images/settings-analysis-20261031-155505.png": {
+      "sha256": "e18fa6d8d5f72a818ef8369e17a2f879d8a741d715c1ad2d906eb1e61f66bf0f",
       "mode": 420
     },
-    "docs/images/settings-general-20261029-150731.png": {
-      "sha256": "673484c29c39a850c11cca87d82d1763a75833de88ad494eba4f16245d473012",
+    "docs/images/settings-general-20261031-155505.png": {
+      "sha256": "c84966a8404a8ee9c95257affb486f61141335ea42e43613e7db9cad2b8cb6ed",
       "mode": 420
     },
-    "docs/images/settings-pinned-20261029-150731.png": {
-      "sha256": "0e0234b97b224a82f580f2e7b78a60aa55b1e1eaf0d2b32c42f0f436771f58b3",
+    "docs/images/settings-pinned-20261031-155505.png": {
+      "sha256": "a9510f0a68eef70b80b0b3571b1eadbabfc36e2476a2d33f2bfb9b1303c03d72",
       "mode": 420
     },
     "scripts/analyzer_gamut_samples.cpp": {
