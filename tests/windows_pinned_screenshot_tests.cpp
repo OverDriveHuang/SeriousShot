@@ -495,6 +495,13 @@ void cross_dpi() {
   window.show();native->set_always_on_top(window,true);native->bring_forward(window);wait(500);
   const auto inspect=[&](int index,AnalyzerSourceView &source,const char *stage) {
     wait(250);
+    // A submitted view does not mean the native worker has presented it yet.
+    // Observe completion before checking the unchanged composed-desktop pixels.
+    auto &presenter=index==0?*data.presenter:*data.auxiliary[std::size_t(index-1)].presenter;
+    HDRSHOT_CHECK(spin([&]{const auto status=windows_analysis_presentation_status(presenter);
+      return status.requested>0 && status.completed_generation==status.requested &&
+          status.completed_display_generation==status.display_generation &&
+          !status.worker_active && !status.pending;}));
     auto *surface=source.presentation_surface();const auto hwnd=reinterpret_cast<HWND>(surface->winId());
     RECT r{};HDRSHOT_CHECK(GetClientRect(hwnd,&r));POINT origin{};HDRSHOT_CHECK(ClientToScreen(hwnd,&origin));
     const auto &frame=frames[std::size_t(index)];

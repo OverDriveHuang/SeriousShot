@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-11-01T00:42:21+08:00",
+  "timestamp": "2026-11-01T01:37:08+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -19,7 +19,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "8d14a9caecd7b57fe13703119ffebeac3e13333c840f0f263d3112d18c4bd5ef",
+      "sha256": "cd0694970def80bfd40420d775dc8f4d61e85b4e3776fcf83436394fa14c66b9",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -1219,7 +1219,7 @@
       "mode": 420
     },
     "src/platform/windows/windows_qt_ports.cpp": {
-      "sha256": "7f9f3c5acba108aecdf14dc51ab0e5aedfa06b0080056aef84cd2bccb3bd10d1",
+      "sha256": "b384af3c93bd2d21ab3a66e2a4daba48e0bfb2be6e9ca9b3bbb41fddb0b9f41c",
       "mode": 420
     },
     "src/platform/windows/windows_qt_ports.hpp": {
@@ -1971,11 +1971,11 @@
       "mode": 420
     },
     "tests/windows_overlay_session_tests.cpp": {
-      "sha256": "7b8774ad7f1924ac572b792c17acc36704ff47de470f95d73cf811df8df41052",
+      "sha256": "a3a32c50dfc62075a398011f78ab7b00f720ddd2cca912af54e9533bb5114703",
       "mode": 420
     },
     "tests/windows_pinned_screenshot_tests.cpp": {
-      "sha256": "a567a1154a63d932dc06a8002ac3a52a78a86e887bfcf3174c836bc69cb8548c",
+      "sha256": "74432b66182fc25450a977771ca50905365649a1f08364c4be68743dd8d9e788",
       "mode": 420
     },
     "tests/windows_qt_ports_tests.cpp": {

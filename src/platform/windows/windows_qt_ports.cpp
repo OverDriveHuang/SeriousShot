@@ -278,6 +278,10 @@ struct WindowsQtOverlayWindow::NativeInput {
       return 0;
     }
     if(self && (message==WM_CAPTURECHANGED || message==WM_CANCELMODE)) {
+      // Reasserting our own capture emits WM_CAPTURECHANGED too; ownership
+      // has not been lost, so preserve the active gesture.
+      if(message==WM_CAPTURECHANGED && reinterpret_cast<HWND>(lparam)==hwnd &&
+          GetCapture()==hwnd) return 0;
       if(self->grabbed && !self->releasing_capture) {
         self->grabbed=nullptr;
         if(self->interrupted) self->interrupted();

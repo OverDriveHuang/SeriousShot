@@ -1139,6 +1139,61 @@ void two_top_level_native_overlay_session(bool drag_selection,
     HDRSHOT_CHECK(mouse_activation == MA_NOACTIVATE);
 }
 
+void native_capture_ownership_notifications() {
+  struct MouseHost final : QWidget {
+    int presses{}, releases{};
+    bool event(QEvent *event) override {
+      if (event->type() == QEvent::MouseButtonPress) ++presses;
+      if (event->type() == QEvent::MouseButtonRelease) ++releases;
+      return QWidget::event(event);
+    }
+  } host;
+  WindowsDisplayInfo display;
+  display.physical_x = 40; display.physical_y = 40;
+  display.snapshot.capture_size_px = {240, 160};
+  WindowsQtOverlayWindow window(display);
+  window.prepare(host);
+  HDRSHOT_CHECK(!window.preparation_error());
+  const auto underlay = static_cast<HWND>(window.native_surface());
+  HDRSHOT_CHECK(underlay && IsWindow(underlay));
+  window.configure(host, true);
+  QApplication::processEvents();
+  int interrupted = 0;
+  window.set_input_interrupted([&] { ++interrupted; });
+  struct Cleanup {
+    WindowsQtOverlayWindow &window;
+    ~Cleanup() { window.set_input_interrupted({}); ReleaseCapture(); }
+  } cleanup{window};
+  const auto press = [&] {
+    SendMessageW(underlay, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(30, 30));
+    HDRSHOT_CHECK(GetCapture() == underlay);
+  };
+  const auto release = [&] {
+    SendMessageW(underlay, WM_LBUTTONUP, 0, MAKELPARAM(30, 30));
+    HDRSHOT_CHECK(GetCapture() == nullptr);
+  };
+  press();
+  HDRSHOT_CHECK(host.presses == 1 && interrupted == 0);
+  SetCapture(underlay); // Real synchronous self WM_CAPTURECHANGED.
+  HDRSHOT_CHECK(GetCapture() == underlay && interrupted == 0);
+  release();
+  HDRSHOT_CHECK(host.releases == 1 && interrupted == 0);
+  press();
+  ReleaseCapture();
+  HDRSHOT_CHECK(interrupted == 1 && GetCapture() == nullptr);
+  QWidget peer;
+  const auto peer_hwnd = reinterpret_cast<HWND>(peer.winId());
+  press();
+  SetCapture(peer_hwnd);
+  HDRSHOT_CHECK(interrupted == 2 && GetCapture() == peer_hwnd);
+  ReleaseCapture();
+  press();
+  SendMessageW(underlay, WM_CANCELMODE, 0, 0);
+  HDRSHOT_CHECK(interrupted == 3 && GetCapture() == nullptr);
+  press(); release();
+  HDRSHOT_CHECK(interrupted == 3 && host.presses == 5 && host.releases == 2);
+}
+
 } // namespace
 
 bool interactive_input_desktop() {
@@ -1223,6 +1278,8 @@ int main(int argc, char **argv) {
     return hdrshot::test::run(cases);
   }
   std::vector<hdrshot::test::TestCase> cases{
+      {"native capture: self ownership, transfer, release and cancellation",
+       native_capture_ownership_notifications},
       {"two native overlays: candidate click, toolbar, Enter",
        [=] { two_top_level_native_overlay_session(false, message_replay); }},
       {"two native overlays: cross-window drag selection",
