@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-10-31 19:55:11 CST
+最后更新：2026-11-01 00:35:33 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -25,7 +25,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接添加形状、直线、画笔笔迹、箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-当前版本 [0.2.0](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.0) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
+Windows 当前版本 [0.2.1](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.1) 提供 x64 ZIP；macOS 当前版本 [0.2.0](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.0) 提供 arm64 DMG。
 
 ## 截图、标注、分享，一次完成
 
@@ -72,7 +72,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ## 设置界面
 
-设置分为**通用、分析和贴图**三个页面。以下展示 macOS 选项。
+设置分为**通用、分析和贴图**三个页面。通用与贴图图示为 macOS；分析页图示为 Windows 0.2.1，采用两端共用的设置布局。
 
 <img src="docs/images/settings-general-20261031-155505.png" alt="SeriousShot 0.2.0 通用设置：登录时自动启动、截图快捷键、完成动作与输出设置" width="860">
 
@@ -80,9 +80,9 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 “登录时自动启动”默认关闭。开启后，登录系统时在托盘或菜单栏运行，截图快捷键可直接使用；手动打开程序时显示设置。退出程序保留下次登录自启的设置。Windows 若已在系统中禁用此项，请在 Windows 设置的“启动”设置中将 SeriousShot 设为“开”，切回程序后会自动更新勾选状态。
 
-<img src="docs/images/settings-analysis-20261031-155505.png" alt="SeriousShot 0.2.0 分析设置：截图放大镜、默认读数、HDR／SDR 工作空间、参考白、Blur 与采样范围" width="860">
+<img src="docs/images/settings-analysis-20261101-003932.png" alt="SeriousShot 0.2.1 分析设置：放大镜开关左对齐，分析器处理与吸管设置分组" width="860">
 
-“分析”页配置截图放大镜、默认读数、HDR／SDR 工作空间、分析参考白、Blur 与采样范围。
+“分析”页配置截图放大镜、默认读数、HDR／SDR 工作空间和分析参考白。“分析器默认处理”设置 Blur；“分析器吸管”设置采样范围与默认读数。
 
 <img src="docs/images/settings-pinned-20261031-155505.png" alt="SeriousShot 0.2.0 贴图设置：默认置顶和默认窗口短边" width="860">
 
@@ -92,7 +92,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### Windows 解压运行与更新
 
-下载 [0.2.0 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.0)，完整解压到一个可写目录，不要直接在压缩包中启动。
+下载 [0.2.1 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.1)，完整解压到一个可写目录，不要直接在压缩包中启动。
 
 ### macOS 软件更新
 

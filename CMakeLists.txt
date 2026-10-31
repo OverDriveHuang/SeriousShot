@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.2.0 LANGUAGES CXX)
+project(HDRShot VERSION 0.2.1 LANGUAGES CXX)
 set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
 if(HDRSHOT_UPDATE_TEST_VERSION)
   if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")

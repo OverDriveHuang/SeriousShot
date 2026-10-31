@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-31T15:21:18+08:00",
+  "timestamp": "2026-11-01T00:42:21+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "eac48df6afb8db4db78d73a4f23ade80424e595ba6769b17d1cc5d6b217ec6e0",
+      "sha256": "1f77b9e6746447519e1fb4caeae5066b7325cab1b5af655fca77af69b99bf735",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -19,7 +19,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "04cc9509b352b7ea0d5138f10b4f8aeb038a57b36635b4b375641dea3f542362",
+      "sha256": "ce4081fc002b794b239883c3b7d4e3f2ca8ab862452888217a7208664cf75551",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -136,6 +136,10 @@
     },
     "docs/images/settings-analysis-20261031-155505.png": {
       "sha256": "e18fa6d8d5f72a818ef8369e17a2f879d8a741d715c1ad2d906eb1e61f66bf0f",
+      "mode": 420
+    },
+    "docs/images/settings-analysis-20261101-003932.png": {
+      "sha256": "be6a8cc6289bfafdc6a5df6974b1f2a49e647905352c59867fc9784400938f81",
       "mode": 420
     },
     "docs/images/settings-general-20261031-155505.png": {
@@ -1439,7 +1443,7 @@
       "mode": 420
     },
     "src/ui/qt/settings_window.cpp": {
-      "sha256": "cb6f064bde47b77ce72528e8fb8aa15863e8e14247208a57148a408bf7951788",
+      "sha256": "c94affd5d8fc8f178f756f117fdb23d0ff37f07128ca104fe124805118ad9905",
       "mode": 420
     },
     "src/ui/qt/settings_window.hpp": {

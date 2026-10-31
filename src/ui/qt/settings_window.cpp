@@ -877,15 +877,18 @@ void SettingsWindow::build_analysis_tab(QWidget* page) {
   scroll->setWidget(content);content->setAutoFillBackground(false);
   scroll->setAutoFillBackground(false);scroll->viewport()->setAutoFillBackground(false);
   auto* v=new QVBoxLayout(content);v->setSpacing(14);
-  auto* title=new QHBoxLayout;title->addWidget(new QLabel("截图放大镜",content));title->addStretch();
-  magnifier_enabled_=new QCheckBox("启用",content);magnifier_enabled_->setObjectName("magnifierEnabledCheck");title->addWidget(magnifier_enabled_);v->addLayout(title);
+  magnifier_enabled_=new QCheckBox(content);
+  magnifier_enabled_->setObjectName("magnifierEnabledCheck");
+  magnifier_enabled_->setAccessibleName(QStringLiteral("截图放大镜"));
   connect(magnifier_enabled_,&QCheckBox::clicked,this,[this]{persist_analysis_defaults();});
   auto combo=[&](int index,const char* name,const QString& label,const QStringList& labels,const std::vector<double>& values,QFormLayout* form) {
     auto* c=new QComboBox(content);c->setObjectName(name);analysis_combos_[index]=c;
     for(int i=0;i<labels.size();++i)c->addItem(labels[i],values[std::size_t(i)]);
     c->setMinimumHeight(28);form->setHorizontalSpacing(18);form->setVerticalSpacing(14);form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);form->addRow(label,c);connect(c,&QComboBox::currentIndexChanged,this,[this]{persist_analysis_defaults();});
   };
-  auto* mf=new QFormLayout;v->addLayout(mf);combo(0,"magnifierZoomCombo","放大倍率",{"4×","8×","12×","16×"},{4,8,12,16},mf);
+  auto* mf=new QFormLayout;v->addLayout(mf);
+  mf->addRow(QStringLiteral("截图放大镜"),magnifier_enabled_);
+  combo(0,"magnifierZoomCombo","放大倍率",{"4×","8×","12×","16×"},{4,8,12,16},mf);
   magnifier_readings_=new ReadingSelector(magnifier_reading_names(),"magnifierReadings",content);mf->addRow("默认读数",magnifier_readings_);
   magnifier_readings_->changed=[this]{persist_analysis_defaults();};
   auto* line=new QFrame(content);line->setFrameShape(QFrame::HLine);line->setStyleSheet("border:0;border-top:1px solid palette(mid);");v->addWidget(line);
@@ -896,10 +899,11 @@ void SettingsWindow::build_analysis_tab(QWidget* page) {
   combo(3,"analysisWhiteCombo","分析参考白",{"203 nit","100 nit"},{203,100},f);
   v->addWidget(new QLabel("分析器默认处理",content));auto* processing=new QFormLayout;v->addLayout(processing);
   combo(4,"analysisBlurCombo","Blur（σ）",{"关闭","0.5 px","1 px","2 px","4 px","8 px"},{0,.5,1,2,4,8},processing);
-  combo(5,"analysisSampleCombo","采样范围",{"1×1","3×3","5×5","11×11","31×31","101×101"},{1,3,5,11,31,101},processing);
-  analyzer_readings_=new ReadingSelector(analyzer_reading_names(),"analyzerReadings",content);processing->addRow("默认读数",analyzer_readings_);
+  v->addWidget(new QLabel("分析器吸管",content));auto* eyedropper=new QFormLayout;v->addLayout(eyedropper);
+  combo(5,"analysisSampleCombo","采样范围",{"1×1","3×3","5×5","11×11","31×31","101×101"},{1,3,5,11,31,101},eyedropper);
+  analyzer_readings_=new ReadingSelector(analyzer_reading_names(),"analyzerReadings",content);eyedropper->addRow("默认读数",analyzer_readings_);
   analyzer_readings_->changed=[this]{persist_analysis_defaults();};
-  for(auto* form:{mf,f,processing})for(int row=0;row<form->rowCount();++row){auto* item=form->itemAt(row,QFormLayout::LabelRole);if(item&&item->widget())item->widget()->setMinimumWidth(130);}
+  for(auto* form:{mf,f,processing,eyedropper})for(int row=0;row<form->rowCount();++row){auto* item=form->itemAt(row,QFormLayout::LabelRole);if(item&&item->widget())item->widget()->setMinimumWidth(130);}
   v->addStretch();
 }
 void SettingsWindow::persist_analysis_defaults() {
