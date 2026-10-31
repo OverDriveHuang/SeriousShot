@@ -11,6 +11,8 @@ p.add_argument('--fixture',type=pathlib.Path,required=True)
 p.add_argument('--helper',type=pathlib.Path,help='newly rebuilt helper for a diagnostic fixture')
 p.add_argument('--only-normal',action='store_true',help='explicit diagnostic subset, not the native acceptance matrix')
 p.add_argument('--only-forward',type=int,help='explicit single forward crash diagnostic subset')
+p.add_argument('--bad-origin-helper',type=pathlib.Path,help='Testing-only real helper with deliberately mismatching origin echo')
+p.add_argument('--legacy-helper',type=pathlib.Path,help='frozen testing-trust helper without login origin echo, for compatibility negative control')
 p.add_argument('--only-startup',action='store_true',help='explicit startup recovery diagnostic subset')
 p.add_argument('--only-checkpoints',action='store_true',help='checkpoint count and actual mutation interruption subset')
 p.add_argument('--only-long',action='store_true',help='single full-deployment long-path transaction')
@@ -125,7 +127,7 @@ results=[]; owned_processes=[]; owned_handles=[]; active_case='setup'
 def verify(root,m):
     for f in m['files']: assert (root/f['path']).is_file() and digest(root/f['path'])==f['sha256'], f['path']
     assert read(root/'package_manifest.json')==m
-def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,loaded=False,recover_fail=None,terminal_fail=None,crash_terminal=False,startup=False,startup_refuse=False,mutation_fail=None,recover_mutation_fail=None,legacy_journal=False,checkpoint_fail=None):
+def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,loaded=False,recover_fail=None,terminal_fail=None,crash_terminal=False,startup=False,startup_refuse=False,mutation_fail=None,recover_mutation_fail=None,legacy_journal=False,checkpoint_fail=None,login=False,legacy_origin=False,bad_echo=False):
     global active_case
     active_case=name
     root=a.workspace/name; install=root/'中文 安装'
@@ -184,35 +186,74 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
             receipt=read(journal.parent/'started.json'); (install/'stop').touch(); wait_exit(receipt['pid'],receipt['creation'])
         expected=newm if committed else oldm
         recoveryenv=env.copy();recoveryenv['SERIOUSSHOT_STARTUP_TEST_SLOT']=str(slot)
+        if legacy_origin:
+            incompatible_helper=a.bad_origin_helper if bad_echo else a.legacy_helper
+            assert incompatible_helper and incompatible_helper.is_file()
+            shutil.copyfile(incompatible_helper,journal.parent/'SeriousShotUpdater.exe')
+            journal_before=digest(journal)
+            slot_before=read(slot/'slot.json')
         for refused in ([True,False] if startup_refuse else [False]):
             caller_env=recoveryenv.copy()
             if refused: caller_env['SERIOUSSHOT_UPDATE_STARTUP_REFUSE']='1'
             for marker in ('startup-caller.json','release-startup'):
                 if (slot/marker).exists(): (slot/marker).unlink()
-            caller=subprocess.Popen([str(install/'SeriousShot.exe'),'--startup',str(slot)],cwd=cwd,env=caller_env)
+            caller=subprocess.Popen([str(install/'SeriousShot.exe'),'--startup-login-incompatible' if legacy_origin else '--startup-login' if login else '--startup',str(slot)],cwd=cwd,env=caller_env)
             owned_processes.append(caller)
             await_condition(lambda:(slot/'startup-caller.json').exists(),15)
-            marker=read(slot/'startup-caller.json');assert marker['armed']==(not refused)
+            marker=read(slot/'startup-caller.json');assert marker['armed']==(not refused and not legacy_origin)
+            assert marker['login_startup']==login
             assert int(marker['pid'])==caller.pid and caller.poll() is None
             recovery_ready=read(journal.parent/'recovery-ready.json')
+            if login and not legacy_origin: assert recovery_ready['login_startup'] is True
+            if legacy_origin:
+                if bad_echo: assert recovery_ready['login_startup'] is False
+                else: assert 'login_startup' not in recovery_ready
+                assert marker['error']=='startup_recovery_login_origin_incompatible'
+                assert not (journal.parent/'recovery-armed.json').exists()
+                assert digest(journal)==journal_before
+            extra_manual=None
+            if refused and not login:
+                handoff_path=journal.parent/'recovery.json'
+                handoff=read(handoff_path)
+                journal_hash=digest(journal)
+                for invalid in (1, 'true', None, []):
+                    write(handoff_path,dict(handoff,login_startup=invalid))
+                    invalid_run=subprocess.run([str(journal.parent/'SeriousShotUpdater.exe'),'--recover-after-exit',str(journal)],cwd=cwd,env=recoveryenv,timeout=10)
+                    assert invalid_run.returncode==30
+                    assert digest(journal)==journal_hash and not (journal.parent/'recovery-armed.json').exists()
+                missing=dict(handoff);missing.pop('login_startup')
+                write(handoff_path,missing)
+                extra_manual=subprocess.Popen([str(journal.parent/'SeriousShotUpdater.exe'),'--recover-after-exit',str(journal)],cwd=cwd,env=recoveryenv)
+                owned_processes.append(extra_manual)
+                await_condition(lambda:read(journal.parent/'recovery-ready.json')['pid']==str(extra_manual.pid),15)
+                assert read(journal.parent/'recovery-ready.json')['login_startup'] is False
+                write(handoff_path,handoff)
             # The helper is armed but cannot move any file before normal caller exit.
             time.sleep(.3);verify(install,newm if committed or fail else oldm)
             assert not (slot/'restarted.json').exists()
             (slot/'release-startup').touch();assert caller.wait(timeout=10)==0
             assert wait_exit(recovery_ready['pid'],recovery_ready['creation'],65000) in (None,0)
-            if refused:
+            if extra_manual: assert extra_manual.wait(timeout=10)==0
+            if legacy_origin:
+                assert not (slot/'restarted.json').exists()
+                assert digest(journal)==journal_before
+                assert read(slot/'slot.json')['transaction']==slot_before['transaction']
+                verify(install,newm)
+            elif refused:
                 verify(install,newm);assert read(slot/'slot.json')['phase']=='installing'
                 assert not (slot/'restarted.json').exists()
             else:
                 await_condition(lambda:(slot/'restarted.json').exists(),15)
                 restarted=read(slot/'restarted.json')
                 assert restarted['exe'].casefold()==str(install/'SeriousShot.exe').replace('\\','/').casefold()
+                assert restarted['argv']==(['--login-startup'] if login else [])
                 assert int(restarted['pid'])!=caller.pid and restarted['creation']
                 verify(install,expected)
                 final=read(slot/'slot.json');assert final['phase']==('empty' if committed else 'ready')
                 assert not final.get('transaction') and not final.get('nonce')
                 (slot/'stop-restarted').touch();assert wait_exit(restarted['pid'],restarted['creation']) in (None,0)
-        assert read(journal)['phase']==('complete' if committed else 'rolled_back')
+        if legacy_origin: assert digest(journal)==journal_before
+        else: assert read(journal)['phase']==('complete' if committed else 'rolled_back')
     elif reject:
         assert read(journal).get('phase')=='cancelled'
         verify(install,oldm)
@@ -299,6 +340,11 @@ def run_case(name,fail=None,reject=False,hold=False,lock=False,no_receipt=False,
             assert not any(event.startswith('mutation ') for event in runs[0]), 'application files moved before durable descriptor'
     results.append(dict(case=name,passed=True,phase=read(journal)['phase'],intent=read(journal).get('intent'),helper_exit_observed=helper_exit,helper_journal_checkpoints=checkpoints,mutation_runs=runs,managed_files=len(newm['files'])))
     write(a.output/name/'final-state.json',dict(journal=read(journal),slot=read(slot/'slot.json')))
+    if legacy_origin:
+        results[-1]['pending_recovery_preserved']=True
+        write(a.output/'results.json',results)
+        print(name,'PASS (unarmed pending transaction preserved)',flush=True)
+        return results[-1]
     state=read(slot/'slot.json')
     if state.get('helper_pid'): wait_exit(state['helper_pid'],state['helper_creation'])
     subprocess.run([str(install/'SeriousShot.exe'),'--cleanup',str(slot)],env=env,cwd=cwd,check=True,timeout=15)
@@ -366,6 +412,11 @@ try:
         run_case('startup-refused-then-retry',fail=boundaries,startup=True,startup_refuse=True)
         run_case('startup-committed-terminal',crash_terminal=True,startup=True)
         run_case('startup-rolled-terminal',lock=True,crash_terminal=True,startup=True)
+        run_case('startup-login-rollback',fail=boundaries,startup=True,login=True)
+        run_case('startup-login-committed-terminal',crash_terminal=True,startup=True,login=True)
+        run_case('startup-login-rolled-terminal',lock=True,crash_terminal=True,startup=True,login=True)
+        if a.legacy_helper: run_case('startup-login-legacy-no-echo',fail=boundaries,startup=True,login=True,legacy_origin=True)
+        if a.bad_origin_helper: run_case('startup-login-mismatched-echo',fail=boundaries,startup=True,login=True,legacy_origin=True,bad_echo=True)
         print('explicit diagnostic subset: startup recovery',flush=True)
         raise SystemExit(0)
     if a.only_forward:
@@ -394,6 +445,11 @@ try:
     run_case('startup-refused-then-retry',fail=boundaries,startup=True,startup_refuse=True)
     run_case('startup-committed-terminal',crash_terminal=True,startup=True)
     run_case('startup-rolled-terminal',lock=True,crash_terminal=True,startup=True)
+    run_case('startup-login-rollback',fail=boundaries,startup=True,login=True)
+    run_case('startup-login-committed-terminal',crash_terminal=True,startup=True,login=True)
+    run_case('startup-login-rolled-terminal',lock=True,crash_terminal=True,startup=True,login=True)
+    if a.legacy_helper: run_case('startup-login-legacy-no-echo',fail=boundaries,startup=True,login=True,legacy_origin=True)
+    if a.bad_origin_helper: run_case('startup-login-mismatched-echo',fail=boundaries,startup=True,login=True,legacy_origin=True,bad_echo=True)
     # Every legacy operation boundary of the forward transaction (including
     # final EXE publication and launch). Recovery must be idempotent.
     boundaries=1+len(oldm['files'])-1+1+len(newm['files'])-1+1+1+1

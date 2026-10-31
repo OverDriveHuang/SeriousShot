@@ -2,6 +2,7 @@
 #include "platform/qt/update/update_catalog.hpp"
 #include "platform/windows/update/windows_update_native.hpp"
 #include <QCoreApplication>
+#include <QJsonArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QThread>
@@ -28,24 +29,28 @@ int main(int argc, char **argv) {
       static_cast<long long>(to.size()),missing.error().safe_context.at("native_error").c_str());
     return 0;
   }
-  if(args.size()==3 && args[1]=="--startup") {
+  if(args.size()==3 && (args[1]=="--startup" || args[1]=="--startup-login" || args[1]=="--startup-login-incompatible")) {
+    const bool login=args[1]!="--startup";
+    const bool incompatible=args[1]=="--startup-login-incompatible";
     const bool refused=qEnvironmentVariableIsSet("SERIOUSSHOT_UPDATE_STARTUP_REFUSE");
-    const auto recovered=windows_begin_startup_recovery(args[2]);
-    const bool expected=refused?(!recovered && recovered.error().code==hdrshot::ErrorCode::operation_cancelled):
+    const auto recovered=windows_begin_startup_recovery(args[2],login);
+    const bool expected=incompatible?(!recovered && recovered.error().safe_context.at("reason")=="startup_recovery_login_origin_incompatible"):
+        refused?(!recovered && recovered.error().code==hdrshot::ErrorCode::operation_cancelled):
         (recovered && recovered.value());
     if(!expected)return 16;
-    (void)save_json(args[2]+"/startup-caller.json",{{"armed",!refused},
+    (void)save_json(args[2]+"/startup-caller.json",{{"armed",!refused && !incompatible},{"login_startup",login},
+      {"error",recovered?QString{}:QString::fromStdString(recovered.error().safe_context.at("reason"))},
       {"pid",QString::number(app.applicationPid())},{"creation",process_identity(app.applicationPid())},
       {"exe",windows_executable()}});
     while(!QFileInfo::exists(args[2]+"/release-startup"))QThread::msleep(50);
     return 0;
   }
-  if(args.size()==1 && qEnvironmentVariableIsSet("SERIOUSSHOT_STARTUP_TEST_SLOT")) {
+  if((args.size()==1 || (args.size()==2 && args[1]=="--login-startup")) && qEnvironmentVariableIsSet("SERIOUSSHOT_STARTUP_TEST_SLOT")) {
     const auto root=qEnvironmentVariable("SERIOUSSHOT_STARTUP_TEST_SLOT");
-    const auto recovered=windows_begin_startup_recovery(root);
+    const auto recovered=windows_begin_startup_recovery(root,args.contains("--login-startup"));
     if(!recovered)return 17;
     if(recovered.value())return 0;
-    (void)save_json(root+"/restarted.json",{{"pid",QString::number(app.applicationPid())},
+    (void)save_json(root+"/restarted.json",{{"argv",QJsonArray::fromStringList(args.mid(1))},{"pid",QString::number(app.applicationPid())},
       {"creation",process_identity(app.applicationPid())},{"exe",windows_executable()}});
     while(!QFileInfo::exists(root+"/stop-restarted"))QThread::msleep(50);
     return 0;

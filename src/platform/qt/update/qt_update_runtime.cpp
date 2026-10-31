@@ -229,7 +229,20 @@ UpdateWindow &Runtime::update_window() {
   }
   return *update_window_;
 }
+void Runtime::set_interactive_presentation_enabled(bool allowed) {
+  interactive_presentation_enabled_ = allowed;
+}
+void Runtime::allow_interactive_presentation() {
+  if (interactive_presentation_enabled_) return;
+  interactive_presentation_enabled_ = true;
+  if (confirmation_) present_details_if_allowed();
+}
 void Runtime::show_details() {
+  interactive_presentation_enabled_ = true;
+  present_details_if_allowed();
+}
+void Runtime::present_details_if_allowed() {
+  if (!interactive_presentation_enabled_) return;
   auto &window = update_window();
   window.set_view(coordinator_.view());
   window.present(settings_ ? settings_->window_activation_port() : nullptr);
@@ -237,7 +250,7 @@ void Runtime::show_details() {
 void Runtime::ask_install(const Candidate &, std::function<void(bool)> done) {
   confirmation_generation_ = coordinator_.view().generation;
   confirmation_ = std::move(done);
-  show_details();
+  present_details_if_allowed();
 }
 void Runtime::get(const QUrl &url, const QByteArray &etag,
                   std::function<void(Result<QByteArray, Error>, QByteArray)> done, int redirects) {

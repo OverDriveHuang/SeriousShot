@@ -1,4 +1,10 @@
 #include <QDir>
+#ifdef Q_OS_WIN
+#include "platform/windows/windows_login_startup_port.hpp"
+#include <QTemporaryDir>
+#include <QFile>
+#include <QFileInfo>
+#endif
 #include <QTimer>
 #include <QGroupBox>
 #include "ui/qt/settings_window.hpp"
@@ -25,6 +31,8 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QMouseEvent>
+#include <QMessageBox>
+#include <QGridLayout>
 #include <QPushButton>
 #include <QPalette>
 #include <QScrollArea>
@@ -154,6 +162,151 @@ struct Fixture {
       "Command+Shift+2",
       "/Application Support/SeriousShot/logs"};
 };
+
+class MemoryLoginStartup final : public LoginStartupPort {
+ public:
+  LoginStartupSnapshot snapshot{LoginStartupState::disabled,"/stable/SeriousShot.app",{},true,false,true,{},"平台授权说明"};
+  int reads{}, writes{}, opened{};
+  bool fail_query{}, fail_write{};
+  std::function<void()> on_open;
+  Result<LoginStartupSnapshot,Error> query() override {
+    ++reads;
+    if (fail_query) return Result<LoginStartupSnapshot,Error>::failure(
+      Error{ErrorCode::permission_denied,"fixture",Retryability::after_user_action,{{"description","原始查询错误"},{"domain","FixtureDomain"},{"native_code","42"}}});
+    return Result<LoginStartupSnapshot,Error>::success(snapshot);
+  }
+  Result<bool,Error> set_enabled(bool enabled) override {
+    ++writes;snapshot.state=enabled?LoginStartupState::enabled:LoginStartupState::disabled;
+    snapshot.can_enable=!enabled;snapshot.can_disable=enabled;
+    if(fail_write)return Result<bool,Error>::failure(
+      Error{ErrorCode::permission_denied,"fixture",Retryability::after_user_action,{{"description","操作已改变系统但返回错误"},{"domain","FixtureDomain"},{"native_code","99"}}});
+    return Result<bool,Error>::success(true);
+  }
+  Result<bool,Error> open_system_settings() override {++opened;if(on_open)on_open();return Result<bool,Error>::success(true);}
+};
+QMessageBox* login_dialog(Fixture& f) {for(auto* d:f.window.findChildren<QMessageBox*>("loginStartupResultDialog"))if(d->isVisible())return d;return nullptr;}
+void windows_fresh_missing_startup_succeeds_without_dialog() {
+#ifdef Q_OS_WIN
+  QTemporaryDir root(QDir::tempPath()+"/T72UI-XXXXXX");HDRSHOT_CHECK(root.isValid());
+  const auto executable=root.path()+"/stable/SeriousShot.exe";
+  const auto directory=root.path()+"/Startup";
+  HDRSHOT_CHECK(QDir().mkpath(QFileInfo(executable).absolutePath()) && QDir().mkpath(directory));
+  HDRSHOT_CHECK(QFile::copy(QCoreApplication::applicationFilePath(),executable));
+  WindowsLoginStartupContext context;
+  context.startup_directory=[&]{return Result<QString,Error>::success(directory);};
+  context.current_executable=[&]{return executable;};
+  context.approval=[] {return WindowsStartupApprovalRead{WindowsStartupApproval::missing_no_override,{}};};
+  WindowsLoginStartupPort native(context);
+  struct Counting final:LoginStartupPort {
+    WindowsLoginStartupPort& native;int writes{},opened{};
+    explicit Counting(WindowsLoginStartupPort& port):native(port){}
+    Result<LoginStartupSnapshot,Error> query() override{return native.query();}
+    Result<bool,Error> set_enabled(bool enabled) override{++writes;return native.set_enabled(enabled);}
+    Result<bool,Error> open_system_settings() override{++opened;return Result<bool,Error>::success(true);}
+  } port(native);
+  Fixture f;f.window.set_login_startup_port(&port);f.window.reload_and_show();QApplication::processEvents();
+  auto* checkbox=f.window.findChild<QCheckBox*>("loginStartupCheckBox");HDRSHOT_CHECK(checkbox && !checkbox->isChecked());
+  checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(checkbox->isChecked() && native.query().value().state==LoginStartupState::enabled);
+  HDRSHOT_CHECK(port.writes==1 && port.opened==0 && login_dialog(f)==nullptr && f.store.save_attempts==0);
+  f.window.refresh_login_startup();HDRSHOT_CHECK(port.writes==1 && checkbox->isChecked());
+  checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(!checkbox->isChecked() && QDir(directory).entryList(QDir::Files).empty());
+  checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(checkbox->isChecked() && port.writes==3 && port.opened==0 && login_dialog(f)==nullptr);
+  HDRSHOT_CHECK(native.set_enabled(false).has_value());
+#endif
+}
+void login_startup_success_and_signal_blocking() {
+  MemoryLoginStartup port;Fixture f;
+  f.window.reload_and_show();QApplication::processEvents();
+  auto* checkbox=f.window.findChild<QCheckBox*>("loginStartupCheckBox");
+  HDRSHOT_CHECK(checkbox && !checkbox->isVisible());
+  f.window.set_login_startup_port(&port);QApplication::processEvents();
+  HDRSHOT_CHECK(checkbox->isVisible() && !checkbox->isChecked() && port.writes==0);
+  const auto before=port.reads;checkbox->click();
+  HDRSHOT_CHECK(checkbox->isChecked() && port.reads==before+2 && port.writes==1);
+  HDRSHOT_CHECK(login_dialog(f)==nullptr);
+  f.window.refresh_login_startup();HDRSHOT_CHECK(port.writes==1);
+  checkbox->click();HDRSHOT_CHECK(!checkbox->isChecked() && port.writes==2);
+  HDRSHOT_CHECK(f.store.save_attempts==0 && login_dialog(f)==nullptr);
+}
+void login_startup_permission_roundtrip_requires_explicit_retry() {
+  MemoryLoginStartup port;port.snapshot.state=LoginStartupState::requires_approval;port.snapshot.can_enable=false;port.snapshot.can_disable=true;
+  Fixture f;f.window.set_login_startup_port(&port);f.window.reload_and_show();QApplication::processEvents();
+  auto* checkbox=f.window.findChild<QCheckBox*>("loginStartupCheckBox");
+  const auto before=port.reads;checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(!checkbox->isChecked() && port.writes==0 && port.reads==before+1);
+  auto* dialog=login_dialog(f);HDRSHOT_CHECK(dialog && dialog->isVisible());
+  HDRSHOT_CHECK(dialog->text()==QStringLiteral("平台授权说明"));
+  QPushButton* settings=nullptr;for(auto* b:dialog->findChildren<QPushButton*>())if(b->text()==QStringLiteral("打开系统设置"))settings=b;
+  HDRSHOT_CHECK(settings);
+  const QPointer<QMessageBox> guarded_dialog(dialog);
+  port.on_open=[&]{HDRSHOT_CHECK(!guarded_dialog || !guarded_dialog->isVisible());port.snapshot.state=LoginStartupState::enabled;port.snapshot.can_disable=true;};
+  settings->click();QApplication::processEvents();QApplication::processEvents();
+  HDRSHOT_CHECK(port.opened==1 && port.writes==0);
+#ifndef Q_OS_WIN
+  HDRSHOT_CHECK(!checkbox->isChecked());
+#endif
+  const auto return_reads=port.reads;
+  QEvent activate(QEvent::WindowActivate);QApplication::sendEvent(&f.window,&activate);
+#ifdef Q_OS_WIN
+  HDRSHOT_CHECK(checkbox->isChecked() && port.reads==return_reads+1 && port.writes==0);
+  f.window.findChild<QCheckBox*>("detailedLoggingCheckBox")->click();
+  HDRSHOT_CHECK(checkbox->isChecked() && port.writes==0);
+  port.snapshot.state=LoginStartupState::blocked;
+  QApplication::sendEvent(&f.window,&activate);
+  HDRSHOT_CHECK(!checkbox->isChecked() && port.writes==0);
+  port.snapshot.state=LoginStartupState::enabled;
+  QApplication::sendEvent(&f.window,&activate);
+  HDRSHOT_CHECK(checkbox->isChecked() && port.writes==0);
+#else
+  HDRSHOT_CHECK(port.reads==return_reads);
+  HDRSHOT_CHECK(!checkbox->isChecked() && port.writes==0);
+  f.window.findChild<QCheckBox*>("detailedLoggingCheckBox")->click();
+  HDRSHOT_CHECK(!checkbox->isChecked() && port.writes==0);
+  const auto retry_reads=port.reads;checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(checkbox->isChecked() && port.reads==retry_reads+1 && port.writes==0);
+#endif
+  HDRSHOT_CHECK(login_dialog(f)==nullptr);
+  // A normally closed/reopened page reads true OS state without carrying the
+  // recovery-session display flag to a future settings session.
+  port.snapshot.state=LoginStartupState::requires_approval;port.snapshot.can_enable=false;
+  f.window.refresh_login_startup();checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(login_dialog(f));login_dialog(f)->reject();QApplication::processEvents();
+  f.window.hide();port.snapshot.state=LoginStartupState::enabled;
+  f.window.reload_and_show();QApplication::processEvents();
+  HDRSHOT_CHECK(checkbox->isChecked() && port.writes==0);
+}
+void login_startup_unknown_and_late_failure_preserve_truth() {
+  MemoryLoginStartup port;port.fail_query=true;Fixture f;f.window.set_login_startup_port(&port);
+  f.window.reload_and_show();QApplication::processEvents();auto* checkbox=f.window.findChild<QCheckBox*>("loginStartupCheckBox");
+  HDRSHOT_CHECK(checkbox->isEnabled() && checkbox->toolTip().contains(QStringLiteral("无法确认")));
+  checkbox->click();QApplication::processEvents();HDRSHOT_CHECK(port.writes==0 && !checkbox->isChecked());
+  HDRSHOT_CHECK(login_dialog(f) && login_dialog(f)->text().contains(QStringLiteral("FixtureDomain")));
+  login_dialog(f)->reject();QApplication::processEvents();port.fail_query=false;port.fail_write=true;
+  checkbox->click();QApplication::processEvents();
+  HDRSHOT_CHECK(port.writes==1 && checkbox->isChecked());
+  HDRSHOT_CHECK(login_dialog(f)->text().contains(QStringLiteral("99")));
+  login_dialog(f)->reject();QApplication::processEvents();
+}
+void fixed_shortcut_groups_use_natural_columns() {
+  Fixture f;f.window.reload_and_show();QApplication::processEvents();
+  for(int col=0;col<3;++col){auto* group=f.window.findChild<QWidget*>("fixedShortcutGroup"+QString::number(col));
+    HDRSHOT_CHECK(group);auto* grid=qobject_cast<QGridLayout*>(group->layout());HDRSHOT_CHECK(grid&&grid->horizontalSpacing()==12);
+  }
+  for(const auto pair:{std::pair{1,3},std::pair{2,4}}){
+    auto* a=f.window.findChild<QLabel*>("fixedOperation"+QString::number(pair.first));
+    auto* b=f.window.findChild<QLabel*>("fixedOperation"+QString::number(pair.second));
+    auto* ak=f.window.findChild<QLabel*>("fixedShortcut"+QString::number(pair.first));
+    auto* bk=f.window.findChild<QLabel*>("fixedShortcut"+QString::number(pair.second));
+    HDRSHOT_CHECK(a->width()==b->width() && ak->width()==bk->width());
+    HDRSHOT_CHECK(a->alignment()==Qt::AlignCenter && b->alignment()==Qt::AlignCenter);
+    HDRSHOT_CHECK(ak->mapToGlobal(QPoint{}).x()-a->mapToGlobal(QPoint{}).x()-a->width()==12);
+    HDRSHOT_CHECK(a->width()==std::max(a->sizeHint().width(),b->sizeHint().width()));
+    HDRSHOT_CHECK(ak->width()==std::max(ak->sizeHint().width(),bk->sizeHint().width()));
+  }
+}
 
 void reset_button_restores_default_and_applies_immediately() {
   Fixture fixture;
@@ -308,7 +461,7 @@ void general_rows_are_wide_aligned_and_folder_actions_are_explicit() {
                 enter_action != nullptr &&
                 double_click_action != nullptr);
   HDRSHOT_CHECK(build_timestamp != nullptr);
-  HDRSHOT_CHECK(author != nullptr && author->text() == QStringLiteral("by Overdrive"));
+  HDRSHOT_CHECK(author != nullptr && author->text() == QStringLiteral("by OverDrive"));
   HDRSHOT_CHECK(description != nullptr && general_label != nullptr && fixed_label != nullptr);
   HDRSHOT_CHECK(general_container != nullptr && fixed_container != nullptr);
   HDRSHOT_CHECK(fixture.window.findChild<QWidget*>(
@@ -427,9 +580,16 @@ void windows_capture_compatibility_controls_are_transactional() {
   auto* help = fixture.window.findChild<QLabel*>(
       "windowsCaptureCompatibilityHelp");
   HDRSHOT_CHECK(gain && parent && gain_check && bypass && help);
+  HDRSHOT_CHECK(parent->text().isEmpty());
+  HDRSHOT_CHECK(parent->accessibleName()==QStringLiteral("Win 10 截图亮度兼容"));
+  auto* row=parent->parentWidget();
+  auto* form=qobject_cast<QFormLayout*>(row->parentWidget()->layout());
+  HDRSHOT_CHECK(form);
+  auto* label=qobject_cast<QLabel*>(form->labelForField(row));
+  HDRSHOT_CHECK(label && label->text()==QStringLiteral("Win 10 截图亮度兼容"));
   HDRSHOT_CHECK(gain_check->text() == QStringLiteral("scRGB gain ="));
   HDRSHOT_CHECK(help->text() == QStringLiteral(
-      "部分 Windows 10 版本截图亮度异常时可尝试开启，默认关闭。"));
+      "异常时可开启"));
   HDRSHOT_CHECK(parent->checkState() == Qt::Unchecked);
   HDRSHOT_CHECK(!gain_check->isEnabled() && !bypass->isEnabled() && !gain->isEnabled());
   HDRSHOT_CHECK(gain->text() == "0.5");
@@ -846,7 +1006,7 @@ void pinned_tab_copy_and_minimum_layout_match_defaults_contract() {
   auto* edge_label = qobject_cast<QLabel*>(form->labelForField(edge));
   HDRSHOT_CHECK(topmost_label && topmost_label->text() == QStringLiteral("默认置顶"));
   HDRSHOT_CHECK(edge_label && edge_label->text() == QStringLiteral("默认窗口短边"));
-  HDRSHOT_CHECK(hint->text() == QStringLiteral("窗口尺寸使用逻辑像素，适应屏幕缩放。"));
+  HDRSHOT_CHECK(hint->text() == QStringLiteral("窗口尺寸使用逻辑像素（DIP），适应屏幕缩放。"));
   HDRSHOT_CHECK(note->text() == QStringLiteral("每张贴图创建后可单独调整大小和置顶状态。"));
   auto* section = scroll->widget()->layout()->itemAt(0)->layout();
   HDRSHOT_CHECK(section && section->spacing() == 6);
@@ -882,8 +1042,8 @@ void pinned_tab_persists_future_defaults_and_rolls_back_both_controls() {
   auto* scroll = f.window.findChild<QScrollArea*>("pinnedScreenshotSettingsScrollArea");
   HDRSHOT_CHECK(topmost && edge && scroll);
   HDRSHOT_CHECK(topmost->isChecked() && edge->count() == 8 && edge->currentData().toInt() == 500);
-  HDRSHOT_CHECK(edge->currentText() == QStringLiteral("500 px（默认）"));
-  HDRSHOT_CHECK(edge->itemText(0) == QStringLiteral("450 px"));
+  HDRSHOT_CHECK(edge->currentText() == QStringLiteral("500 DIP（默认）"));
+  HDRSHOT_CHECK(edge->itemText(0) == QStringLiteral("450 DIP"));
   HDRSHOT_CHECK(edge->findData(400) == -1);
   HDRSHOT_CHECK(f.store.save_attempts == 0 && applied == 0);
   HDRSHOT_CHECK(topmost->isVisible() && edge->isVisible());
@@ -1184,6 +1344,11 @@ int main(int argc, char** argv) {
     });timer->start(2500);QTimer::singleShot(15500,&application,&QCoreApplication::quit);return application.exec();
   }
   return hdrshot::test::run({
+      {"Windows missing override enables directly through native adapter and UI",windows_fresh_missing_startup_succeeds_without_dialog},
+      {"login startup success uses system state without local bool",login_startup_success_and_signal_blocking},
+      {"login permission return follows platform refresh policy with zero registration",login_startup_permission_roundtrip_requires_explicit_retry},
+      {"login unknown and late write failure preserve system truth",login_startup_unknown_and_late_failure_preserve_truth},
+      {"fixed shortcut groups use natural columns and 12px",fixed_shortcut_groups_use_natural_columns},
       {"general sections share dynamic scroll without overlap", general_sections_scroll_together_without_overlap},
       {"reading selector blank hit area and independent chips", reading_selector_blank_area_opens_menu_and_chips_stay_independent},
       {"pinned tab content and viewport preserve shared background", pinned_tab_does_not_fill_the_shared_tab_background},

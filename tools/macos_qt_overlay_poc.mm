@@ -1,3 +1,6 @@
+#include "platform/macos/macos_login_startup_port.hpp"
+#include "platform/macos/macos_launch_origin.hpp"
+#include "platform/qt/qt_gui_instance_guard.hpp"
 #include "platform/macos/macos_magnifier_card_presenter.hpp"
 #include "platform/qt/update/qt_update_runtime.hpp"
 #include "application/export_completion_coordinator.hpp"
@@ -228,16 +231,18 @@ class MacApplicationShell final {
 
     std::cout << "appShellReady=1 hotkey=" << settings_.global_capture_hotkey
               << " settingsPath=" << config.toStdString() << '\n';
-    // Every cold process start opens settings, including existing profiles.
-    // show_settings() already defers presentation until the event loop runs.
-    // The legacy initial-settings flag must not gate or be written by startup.
     auto update_native=hdrshot::update::native_installer();
     auto update_identity=hdrshot::update::runtime_identity(update_native->install_identity());
     updater_=std::make_unique<hdrshot::update::Runtime>(std::move(update_identity),std::move(update_native),
         [this]{return bool(capture_session_) || export_executor_.pending() || (analyzer_&&analyzer_->has_windows()) || (pinned_&&pinned_->has_windows());},[this]{return shutdown();});
+    updater_->set_interactive_presentation_enabled(false);
     updater_->start();
-    show_settings();
     return true;
+  }
+
+  void launch_ready(hdrshot::MacLaunchOrigin origin) {
+    std::cout << "launchOrigin=" << (origin == hdrshot::MacLaunchOrigin::login ? "login" : "manual") << '\n';
+    if (origin == hdrshot::MacLaunchOrigin::manual) show_settings();
   }
 
   bool shutdown() {
@@ -322,6 +327,7 @@ class MacApplicationShell final {
   }
 
   void show_settings_after_menu() {
+    if (updater_) updater_->allow_interactive_presentation();
     if (settings_window_ == nullptr) {
       settings_window_ = new hdrshot::SettingsWindow(
           *settings_store_,
@@ -330,6 +336,7 @@ class MacApplicationShell final {
           input_platform_,
           kDefaultGlobalHotkey,
           diagnostics_folder_);
+      settings_window_->set_login_startup_port(&login_startup_);
       settings_window_->set_applied(
           [this](const hdrshot::SettingsSnapshot& settings) {
         settings_ = settings;
@@ -694,6 +701,7 @@ class MacApplicationShell final {
     std::cout << "captureSessionReturnedToResident=1\n";
   }
 
+  hdrshot::MacLoginStartupPort login_startup_;
   QApplication& app_;
   hdrshot::QtCaptureRuntime capture_runtime_;
   QSystemTrayIcon* tray_{};
@@ -754,6 +762,7 @@ int main(int argc, char** argv) {
     std::cout << hdrshot::capture_command_help();
     return 0;
   }
+  hdrshot::MacLaunchOriginObserver launch_origin;
   QApplication app(argc, argv);
   QApplication::setOrganizationName(QStringLiteral("Overdrive"));
   // SeriousShot is the stable release storage identity. Pre-release HDRShot /
@@ -766,9 +775,20 @@ int main(int argc, char** argv) {
   if (command.value().mode != hdrshot::CaptureCommandMode::gui)
     return hdrshot::run_macos_capture_cli(app, command.value());
 
+  hdrshot::QtGuiInstanceGuard instance_guard(
+      QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/gui-instance.lock"));
+  if (instance_guard.status() == hdrshot::GuiInstanceStatus::already_running) {
+    std::cout << "guiInstanceAlreadyRunning=1\n";
+    return 0;
+  }
+  if (instance_guard.status() != hdrshot::GuiInstanceStatus::owned) {
+    std::cerr << instance_guard.diagnostic().toStdString() << '\n';
+    return 1;
+  }
   MacApplicationShell shell(app);
   if (!shell.initialize()) {
     return 1;
   }
+  launch_origin.when_ready([&shell](hdrshot::MacLaunchOrigin origin) { shell.launch_ready(origin); });
   return app.exec();
 }

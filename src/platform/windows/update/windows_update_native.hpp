@@ -21,5 +21,5 @@ Result<bool, Error> windows_replace_transaction(const QString &journal, bool rec
 void windows_write_start_receipt();
 // True means the startup caller must return normally before initializing its
 // shell; the independent armed helper owns recovery and relaunch.
-Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root = {});
+Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root = {}, bool login_startup = false);
 } // namespace hdrshot::update

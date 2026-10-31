@@ -298,10 +298,13 @@ int main(int argc, char **argv) {
     }
   } else if (process_alive(pid, creation))
     return 14;
+  bool login_startup=false;
   if(startup_recovery) {
     const auto loaded_handoff=read_json(runtime+"/recovery.json");
     if(!loaded_handoff)return 25;
     const auto handoff=loaded_handoff.value();
+    if(handoff.contains("login_startup") && !handoff["login_startup"].isBool())return 30;
+    login_startup=handoff["login_startup"].toBool(false);
     const auto recovery_nonce=handoff["recovery_nonce"].toString();
     const auto caller=handoff["caller_pid"].toString().toLongLong();
     const auto caller_creation=handoff["caller_creation"].toString();
@@ -320,12 +323,19 @@ int main(int argc, char **argv) {
     HANDLE event=OpenEventW(SYNCHRONIZE,FALSE,reinterpret_cast<LPCWSTR>(event_name.utf16()));
     if(!event)return 28;
     struct CloseRecoveryEvent{HANDLE event;~CloseRecoveryEvent(){CloseHandle(event);}} close{event};
-    if(!save_json(runtime+"/recovery-ready.json",{{"recovery_nonce",recovery_nonce},
-       {"pid",QString::number(app.applicationPid())},{"creation",process_identity(app.applicationPid())}}))return 29;
+    QJsonObject recovery_ready{{"recovery_nonce",recovery_nonce},
+       {"pid",QString::number(app.applicationPid())},{"creation",process_identity(app.applicationPid())},
+       {"login_startup",login_startup}};
+#if HDRSHOT_UPDATE_TESTING && defined(HDRSHOT_TEST_RECOVERY_ORIGIN_ECHO_FALSE)
+    // Compile-time negative-control helper only; no product runtime switch.
+    recovery_ready["login_startup"]=false;
+#endif
+    if(!save_json(runtime+"/recovery-ready.json",recovery_ready))return 29;
     while(process_alive(caller,caller_creation))QThread::msleep(100);
     const auto armed=read_json(runtime+"/recovery-armed.json");
     if(WaitForSingleObject(event,0)!=WAIT_OBJECT_0 || !armed || armed.value()!=handoff)return 0;
   }
+  const QStringList recovery_arguments=login_startup?QStringList{"--login-startup"}:QStringList{};
   // Terminal recovery is idempotent. Commit/rollback releases the slot's
   // transaction and nonce; do not require that obsolete reservation on a
   // repeated invocation, or restart a second application instance. The
@@ -543,7 +553,7 @@ int main(int argc, char **argv) {
     (void)slot.save();
     if (!recovery || !was_terminal) {
       qint64 restarted;
-      QProcess::startDetached(exe, {}, target, &restarted);
+      QProcess::startDetached(exe, recovery_arguments, target, &restarted);
     }
   } else {
     slot.record["phase"] = "installing";
@@ -551,10 +561,10 @@ int main(int argc, char **argv) {
   }
   if(startup_recovery && complete) {
     qint64 restarted;
-    QProcess::startDetached(exe,{},target,&restarted);
+    QProcess::startDetached(exe,recovery_arguments,target,&restarted);
   } else if(startup_recovery && rolled && was_terminal) {
     qint64 restarted;
-    QProcess::startDetached(exe,{},target,&restarted);
+    QProcess::startDetached(exe,recovery_arguments,target,&restarted);
   }
   return complete || rolled ? 0 : 20;
 }

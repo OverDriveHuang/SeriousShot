@@ -94,7 +94,7 @@ SettingsWindow::SettingsWindow(
   title_font.setPointSize(22);
   title_font.setBold(true);
   title->setFont(title_font);
-  auto* author = new QLabel(QStringLiteral("by Overdrive"), this);
+  auto* author = new QLabel(QStringLiteral("by OverDrive"), this);
   author->setObjectName(QStringLiteral("authorLabel"));
   heading->addWidget(title);
   heading->addWidget(author, 0, Qt::AlignBaseline);
@@ -138,6 +138,14 @@ SettingsWindow::SettingsWindow(
   general_form_->setRowWrapPolicy(QFormLayout::DontWrapRows);
   general_form_->setHorizontalSpacing(18);
   general_form_->setVerticalSpacing(14);
+  login_startup_check_ = new QCheckBox(general);
+  login_startup_check_->setObjectName(QStringLiteral("loginStartupCheckBox"));
+  login_startup_check_->setAccessibleName(QStringLiteral("登录时自动启动"));
+  general_form_->addRow(QStringLiteral("登录时自动启动"), login_startup_check_);
+  general_form_->setRowVisible(login_startup_check_, false);
+  connect(login_startup_check_, &QCheckBox::clicked, this, [this](bool enabled) {
+    persist_login_startup(enabled);
+  });
   hotkey_edit_ = new QKeySequenceEdit(general);
   hotkey_edit_->setObjectName(QStringLiteral("globalHotkeyEdit"));
   hotkey_edit_->setMaximumSequenceLength(1);
@@ -282,13 +290,14 @@ SettingsWindow::SettingsWindow(
   auto* compatibility_layout = new QHBoxLayout(compatibility_row);
   compatibility_layout->setContentsMargins(0, 0, 0, 0);
   windows_capture_compatibility_check_ = new QCheckBox(
-      QStringLiteral("Windows 10 截图亮度兼容"), compatibility_row);
+      QString{}, compatibility_row);
   windows_capture_compatibility_check_->setObjectName(
       QStringLiteral("windowsCaptureCompatibilityCheckBox"));
+  windows_capture_compatibility_check_->setAccessibleName(QStringLiteral("Win 10 截图亮度兼容"));
   windows_capture_compatibility_check_->setTristate(true);
   compatibility_layout->addWidget(windows_capture_compatibility_check_);
   auto* compatibility_help = new QLabel(
-      QStringLiteral("部分 Windows 10 版本截图亮度异常时可尝试开启，默认关闭。"),
+      QStringLiteral("异常时可开启"),
       compatibility_row);
   compatibility_help->setObjectName(QStringLiteral("windowsCaptureCompatibilityHelp"));
   auto help_palette = compatibility_help->palette();
@@ -298,7 +307,7 @@ SettingsWindow::SettingsWindow(
   compatibility_help->setPalette(help_palette);
   compatibility_layout->addWidget(compatibility_help);
   compatibility_layout->addStretch(1);
-  general_form_->addRow(compatibility_row);
+  general_form_->addRow(QStringLiteral("Win 10 截图亮度兼容"), compatibility_row);
 
   auto* compatibility_options = new QWidget(general);
   auto* options_layout = new QHBoxLayout(compatibility_options);
@@ -338,14 +347,35 @@ SettingsWindow::SettingsWindow(
   shortcuts_section->addWidget(shortcuts_label);
   auto* shortcuts = new QGroupBox(this);
   shortcuts->setObjectName(QStringLiteral("fixedOperationsContainer"));
-  auto* shortcuts_form = new QFormLayout(shortcuts);
-  shortcuts_form->setHorizontalSpacing(18);
-  shortcuts_form->setVerticalSpacing(10);
-  shortcuts_form->addRow(QStringLiteral("取消"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::cancel_capture), shortcuts));
-  shortcuts_form->addRow(QStringLiteral("保存"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::save_default), shortcuts));
-  shortcuts_form->addRow(QStringLiteral("另存为"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::save_as), shortcuts));
-  shortcuts_form->addRow(QStringLiteral("撤销"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::undo), shortcuts));
-  shortcuts_form->addRow(QStringLiteral("重做"), shortcut_value(input_platform_.fixed_shortcut_label(UiCommand::redo), shortcuts));
+  auto* shortcuts_grid = new QGridLayout(shortcuts);
+  shortcuts_grid->setHorizontalSpacing(24);
+  shortcuts_grid->setVerticalSpacing(10);
+  const std::array<const char*, 5> names{"取消", "保存", "另存为", "撤销", "重做"};
+  const std::array<UiCommand, 5> commands{UiCommand::cancel_capture, UiCommand::save_default, UiCommand::save_as, UiCommand::undo, UiCommand::redo};
+  std::array<QGridLayout*, 3> groups{};
+  for (int col=0;col<3;++col) {
+    auto* group = new QWidget(shortcuts);
+    group->setObjectName(QString("fixedShortcutGroup%1").arg(col));
+    groups[col] = new QGridLayout(group);
+    groups[col]->setContentsMargins(0,0,0,0);
+    groups[col]->setHorizontalSpacing(12);
+    groups[col]->setVerticalSpacing(10);
+    groups[col]->setSizeConstraint(QLayout::SetFixedSize);
+    groups[col]->setRowMinimumHeight(1,QFontMetrics(shortcuts->font()).height());
+    shortcuts_grid->addWidget(group,0,col,Qt::AlignLeft | Qt::AlignTop);
+    shortcuts_grid->setColumnStretch(col,1);
+  }
+  for (int i=0;i<5;++i) {
+    const int col=i<3?i:i-2;
+    auto* label = new QLabel(QString::fromUtf8(names[i]),shortcuts);
+    auto* value = shortcut_value(input_platform_.fixed_shortcut_label(commands[i]),shortcuts);
+    label->setObjectName(QString("fixedOperation%1").arg(i));
+    value->setObjectName(QString("fixedShortcut%1").arg(i));
+    label->setAlignment(Qt::AlignCenter);
+    value->setAlignment(Qt::AlignCenter);
+    groups[col]->addWidget(label,i/3,0);
+    groups[col]->addWidget(value,i/3,1);
+  }
   shortcuts_section->addWidget(shortcuts);
   auto* general_scroll_content = new QWidget(general_page);
   auto* content_layout = new QVBoxLayout(general_scroll_content);
@@ -459,7 +489,113 @@ void SettingsWindow::set_applied(Applied callback) {
   applied_ = std::move(callback);
 }
 
+void SettingsWindow::set_login_startup_port(LoginStartupPort* port) {
+  login_startup_port_ = port;
+  general_form_->setRowVisible(login_startup_check_, port != nullptr);
+  if (port) refresh_login_startup();
+}
+void SettingsWindow::refresh_login_startup() {
+  if (!login_startup_port_ || login_startup_pending_) return;
+  login_startup_pending_ = true;
+  const auto read = login_startup_port_->query();
+  login_startup_error_.reset();
+  if (read) login_startup_snapshot_ = read.value();
+  else {
+    login_startup_snapshot_.state = LoginStartupState::unknown;
+    login_startup_snapshot_.can_enable = login_startup_snapshot_.can_disable = false;
+    login_startup_error_ = read.error();
+  }
+  login_startup_pending_ = false;
+  render_login_startup();
+}
+void SettingsWindow::persist_login_startup(bool enabled) {
+  if (!login_startup_port_ || login_startup_pending_ || login_startup_dialog_) return;
+  awaiting_login_startup_user_retry_ = false;
+  login_startup_pending_ = true;
+  login_startup_check_->setEnabled(false);
+  const auto changed = LoginStartupWorkflow(*login_startup_port_).change_enabled(enabled);
+  login_startup_snapshot_ = changed.snapshot;
+  login_startup_error_ = changed.operation_error ? changed.operation_error : changed.query_error;
+  login_startup_pending_ = false;
+  const bool actual_enabled = login_startup_snapshot_.state == LoginStartupState::enabled;
+  if (login_startup_error_ || actual_enabled != enabled) {
+    if (enabled && !actual_enabled) awaiting_login_startup_user_retry_ = true;
+    render_login_startup();
+    show_login_startup_result();
+  } else render_login_startup();
+}
+void SettingsWindow::render_login_startup() {
+  const QSignalBlocker blocker(login_startup_check_);
+  const auto state = login_startup_snapshot_.state;
+  login_startup_check_->setChecked(state == LoginStartupState::enabled &&
+                                  !awaiting_login_startup_user_retry_);
+  // Unknown is preserved as a model state and tooltip. A user click can query
+  // it again, but never writes unless that query establishes a capability.
+  login_startup_check_->setEnabled(!login_startup_pending_ && login_startup_port_ != nullptr);
+  QString hint;
+  if (awaiting_login_startup_user_retry_) hint = QStringLiteral("请再次勾选以检查并确认登录启动状态。");
+  else if (state == LoginStartupState::unknown) hint = QStringLiteral("无法确认登录启动状态，勾选时将检查。");
+  else if (state == LoginStartupState::service_not_found) hint = QStringLiteral("尚未确认登录启动状态，可勾选尝试启用。");
+  else if (state == LoginStartupState::requires_approval || state == LoginStartupState::blocked)
+    hint = QString::fromStdString(login_startup_snapshot_.approval_message);
+  else hint = QString::fromStdString(login_startup_snapshot_.diagnostic);
+  login_startup_check_->setToolTip(hint);
+  login_startup_check_->setAccessibleDescription(hint);
+}
+void SettingsWindow::show_login_startup_result() {
+  if (login_startup_dialog_) return;
+  const auto& snapshot = login_startup_snapshot_;
+  QString message;
+  if (snapshot.state == LoginStartupState::requires_approval || snapshot.state == LoginStartupState::blocked)
+    message = QString::fromStdString(snapshot.approval_message);
+  if (message.isEmpty() && !snapshot.diagnostic.empty()) message = QString::fromStdString(snapshot.diagnostic);
+  if (message.isEmpty()) message = QStringLiteral("登录启动操作未完成，请检查当前状态后再试。");
+  if (login_startup_error_) {
+    const auto& error = *login_startup_error_;
+    const auto description = error.safe_context.find("description");
+    const auto reason = error.safe_context.find("reason");
+    if (description != error.safe_context.end()) message += "\n" + QString::fromStdString(description->second);
+    else if (reason != error.safe_context.end() && snapshot.approval_message.empty())
+      message += "\n" + QString::fromStdString(reason->second);
+    const auto domain = error.safe_context.find("domain"), code = error.safe_context.find("native_code");
+    if (domain != error.safe_context.end()) message += "\n" + QString::fromStdString(domain->second);
+    if (code != error.safe_context.end()) message += QStringLiteral("（%1）").arg(QString::fromStdString(code->second));
+  }
+  if (snapshot.state == LoginStartupState::invalid_target && !snapshot.current_bundle_path.empty())
+    message += QStringLiteral("\n当前应用：") + QString::fromStdString(snapshot.current_bundle_path);
+  auto* dialog = new QMessageBox(QMessageBox::Information, QStringLiteral("登录时自动启动"), message,
+                                QMessageBox::NoButton, this);
+  dialog->setObjectName(QStringLiteral("loginStartupResultDialog"));
+  dialog->setTextFormat(Qt::PlainText);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  auto* cancel = dialog->addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+  dialog->setDefaultButton(cancel);
+  QPushButton* system_settings = nullptr;
+  if (snapshot.can_open_system_settings && snapshot.state != LoginStartupState::invalid_target)
+    system_settings = dialog->addButton(QStringLiteral("打开系统设置"), QMessageBox::ActionRole);
+  login_startup_dialog_ = dialog;
+  connect(dialog, &QMessageBox::finished, this, [this, dialog, system_settings](int) {
+    const bool open = system_settings && dialog->clickedButton() == system_settings;
+    dialog->hide();
+    login_startup_dialog_ = nullptr;
+    if (open) {
+      awaiting_login_startup_user_retry_ = true;
+      render_login_startup();
+      // Finish dismissing the sheet before handing focus to the OS. The port
+      // remains owned by the shell; this context cancels the task on deletion.
+      QTimer::singleShot(0, this, [this] {
+        if (!login_startup_port_) return;
+        const auto opened = login_startup_port_->open_system_settings();
+        if (!opened) { login_startup_error_ = opened.error(); show_login_startup_result(); }
+      });
+    }
+  });
+  dialog->open();
+}
+
 void SettingsWindow::reload_and_show() {
+  if (!isVisible()) awaiting_login_startup_user_retry_ = false;
+  refresh_login_startup();
   finish_hotkey_recording(false);
   const auto loaded = settings_store_.load();
   if (!loaded) {
@@ -568,6 +704,16 @@ void SettingsWindow::finish_saved_change(const QString& success_message) {
 }
 
 bool SettingsWindow::event(QEvent* event) {
+  if (event->type() == QEvent::WindowActivate) {
+#ifdef Q_OS_WIN
+    // Read the actual Windows state on return, without a second click or polling.
+    awaiting_login_startup_user_retry_ = false;
+    refresh_login_startup();
+#else
+    if (!awaiting_login_startup_user_retry_) refresh_login_startup();
+#endif
+  }
+  if (event->type() == QEvent::Hide && login_startup_dialog_) login_startup_dialog_->reject();
   if (event->type() == QEvent::WindowDeactivate) {
     finish_hotkey_recording(false);
   }
@@ -678,10 +824,10 @@ void SettingsWindow::build_pinned_screenshot_tab(QWidget* page) {
   pinned_short_edge_combo_->setObjectName(QStringLiteral("pinnedScreenshotShortEdgeCombo"));
   for (int edge = minimum_pinned_screenshot_short_edge; edge <= 800; edge += 50) {
     pinned_short_edge_combo_->addItem(edge == PinnedScreenshotDefaults{}.short_edge
-        ? QStringLiteral("%1 px（默认）").arg(edge) : QStringLiteral("%1 px").arg(edge), edge);
+        ? QStringLiteral("%1 DIP（默认）").arg(edge) : QStringLiteral("%1 DIP").arg(edge), edge);
   }
   form->addRow(QStringLiteral("默认窗口短边"), pinned_short_edge_combo_);
-  auto* hint = new QLabel(QStringLiteral("窗口尺寸使用逻辑像素，适应屏幕缩放。"), group);
+  auto* hint = new QLabel(QStringLiteral("窗口尺寸使用逻辑像素（DIP），适应屏幕缩放。"), group);
   hint->setObjectName(QStringLiteral("pinnedScreenshotLogicalPixelHint"));
   hint->setWordWrap(true);
   form->addRow(QString(), hint);

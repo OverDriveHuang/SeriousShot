@@ -434,7 +434,7 @@ public:
 std::unique_ptr<NativeInstaller> native_installer() {
   return std::make_unique<WindowsInstaller>();
 }
-Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root) {
+Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root, bool login_startup) {
   const auto trust=compiled_trust();
   const auto root=isolated_root.isEmpty()?testing_namespace(
       QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)+
@@ -472,7 +472,8 @@ Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root)
   const QJsonObject handoff{{"transaction",transaction},{"generation",j["generation"]},
       {"nonce",j["nonce"]},{"recovery_nonce",nonce},{"event_name",event_name},
       {"caller_pid",QString::number(QCoreApplication::applicationPid())},
-      {"caller_creation",process_identity(QCoreApplication::applicationPid())},{"caller_exe",exe}};
+      {"caller_creation",process_identity(QCoreApplication::applicationPid())},{"caller_exe",exe},
+      {"login_startup",login_startup}};
   auto saved=save_json(runtime+"/recovery.json",handoff);
   if(!saved)return saved;
   QProcess helper;helper.setProgram(runtime+"/SeriousShotUpdater.exe");
@@ -490,7 +491,14 @@ Result<bool, Error> windows_begin_startup_recovery(const QString &isolated_root)
   for(int n=0;n<100;++n){
     const auto receipt=read_json(runtime+"/recovery-ready.json");
     if(receipt && receipt.value()["recovery_nonce"]==nonce &&
-       receipt.value()["pid"].toString().toLongLong()==pid){ready=true;break;}
+       receipt.value()["pid"].toString().toLongLong()==pid){
+      if(login_startup && (!receipt.value()["login_startup"].isBool() || !receipt.value()["login_startup"].toBool())) {
+        auto error=failure("startup_recovery_login_origin_incompatible");
+        error.safe_context["description"]="旧更新恢复程序无法保留登录启动来源。本次未执行恢复；请手动启动 SeriousShot 完成恢复。";
+        return Result<bool,Error>::failure(std::move(error));
+      }
+      ready=true;break;
+    }
     QThread::msleep(100);
   }
   if(!ready)return Result<bool,Error>::failure(failure("startup_recovery_ready_timeout"));

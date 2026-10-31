@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.1.9 LANGUAGES CXX)
+project(HDRShot VERSION 0.2.0 LANGUAGES CXX)
 set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
 if(HDRSHOT_UPDATE_TEST_VERSION)
   if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
@@ -308,6 +308,7 @@ target_include_directories(hdrshot_default_save_workflow PUBLIC src)
 hdrshot_enable_warnings(hdrshot_default_save_workflow)
 
 add_library(hdrshot_settings_workflow STATIC
+  src/application/login_startup_workflow.cpp
   src/application/settings_workflow.cpp
 )
 target_link_libraries(hdrshot_settings_workflow PUBLIC hdrshot_core hdrshot_ports)
@@ -466,6 +467,7 @@ if(HDRSHOT_ENABLE_QT_HOST)
   hdrshot_enable_warnings(hdrshot_qt_overlay_ui)
 
   add_library(hdrshot_qt_settings STATIC
+    src/platform/qt/qt_gui_instance_guard.cpp
     src/platform/qt/qt_folder_opener_port.cpp
     src/platform/qt/qt_settings_store_port.cpp
     src/ui/qt/settings_window.cpp
@@ -912,7 +914,27 @@ if(APPLE)
       set_tests_properties(hdrshot_macos_analyzer_integration_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
 
+    if(BUILD_TESTING)
+      add_executable(hdrshot_macos_launch_origin_tests tests/macos_launch_origin_tests.mm
+        src/platform/macos/macos_launch_origin.mm)
+      target_include_directories(hdrshot_macos_launch_origin_tests PRIVATE src)
+      target_link_libraries(hdrshot_macos_launch_origin_tests PRIVATE Qt6::Widgets "-framework AppKit" "-framework CoreServices")
+      target_compile_options(hdrshot_macos_launch_origin_tests PRIVATE -fobjc-arc)
+      set_target_properties(hdrshot_macos_launch_origin_tests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
+      add_test(NAME hdrshot_macos_launch_origin_tests COMMAND hdrshot_macos_launch_origin_tests)
+      set_tests_properties(hdrshot_macos_launch_origin_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=cocoa" TIMEOUT 10)
+      add_executable(hdrshot_login_startup_platform_tests tests/login_startup_platform_tests.cpp
+        src/platform/macos/macos_login_startup_paths.cpp)
+      target_link_libraries(hdrshot_login_startup_platform_tests PRIVATE hdrshot_qt_settings)
+      target_include_directories(hdrshot_login_startup_platform_tests PRIVATE tests)
+      hdrshot_enable_warnings(hdrshot_login_startup_platform_tests)
+      add_test(NAME hdrshot_login_startup_platform_tests COMMAND hdrshot_login_startup_platform_tests)
+    endif()
+
     add_executable(hdrshot_macos_qt_overlay_poc tools/macos_qt_overlay_poc.mm
+      src/platform/macos/macos_login_startup_port.mm
+      src/platform/macos/macos_login_startup_paths.cpp
+      src/platform/macos/macos_launch_origin.mm
       src/platform/macos/macos_capture_cli.mm
       src/platform/macos/macos_qt_window_activation.mm
       src/platform/macos/macos_qt_overlay_window.mm)
@@ -931,6 +953,10 @@ if(APPLE)
       hdrshot_macos_capture_ports
       hdrshot_macos_export_ports
       hdrshot_macos_global_hotkey_port
+      "-framework ServiceManagement"
+      "-framework CoreServices"
+      "-framework Security"
+      "-framework DiskArbitration"
       hdrshot_macos_qt_input_platform_adapter
       hdrshot_freetype_text_rasterizer
       hdrshot_macos_preview_presenter_port
@@ -1284,6 +1310,11 @@ if(BUILD_TESTING)
   hdrshot_enable_warnings(hdrshot_default_save_workflow_tests)
   add_test(NAME hdrshot_default_save_workflow_tests COMMAND hdrshot_default_save_workflow_tests)
 
+  add_executable(hdrshot_login_startup_workflow_tests tests/login_startup_workflow_tests.cpp)
+  target_link_libraries(hdrshot_login_startup_workflow_tests PRIVATE hdrshot_settings_workflow)
+  target_include_directories(hdrshot_login_startup_workflow_tests PRIVATE tests)
+  hdrshot_enable_warnings(hdrshot_login_startup_workflow_tests)
+  add_test(NAME hdrshot_login_startup_workflow_tests COMMAND hdrshot_login_startup_workflow_tests)
   add_executable(hdrshot_settings_workflow_tests tests/settings_workflow_tests.cpp)
   target_link_libraries(hdrshot_settings_workflow_tests PRIVATE hdrshot_settings_workflow)
   target_include_directories(hdrshot_settings_workflow_tests PRIVATE tests)

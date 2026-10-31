@@ -127,6 +127,8 @@ struct Installer : NativeInstaller {
 namespace hdrshot::update {
 class RuntimeTestAccess {
 public:
+  static bool has_window(const Runtime &r) { return bool(r.update_window_); }
+  static bool has_confirmation(const Runtime &r) { return bool(r.confirmation_); }
   static void quit_callback(Runtime &r, std::function<bool()> quit) { r.quit_ = std::move(quit); }
   static void busy_callback(Runtime &r, std::function<bool()> busy) { r.busy_ = std::move(busy); }
   static void idle(Runtime &r) {
@@ -887,6 +889,75 @@ int main(int argc, char **argv) {
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::idle; });
          HDRSHOT_CHECK(!f.runtime->coordinator().view().error && !f.runtime->coordinator().view().candidate);
          HDRSHOT_CHECK(f.wire.downloads == 1 && f.wire.releases == 0);
+       }},
+      {"login startup stays silent across automatic ready and later ticks until user interaction", [] {
+         Fixture f;
+         f.runtime->set_interactive_presentation_enabled(false);
+         RuntimeTestAccess::idle(*f.runtime);
+         f.start();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready &&
+                             RuntimeTestAccess::has_confirmation(*f.runtime); });
+         for (int tick = 0; tick < 20; ++tick) {
+           f.runtime->coordinator().tick(1000 + tick);
+           QApplication::processEvents();
+           HDRSHOT_CHECK(!RuntimeTestAccess::has_window(*f.runtime));
+           HDRSHOT_CHECK(RuntimeTestAccess::has_confirmation(*f.runtime));
+           HDRSHOT_CHECK(!f.runtime->busy());
+         }
+         f.runtime->allow_interactive_presentation();
+         HDRSHOT_CHECK(RuntimeTestAccess::has_window(*f.runtime));
+         HDRSHOT_CHECK(f.runtime->update_window().isVisible());
+         HDRSHOT_CHECK(RuntimeTestAccess::has_confirmation(*f.runtime));
+         f.runtime->update_window().hide();
+         f.runtime->allow_interactive_presentation();
+         HDRSHOT_CHECK(!f.runtime->update_window().isVisible());
+         f.runtime->show_details();
+         HDRSHOT_CHECK(f.runtime->update_window().isVisible());
+         f.runtime->update_window().later();
+         HDRSHOT_CHECK(!RuntimeTestAccess::has_confirmation(*f.runtime));
+       }},
+      {"login startup restores ready and manual pending without presentation on later ticks", [] {
+         for (bool pending : {false, true}) {
+           Fixture f;
+           f.runtime->set_interactive_presentation_enabled(false);
+           RuntimeTestAccess::idle(*f.runtime);
+           f.start();
+           f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+           f.runtime.reset();
+           if (pending) {
+             auto record = read_json(f.dir.path() + "/slot.json").value();
+             record["phase"] = "manual_pending";
+             record["mount"] = "/Volumes/isolated-unmounted-fixture";
+             HDRSHOT_CHECK(save_json(f.dir.path() + "/slot.json", record));
+           }
+           f.runtime = std::make_unique<Runtime>(f.identity, std::make_unique<Installer>(),
+               [] { return false; }, [] { return false; });
+           f.runtime->set_interactive_presentation_enabled(false);
+           RuntimeTestAccess::configure(*f.runtime, f.trust, f.dir.path(), f.wire);
+           f.start();
+           f.await([&] { return f.runtime->coordinator().view().phase ==
+               (pending ? Phase::manual_pending : Phase::ready); });
+           for(int tick=0;tick<20;++tick) {
+             f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch()+tick);
+             QApplication::processEvents();
+             HDRSHOT_CHECK(!RuntimeTestAccess::has_window(*f.runtime));
+             HDRSHOT_CHECK(!f.runtime->busy());
+           }
+           HDRSHOT_CHECK(RuntimeTestAccess::has_confirmation(*f.runtime));
+           HDRSHOT_CHECK(f.wire.downloads == 1);
+           f.runtime->allow_interactive_presentation();
+           HDRSHOT_CHECK(f.runtime->update_window().isVisible());
+         }
+       }},
+      {"login startup errors never create a foreground window", [] {
+         Fixture f; f.wire.catalog_status = 403;
+         f.runtime->set_interactive_presentation_enabled(false);
+         f.start();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::check_failed; });
+         for(int tick=0;tick<10;++tick)f.runtime->coordinator().tick(200+tick);
+         HDRSHOT_CHECK(!RuntimeTestAccess::has_window(*f.runtime));
+         f.runtime->show_details();
+         HDRSHOT_CHECK(f.runtime->update_window().isVisible());
        }},
       {"installation requires current authenticated catalog even with ready package", [] {
          for (int mode = 0; mode < 7; ++mode) {

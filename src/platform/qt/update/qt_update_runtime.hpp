@@ -25,6 +25,8 @@ public:
   void start();
   void attach(SettingsWindow &);
   void show_details();
+  void set_interactive_presentation_enabled(bool allowed);
+  void allow_interactive_presentation();
   UpdateWindow &update_window();
   Coordinator &coordinator() {
     return coordinator_;
@@ -57,6 +59,7 @@ private:
   void ui(std::function<void()>);
   void work(std::function<void()>);
   void render(const View &);
+  void present_details_if_allowed();
   Identity identity_;
   std::unique_ptr<NativeInstaller> native_;
   Trust trust_;
@@ -85,6 +88,7 @@ private:
   QDeadlineTimer download_deadline_;
   int metadata_timeout_ms_{30000};
   int download_timeout_ms_{2 * 60 * 60 * 1000};
+  bool interactive_presentation_enabled_{true};
   bool barrier_{};
   bool manual_opening_{};
 };

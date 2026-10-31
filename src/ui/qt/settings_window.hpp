@@ -2,6 +2,7 @@
 #include "ui/qt/reading_selector.hpp"
 
 #include "application/settings_workflow.hpp"
+#include "application/login_startup_workflow.hpp"
 #include "domain/update/update_policy.hpp"
 #include "ports/system_shell_port.hpp"
 #include "ui/qt/qt_input_platform_adapter.hpp"
@@ -9,6 +10,7 @@
 
 #include <QKeySequence>
 #include <QWidget>
+#include <QPointer>
 
 #include <functional>
 #include <string>
@@ -23,6 +25,7 @@ class QComboBox;
 class QFormLayout;
 class QCheckBox;
 class QUrl;
+class QMessageBox;
 
 namespace hdrshot {
 
@@ -40,6 +43,8 @@ class SettingsWindow final : public QWidget {
       QWidget* parent = nullptr);
 
   void reload_and_show();
+  void set_login_startup_port(LoginStartupPort* port);
+  void refresh_login_startup();
   void set_update_opener(std::function<void()> open);
   QtWindowActivationPort* window_activation_port() const {return activation_;}
   void set_update_view(const update::View&, bool manual);
@@ -52,6 +57,9 @@ class SettingsWindow final : public QWidget {
 
  private:
   void choose_folder();
+  void persist_login_startup(bool enabled);
+  void render_login_startup();
+  void show_login_startup_result();
   void build_analysis_tab(QWidget*);
   void build_pinned_screenshot_tab(QWidget*);
   void persist_pinned_screenshot_defaults();
@@ -88,6 +96,13 @@ class SettingsWindow final : public QWidget {
   std::string diagnostics_folder_;
   SettingsSnapshot snapshot_{};
   Applied applied_;
+  LoginStartupPort* login_startup_port_{};
+  LoginStartupSnapshot login_startup_snapshot_;
+  std::optional<Error> login_startup_error_;
+  bool login_startup_pending_{};
+  bool awaiting_login_startup_user_retry_{};
+  QPointer<QMessageBox> login_startup_dialog_;
+  QCheckBox* login_startup_check_{};
   QKeySequenceEdit* hotkey_edit_{};
   QPushButton* customize_hotkey_button_{};
   QComboBox* enter_completion_combo_{};

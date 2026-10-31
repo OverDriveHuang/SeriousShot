@@ -1,4 +1,6 @@
 #include "platform/qt/update/qt_update_runtime.hpp"
+#include "platform/windows/windows_login_startup_port.hpp"
+#include "platform/windows/windows_launch_options.hpp"
 #include "platform/windows/windows_capture_preparation.hpp"
 #include "platform/qt/qt_capture_runtime.hpp"
 #include "ui/qt/capture_error_message.hpp"
@@ -71,8 +73,8 @@ struct Overlay {
 // policies are the existing shared objects. Only native effects are wired here.
 class WindowsApplicationShell {
  public:
-  WindowsApplicationShell(QApplication& app,QString smoke_folder,bool smoke_copy=false,bool smoke_sequence=false)
-      :app_(app),smoke_folder_(std::move(smoke_folder)),smoke_copy_(smoke_copy),
+  WindowsApplicationShell(QApplication& app,QString smoke_folder,bool smoke_copy=false,bool smoke_sequence=false,WindowsLaunchOrigin origin=WindowsLaunchOrigin::manual)
+      :app_(app),origin_(origin),smoke_folder_(std::move(smoke_folder)),smoke_copy_(smoke_copy),
        smoke_sequence_(smoke_sequence),
        exit_([this]{return !analyzer_ || analyzer_->close_windows();},
              [this](int code){finalize_exit(code);}),
@@ -117,7 +119,7 @@ class WindowsApplicationShell {
     if(!capability) {
       record_diagnostic_failure(diagnostics_.get(),"startup",capability.error());
       print_error(capability.error());
-      if(smoke_folder_.isEmpty()) {
+      if(smoke_folder_.isEmpty() && origin_==WindowsLaunchOrigin::manual) {
         const auto reason=capability.error().safe_context.find("reason");
         const QString detail=reason==capability.error().safe_context.end()?QString{}:
             QString::fromStdString(reason->second);
@@ -201,13 +203,15 @@ class WindowsApplicationShell {
       if(smoke_pin()) show_settings();
       QTimer::singleShot(100,&app_,[this] {start_capture();});
       QTimer::singleShot(smoke_sequence_?45000:15000,&app_,[this] {if(!smoke_exported_) {std::cerr<<"smoke timeout\n";shutdown(1);}});
-    } else show_settings();
+    } else if(origin_==WindowsLaunchOrigin::manual) show_settings();
     std::cout<<"appShellReady=1 windowsBuild="<<windows_build_number()<<" hotkey="<<settings_.global_capture_hotkey<<'\n';
     if(smoke_folder_.isEmpty()){
       auto update_native=update::native_installer();auto identity=update::runtime_identity(update_native->install_identity());
       updater_=std::make_unique<update::Runtime>(std::move(identity),std::move(update_native),
         [this]{return !exit_.accepting_work()||exit_.synchronous_call_active()||!overlays_.empty()||executor_.pending()||(analyzer_&&analyzer_->has_windows())||(pinned_&&pinned_->has_windows());},
-        [this]{return exit_.shutdown_synchronously();});updater_->start();
+        [this]{return exit_.shutdown_synchronously();});
+      updater_->set_interactive_presentation_enabled(origin_==WindowsLaunchOrigin::manual);
+      updater_->start();
       if(settings_window_)updater_->attach(*settings_window_);
       update::windows_write_start_receipt();
     }
@@ -277,9 +281,11 @@ class WindowsApplicationShell {
   }
   void show_settings_after_menu() {
     if(!exit_.accepting_work()) return;
+    if(updater_)updater_->allow_interactive_presentation();
     if(!settings_window_) {
       settings_window_=new SettingsWindow(*store_,hotkey_,folders_,input_,default_hotkey,diagnostics_folder_);
       settings_window_->set_window_activation_port(&activation_);
+      settings_window_->set_login_startup_port(&login_startup_);
       settings_window_->set_applied([this](const SettingsSnapshot& settings){
         const bool enable_detail=!settings_.detailed_logging && settings.detailed_logging;
         settings_=settings;
@@ -527,6 +533,15 @@ class WindowsApplicationShell {
     std::cout<<"captureSessionReturnedToResident=1\n";
   }
   QApplication& app_;
+  WindowsLaunchOrigin origin_;
+  WindowsLoginStartupPort login_startup_{[] {
+    WindowsLoginStartupContext context;
+    if(update::isolated_testing(update::compiled_trust())) {
+      context.item_basename=QStringLiteral("SeriousShot.Testing.T72.01a18db2.lnk");
+      context.ownership_marker=QStringLiteral("SeriousShot Testing T72 01a18db2 managed login startup v1");
+    }
+    return context;
+  }()};
   QString smoke_folder_;
   bool smoke_copy_{};
   bool smoke_sequence_{};
@@ -579,14 +594,14 @@ class WindowsApplicationShell {
 }
 int main(int argc,char** argv) {
   std::cout<<std::unitbuf;std::cerr<<std::unitbuf;
+  std::vector<std::string_view> raw_arguments;
+  for(int i=1;i<argc;++i)raw_arguments.emplace_back(argv[i]);
+  const auto launch=parse_windows_launch_options(raw_arguments);
+  if(!launch){print_error(launch.error());return 2;}
   const bool smoke_argument=argc>=2 &&
       (std::string_view(argv[1])=="--smoke" || std::string_view(argv[1])=="--smoke-copy" ||
        std::string_view(argv[1])=="--smoke-sequence");
-  std::vector<std::string_view> arguments;
-  if(!smoke_argument) for(int index=1;index<argc;++index) {
-    if(std::string_view(argv[index])=="--update-receipt"&&index+2<argc){index+=2;continue;}
-    arguments.emplace_back(argv[index]);
-  }
+  const auto arguments=smoke_argument?std::vector<std::string_view>{}:launch.value().capture_arguments;
   const auto command=parse_capture_command(arguments);
   if(!command) {print_error(command.error());std::cerr<<capture_command_help();return 2;}
   if(command.value().mode==CaptureCommandMode::help) {
@@ -612,7 +627,7 @@ int main(int argc,char** argv) {
   const HANDLE instance=smoke?nullptr:CreateMutexW(nullptr,FALSE,reinterpret_cast<LPCWSTR>(instance_name.utf16()));
   if(!smoke && (!instance || GetLastError()==ERROR_ALREADY_EXISTS)) {if(instance) CloseHandle(instance);return 0;}
   if(!smoke) {
-    const auto recovery=update::windows_begin_startup_recovery();
+    const auto recovery=update::windows_begin_startup_recovery({},launch.value().origin==WindowsLaunchOrigin::login);
     if(!recovery || recovery.value()) {
       if(!recovery)print_error(recovery.error());
       if(instance)CloseHandle(instance);
@@ -620,7 +635,7 @@ int main(int argc,char** argv) {
     }
   }
   int result=1;
-  { WindowsApplicationShell shell(app,smoke_folder,smoke_copy,smoke_sequence);
+  { WindowsApplicationShell shell(app,smoke_folder,smoke_copy,smoke_sequence,launch.value().origin);
     if(shell.initialize()) result=app.exec(); }
   if(instance) CloseHandle(instance);
   return result;
