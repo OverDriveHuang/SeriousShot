@@ -1,10 +1,7 @@
 #include "platform/macos/macos_login_startup_port.hpp"
-#include "platform/macos/macos_login_startup_paths.hpp"
 #import <AppKit/AppKit.h>
 #import <ServiceManagement/ServiceManagement.h>
 #import <Security/Security.h>
-#import <DiskArbitration/DiskArbitration.h>
-#import <sys/mount.h>
 #include <QFileInfo>
 namespace hdrshot {
 namespace {
@@ -15,36 +12,9 @@ Error native_error(NSError* error, const char* operation) {
        {"description", error ? error.localizedDescription.UTF8String : "登录启动操作未完成，请检查系统设置。"}}};
 }
 std::string target_problem(NSBundle* bundle) {
-  const auto path = QString::fromUtf8(bundle.bundlePath.UTF8String);
   if (!bundle.bundleIdentifier.length || ![bundle.bundlePath.pathExtension isEqualToString:@"app"] ||
       !bundle.executableURL || !QFileInfo(QString::fromUtf8(bundle.executablePath.UTF8String)).isExecutable())
     return "请先运行完整的已签名应用，再启用登录启动。";
-  const auto canonical = QFileInfo(path).canonicalFilePath();
-  if (canonical.isEmpty()) return "无法读取当前应用的实际位置，请重新安装后重试。";
-  if (canonical.split('/').contains("AppTranslocation"))
-    return "请先将应用复制到稳定的本地位置，再启用登录启动。";
-  struct statfs volume{};
-  if (statfs(canonical.toUtf8().constData(), &volume) != 0)
-    return "无法确认应用所在卷，请检查安装位置后重试。";
-  if (volume.f_flags & MNT_RDONLY)
-    return "应用位于只读卷，请先复制到稳定的本地位置，再启用登录启动。";
-  if (!(volume.f_flags & MNT_LOCAL))
-    return "应用位于网络卷，请先复制到稳定的本地位置，再启用登录启动。";
-  DASessionRef session = DASessionCreate(kCFAllocatorDefault);
-  DADiskRef disk = session ? DADiskCreateFromVolumePath(kCFAllocatorDefault, session,
-      (__bridge CFURLRef)[NSURL fileURLWithFileSystemRepresentation:volume.f_mntonname isDirectory:YES relativeToURL:nil]) : nullptr;
-  CFDictionaryRef description = disk ? DADiskCopyDescription(disk) : nullptr;
-  const auto protocol = description ? static_cast<CFStringRef>(CFDictionaryGetValue(
-      description, kDADiskDescriptionDeviceProtocolKey)) : nullptr;
-  const bool disk_image = protocol && CFGetTypeID(protocol) == CFStringGetTypeID() &&
-      CFStringCompare(protocol, CFSTR("Disk Image"), 0) == kCFCompareEqualTo;
-  if (description) CFRelease(description);
-  if (disk) CFRelease(disk);
-  if (session) CFRelease(session);
-  if (disk_image)
-    return "应用位于磁盘映像，请先复制到稳定的本地位置，再启用登录启动。";
-  if (macos_login_target_is_project_staging(canonical))
-    return "当前应用位于项目构建或暂存目录，请先复制到稳定的本地位置，再启用登录启动。";
   SecStaticCodeRef code = nullptr;
   const auto created = SecStaticCodeCreateWithPath((__bridge CFURLRef)bundle.bundleURL, kSecCSDefaultFlags, &code);
   const auto valid = created == errSecSuccess ? SecStaticCodeCheckValidity(code, kSecCSStrictValidate, nullptr) : created;

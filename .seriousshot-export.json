@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-10-31T14:37:00+08:00",
+  "timestamp": "2026-10-31T15:21:18+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "3cf954e042533d532ce907cc70d5d1cef18d3d541511b86adc4474df3a1fa8a9",
+      "sha256": "eac48df6afb8db4db78d73a4f23ade80424e595ba6769b17d1cc5d6b217ec6e0",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -15,7 +15,7 @@
       "mode": 420
     },
     "README.md": {
-      "sha256": "7533e04dbdfcbd824520ddbc800fa6572f4e4389a9e4f88c466071b70142a7fb",
+      "sha256": "727cb0f12b20e243e00566fe641ee83e75e5e6ccfe8f60a8f88ae4ec4d6415d6",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -806,20 +806,12 @@
       "sha256": "719cec2d286fdfd2edaa2d5211d91942b802d3066b090045f28d6bf83715b9e7",
       "mode": 420
     },
-    "src/platform/macos/macos_login_startup_paths.cpp": {
-      "sha256": "b8c27c4a9b8706773e1c5721a6cd406adc2db6c24f68963216cb9837038149af",
-      "mode": 420
-    },
-    "src/platform/macos/macos_login_startup_paths.hpp": {
-      "sha256": "00d7c817e1f084997fe5f8933ca43c68ae81dc8ab769039a7798b5fe577421ec",
-      "mode": 420
-    },
     "src/platform/macos/macos_login_startup_port.hpp": {
       "sha256": "2253f67433cbccbf05959328fbcbecc1ec11012372bb0fa40812fb533a382eb8",
       "mode": 420
     },
     "src/platform/macos/macos_login_startup_port.mm": {
-      "sha256": "e94414128c2790e5278872f2b1836a5f1c3b608b52600b811b4a3178afd4ae46",
+      "sha256": "d4708b8f033b8f9eac53716364dcb7001a1f18a5e6defafe7b0de4bf33ce66c2",
       "mode": 420
     },
     "src/platform/macos/macos_magnifier_card_presenter.cpp": {
@@ -1619,7 +1611,7 @@
       "mode": 420
     },
     "tests/login_startup_platform_tests.cpp": {
-      "sha256": "61ab43dc6a89ee45249f8693eb91a639881c9c27cd16e58bfa69487eae47117c",
+      "sha256": "cd38dfe70b890eb6e39ba6a84392cc374a18e58035e950db6d65b86a44c5a45a",
       "mode": 420
     },
     "tests/login_startup_workflow_tests.cpp": {

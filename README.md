@@ -25,7 +25,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接添加形状、直线、画笔笔迹、箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-当前版本 [0.1.9](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.1.9) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
+当前版本 [0.2.0](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.0) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
 
 ## 截图、标注、分享，一次完成
 
@@ -138,7 +138,7 @@ macOS 可直接运行应用包内的程序：
 
 **先退出旧版，再把新版拖到 Applications 中，选择替换。** 如果旧版装在其他位置，请移除旧的 SeriousShot.app，只保留准备使用的新版，避免启动到旧副本；推荐 Applications 中直接替换即可，不保留旧版应用。
 
-Mac 0.1.9 使用 Apple Developer ID 签名，并完成 App 与 DMG 公证。从旧版升级后可能需要重新授权录屏；如果系统设置里已允许 SeriousShot，但新版仍无法截图：
+Mac 0.2.0 使用 Apple Developer ID 签名，并完成 App 与 DMG 公证。从旧版升级后可能需要重新授权录屏；如果系统设置里已允许 SeriousShot，但新版仍无法截图：
 
 1. 启动替换后的新版，按一次截图快捷键，触发权限提示。
 2. 进入上述录屏权限设置，**选中 SeriousShot 条目，点击列表下方的“−”删除这条旧授权记录**；不是只把开关关掉。

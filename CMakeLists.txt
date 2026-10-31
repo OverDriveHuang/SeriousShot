@@ -923,8 +923,7 @@ if(APPLE)
       set_target_properties(hdrshot_macos_launch_origin_tests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
       add_test(NAME hdrshot_macos_launch_origin_tests COMMAND hdrshot_macos_launch_origin_tests)
       set_tests_properties(hdrshot_macos_launch_origin_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=cocoa" TIMEOUT 10)
-      add_executable(hdrshot_login_startup_platform_tests tests/login_startup_platform_tests.cpp
-        src/platform/macos/macos_login_startup_paths.cpp)
+      add_executable(hdrshot_login_startup_platform_tests tests/login_startup_platform_tests.cpp)
       target_link_libraries(hdrshot_login_startup_platform_tests PRIVATE hdrshot_qt_settings)
       target_include_directories(hdrshot_login_startup_platform_tests PRIVATE tests)
       hdrshot_enable_warnings(hdrshot_login_startup_platform_tests)
@@ -933,7 +932,6 @@ if(APPLE)
 
     add_executable(hdrshot_macos_qt_overlay_poc tools/macos_qt_overlay_poc.mm
       src/platform/macos/macos_login_startup_port.mm
-      src/platform/macos/macos_login_startup_paths.cpp
       src/platform/macos/macos_launch_origin.mm
       src/platform/macos/macos_capture_cli.mm
       src/platform/macos/macos_qt_window_activation.mm
@@ -956,7 +954,6 @@ if(APPLE)
       "-framework ServiceManagement"
       "-framework CoreServices"
       "-framework Security"
-      "-framework DiskArbitration"
       hdrshot_macos_qt_input_platform_adapter
       hdrshot_freetype_text_rasterizer
       hdrshot_macos_preview_presenter_port
