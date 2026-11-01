@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-11-01 01:33:27 CST
+最后更新：2026-11-01 12:45:52 CST
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -72,19 +72,19 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ## 设置界面
 
-设置分为**通用、分析和贴图**三个页面。通用与贴图图示为 macOS；分析页图示为 Windows 0.2.1，采用两端共用的设置布局。
+设置分为**通用、分析和贴图**三个页面。以下为 Windows 0.2.1 界面；macOS 采用相同的设置分组。
 
-<img src="docs/images/settings-general-20261031-155505.png" alt="SeriousShot 0.2.0 通用设置：登录时自动启动、截图快捷键、完成动作与输出设置" width="860">
+<img src="docs/images/settings-general-20261101-124450.png" alt="SeriousShot 0.2.1 通用设置：登录时自动启动、截图快捷键、完成动作与输出设置" width="860">
 
 配置全局截图快捷键、按 Enter／双击选区时的完成动作、默认保存位置，以及 PNG 或 JPEG 输出。PNG 可选择 HDR 精度与参考白；选择 JPEG 时显示对应质量选项。Windows 设置页还提供“Win 10 截图亮度兼容”选项；设置修改后立即生效。
 
 “登录时自动启动”默认关闭。开启后，登录系统时在托盘或菜单栏运行，截图快捷键可直接使用；手动打开程序时显示设置。退出程序保留下次登录自启的设置。Windows 若已在系统中禁用此项，请在 Windows 设置的“启动”设置中将 SeriousShot 设为“开”，切回程序后会自动更新勾选状态。
 
-<img src="docs/images/settings-analysis-20261101-003932.png" alt="SeriousShot 0.2.1 分析设置：放大镜开关左对齐，分析器处理与吸管设置分组" width="860">
+<img src="docs/images/settings-analysis-20261101-124450.png" alt="SeriousShot 0.2.1 分析设置：放大镜开关左对齐，分析器处理与吸管设置分组" width="860">
 
 “分析”页配置截图放大镜、默认读数、HDR／SDR 工作空间和分析参考白。“分析器默认处理”设置 Blur；“分析器吸管”设置采样范围与默认读数。
 
-<img src="docs/images/settings-pinned-20261031-155505.png" alt="SeriousShot 0.2.0 贴图设置：默认置顶和默认窗口短边" width="860">
+<img src="docs/images/settings-pinned-20261101-124450.png" alt="SeriousShot 0.2.1 贴图设置：默认置顶和默认窗口短边" width="860">
 
 “贴图”页设置新建贴图的默认置顶状态和窗口短边（450–800 DIP，默认 500 DIP）。DIP 表示逻辑像素，窗口随屏幕缩放调整。每张贴图创建后仍可单独调整。
 
