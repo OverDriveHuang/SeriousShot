@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "ui/qt/qt_overlay_host.hpp"
 #include "ui/qt/capture_error_message.hpp"
 #include "application/capture_interaction_session.hpp"
@@ -1211,6 +1212,10 @@ void pending_text_exports_final_clean_revision_without_present_completion(bool a
 }
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  hdrshot::QtUiLanguageRuntime language_runtime;
+  constexpr auto chinese = hdrshot::UiLanguage::simplified_chinese;
+  const auto initialization = language_runtime.initialize(app, chinese, [=] { return chinese; });
+  HDRSHOT_CHECK(initialization && initialization.value().active_language == chinese);
 #ifdef Q_OS_MACOS
   if(app.arguments().contains("--magnifier-native-raster")) {
     if(QApplication::platformName()!="cocoa" ||

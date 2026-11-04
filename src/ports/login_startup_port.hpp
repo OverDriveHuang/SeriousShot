@@ -7,6 +7,13 @@ namespace hdrshot {
 enum class LoginStartupState {
   disabled, enabled, requires_approval, blocked, service_not_found, invalid_target, unknown
 };
+// Source text stays in the diagnostic fields. These descriptors carry the
+// app-owned portion independently of the OS message and path data.
+struct LoginStartupText {
+  const char* id{};
+  std::optional<std::string> argument{};
+};
+
 struct LoginStartupSnapshot {
   LoginStartupState state{LoginStartupState::unknown};
   std::string current_bundle_path;
@@ -17,6 +24,10 @@ struct LoginStartupSnapshot {
   bool can_open_system_settings{};
   std::string diagnostic;
   std::string approval_message;
+  LoginStartupText diagnostic_text{};
+  LoginStartupText approval_text{};
+  std::optional<Error> diagnostic_error{};
+  std::string diagnostic_native_suffix{};
 };
 class LoginStartupPort {
  public:

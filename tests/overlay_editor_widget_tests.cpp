@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "ui/qt/overlay_editor_widget.hpp"
 #include "ports/annotation_font_contract.hpp"
 #include "test_support.hpp"
@@ -1592,6 +1593,10 @@ void trial_popup_visuals(const QString& output) {
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication application(argc, argv);
+  hdrshot::QtUiLanguageRuntime language_runtime;
+  constexpr auto chinese = hdrshot::UiLanguage::simplified_chinese;
+  const auto initialization = language_runtime.initialize(application, chinese, [=] { return chinese; });
+  HDRSHOT_CHECK(initialization && initialization.value().active_language == chinese);
   if (qEnvironmentVariableIsSet("SERIOUSSHOT_TRIAL_UI_CHECKS"))
     return hdrshot::test::run({{"approved closed picker paint and state recovery", closed_picker_approved_paint_and_state_recovery},
                                {"brush cursor area and cleanup", trial_brush_cursor_area_and_cleanup},

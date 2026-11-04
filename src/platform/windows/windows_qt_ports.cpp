@@ -113,7 +113,8 @@ Result<std::string,Error> WindowsQtInputPlatformAdapter::canonical_global_hotkey
 QString WindowsQtInputPlatformAdapter::fixed_shortcut_label(UiCommand command) const {
   switch(command) {
     case UiCommand::cancel_capture:return QStringLiteral("Esc");
-    case UiCommand::copy_and_close:return QStringLiteral("Enter / 双击选区");
+    //% "Enter / double-click selection"
+    case UiCommand::copy_and_close:return qtTrId("settings.fixed_shortcuts.copy_windows");
     case UiCommand::save_default:return QStringLiteral("Ctrl+S");
     case UiCommand::save_as:return QStringLiteral("Ctrl+Alt+S");
     case UiCommand::undo:return QStringLiteral("Ctrl+Z");
@@ -573,7 +574,8 @@ Result<ChooseSavePathOutcome,Error> WindowsFileDialogPort::choose_save_path(cons
   // A synchronous stack dialog must never be a QObject child of an editor:
   // closing one window or destroying its controller may delete that editor
   // inside exec(). Use native transient ownership only; it owns no C++ object.
-  QFileDialog dialog(nullptr,QStringLiteral("保存截图"),QString::fromUtf8(request.initial_folder));
+  //% "Save Screenshot"
+  QFileDialog dialog(nullptr,qtTrId("capture.save_dialog.title"),QString::fromUtf8(request.initial_folder));
   dialog.setObjectName(QStringLiteral("windowsSaveDialog"));
   if(owner) {
     (void)dialog.winId();
@@ -583,7 +585,11 @@ Result<ChooseSavePathOutcome,Error> WindowsFileDialogPort::choose_save_path(cons
   auto call=exit_?std::optional<WindowsExitCoordinator::Call>(exit_->enter_dialog(dialog)):std::nullopt;
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   const bool png=request.save_format==SaveFormat::png_display_p3_dual_range;
-  dialog.setNameFilter(png?QStringLiteral("PNG 图片 (*.png)"):QStringLiteral("JPEG 图片 (*.jpg)"));
+  dialog.setNameFilter(png?
+      //% "PNG image (*.png)"
+      qtTrId("capture.save_dialog.png_filter"):
+      //% "JPEG image (*.jpg)"
+      qtTrId("capture.save_dialog.jpeg_filter"));
   dialog.setDefaultSuffix(png?QStringLiteral("png"):QStringLiteral("jpg"));
   dialog.selectFile(QString::fromUtf8(request.suggested_name));
   if(dialog.exec()!=QDialog::Accepted || dialog.selectedFiles().isEmpty()) return Result<ChooseSavePathOutcome,Error>::success(UserCancelled{});

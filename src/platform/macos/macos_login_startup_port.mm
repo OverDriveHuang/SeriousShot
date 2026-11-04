@@ -2,34 +2,53 @@
 #import <AppKit/AppKit.h>
 #import <ServiceManagement/ServiceManagement.h>
 #import <Security/Security.h>
+#include <QCoreApplication>
 #include <QFileInfo>
 namespace hdrshot {
 namespace {
 Error native_error(NSError* error, const char* operation) {
-  return Error{ErrorCode::permission_denied, "macos_login_startup", Retryability::after_user_action,
+  Error result{ErrorCode::permission_denied, "macos_login_startup", Retryability::after_user_action,
       {{"operation", operation}, {"domain", error ? error.domain.UTF8String : "ServiceManagement"},
        {"native_code", std::to_string(error ? error.code : 0)},
        {"description", error ? error.localizedDescription.UTF8String : "登录启动操作未完成，请检查系统设置。"}}};
+  if (!error) {
+    //% "Launch at login could not be changed. Check System Settings."
+    result.safe_context["description_id"] = QT_TRID_NOOP("settings.login.macos.native_fallback");
+  }
+  return result;
 }
-std::string target_problem(NSBundle* bundle) {
+struct TargetProblem {
+  std::string diagnostic;
+  LoginStartupText text;
+};
+
+TargetProblem target_problem(NSBundle* bundle) {
   if (!bundle.bundleIdentifier.length || ![bundle.bundlePath.pathExtension isEqualToString:@"app"] ||
       !bundle.executableURL || !QFileInfo(QString::fromUtf8(bundle.executablePath.UTF8String)).isExecutable())
-    return "请先运行完整的已签名应用，再启用登录启动。";
+    return {"请先运行完整的已签名应用，再启用登录启动。",
+            //% "Open the complete signed app before enabling launch at login."
+            {QT_TRID_NOOP("settings.login.macos.signed_app_required")}};
   SecStaticCodeRef code = nullptr;
   const auto created = SecStaticCodeCreateWithPath((__bridge CFURLRef)bundle.bundleURL, kSecCSDefaultFlags, &code);
   const auto valid = created == errSecSuccess ? SecStaticCodeCheckValidity(code, kSecCSStrictValidate, nullptr) : created;
   if (code) CFRelease(code);
-  if (valid != errSecSuccess) return "应用签名验证失败，请重新安装完整应用后重试（" + std::to_string(valid) + "）。";
+  if (valid != errSecSuccess) return {"应用签名验证失败，请重新安装完整应用后重试（" + std::to_string(valid) + "）。",
+      //% "Signature verification failed. Reinstall the complete app and try again (%1)."
+      {QT_TRID_NOOP("settings.login.macos.signature_invalid"), std::to_string(valid)}};
   return {};
 }
 }
 Result<LoginStartupSnapshot, Error> MacLoginStartupPort::query() {
   if (!NSThread.isMainThread) return Result<LoginStartupSnapshot, Error>::failure(
-      Error{ErrorCode::precondition_failed,"macos_login_startup",Retryability::never,{{"reason","必须在主线程读取登录状态。"}}});
+      Error{ErrorCode::precondition_failed,"macos_login_startup",Retryability::never,{{"reason","必须在主线程读取登录状态。"},
+       //% "Read launch-at-login status on the main thread."
+       {"reason_id", QT_TRID_NOOP("settings.login.macos.main_thread_required")}}});
   LoginStartupSnapshot snapshot;
   snapshot.current_bundle_path = QFileInfo(QString::fromUtf8(NSBundle.mainBundle.bundlePath.UTF8String)).canonicalFilePath().toStdString();
   snapshot.can_open_system_settings = true;
   snapshot.approval_message = "需要在系统设置中批准登录启动。";
+  //% "Allow launch at login in System Settings."
+  snapshot.approval_text = {QT_TRID_NOOP("settings.login.macos.approval")};
   const auto status = SMAppService.mainAppService.status;
   switch(status) {
     case SMAppServiceStatusNotRegistered: snapshot.state = LoginStartupState::disabled; break;
@@ -40,10 +59,11 @@ Result<LoginStartupSnapshot, Error> MacLoginStartupPort::query() {
   }
   snapshot.can_disable = status == SMAppServiceStatusEnabled || status == SMAppServiceStatusRequiresApproval;
   const auto problem = target_problem(NSBundle.mainBundle);
-  snapshot.can_enable = problem.empty() &&
+  snapshot.can_enable = problem.diagnostic.empty() &&
       (status == SMAppServiceStatusNotRegistered || status == SMAppServiceStatusNotFound);
-  if (!problem.empty()) {
-    snapshot.diagnostic = problem;
+  if (!problem.diagnostic.empty()) {
+    snapshot.diagnostic = problem.diagnostic;
+    snapshot.diagnostic_text = problem.text;
     // Do not prevent turning off a previously registered service from an
     // invalid location. Its real enabled state remains visible and operable.
     if (!snapshot.can_disable) snapshot.state = LoginStartupState::invalid_target;
@@ -53,9 +73,21 @@ Result<LoginStartupSnapshot, Error> MacLoginStartupPort::query() {
 Result<bool, Error> MacLoginStartupPort::set_enabled(bool enabled) {
   const auto current = query();
   if (!current) return Result<bool, Error>::failure(current.error());
-  if (!(enabled ? current.value().can_enable : current.value().can_disable))
-    return Result<bool, Error>::failure(Error{ErrorCode::precondition_failed,"macos_login_startup",Retryability::after_user_action,
-      {{"reason", current.value().diagnostic.empty() ? "请在系统设置中允许登录启动，然后再次勾选。" : current.value().diagnostic}}});
+  if (!(enabled ? current.value().can_enable : current.value().can_disable)) {
+    const auto& snapshot = current.value();
+    Error error{ErrorCode::precondition_failed, "macos_login_startup", Retryability::after_user_action,
+        {{"reason", snapshot.diagnostic}}};
+    if (snapshot.diagnostic.empty()) {
+      error.safe_context["reason"] = "请在系统设置中允许登录启动，然后再次勾选。";
+      //% "Allow launch at login in System Settings, then check the box again."
+      error.safe_context["reason_id"] = QT_TRID_NOOP("settings.login.macos.approval_retry");
+    } else {
+      error.safe_context["reason_id"] = snapshot.diagnostic_text.id;
+      if (snapshot.diagnostic_text.argument)
+        error.safe_context["reason_argument"] = *snapshot.diagnostic_text.argument;
+    }
+    return Result<bool, Error>::failure(std::move(error));
+  }
   NSError* error = nil;
   const BOOL ok = enabled ? [SMAppService.mainAppService registerAndReturnError:&error] :
       [SMAppService.mainAppService unregisterAndReturnError:&error];

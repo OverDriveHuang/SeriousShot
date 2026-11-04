@@ -109,7 +109,8 @@ Result<std::string, Error> MacQtInputPlatformAdapter::canonical_global_hotkey(
 QString MacQtInputPlatformAdapter::fixed_shortcut_label(const UiCommand command) const {
   switch (command) {
     case UiCommand::cancel_capture: return QStringLiteral("Esc");
-    case UiCommand::copy_and_close: return QStringLiteral("Return / 双击选区");
+    //% "Return / double-click selection"
+    case UiCommand::copy_and_close: return qtTrId("settings.fixed_shortcuts.copy_macos");
     case UiCommand::save_default: return QStringLiteral("⌘ S");
     case UiCommand::save_as: return QStringLiteral("⌥ ⌘ S");
     case UiCommand::undo: return QStringLiteral("⌘ Z");

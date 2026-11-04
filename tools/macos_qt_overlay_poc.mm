@@ -1,8 +1,12 @@
+#include "platform/qt/qt_application_restart.hpp"
+#include "platform/ui_language.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 #include "platform/macos/macos_login_startup_port.hpp"
 #include "platform/macos/macos_launch_origin.hpp"
 #include "platform/qt/qt_gui_instance_guard.hpp"
 #include "platform/macos/macos_magnifier_card_presenter.hpp"
 #include "platform/qt/update/qt_update_runtime.hpp"
+#include "platform/qt/update/application_paths.hpp"
 #include "application/export_completion_coordinator.hpp"
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
 #include "platform/macos/macos_qt_pinned_screenshot.hpp"
@@ -49,6 +53,7 @@
 #include <QIcon>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPointer>
@@ -115,10 +120,11 @@ struct DisplayOverlayRuntime {
 
 class MacApplicationShell final {
  public:
-  explicit MacApplicationShell(QApplication& app)
-      : app_(app),
+  MacApplicationShell(QApplication& app,
+      std::optional<hdrshot::QtApplicationRestartRequest>& restart_request)
+      : app_(app), restart_request_(restart_request),
         hotkey_(std::make_unique<hdrshot::MacGlobalHotkeyPort>()),
-        export_executor_(app),
+        export_executor_(dispatch_context_),
         save_feedback_(nullptr, hdrshot::configure_macos_save_feedback_window),
         clipboard_(std::make_shared<hdrshot::MacClipboardPort>()),
         file_store_(std::make_shared<hdrshot::PosixFileStorePort>()),
@@ -126,22 +132,30 @@ class MacApplicationShell final {
         clock_(std::make_shared<hdrshot::MacClockPort>()),
         folder_opener_(std::make_unique<hdrshot::QtFolderOpenerPort>()) {}
 
+  ~MacApplicationShell() {
+    updater_.reset();
+    delete settings_window_;
+    if (tray_) tray_->setContextMenu(nullptr);
+    delete tray_;
+    delete tray_menu_;
+  }
+
   [[nodiscard]] bool initialize() {
-    const auto pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) +
-        QStringLiteral("/SeriousShot");
-    const auto config = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
-        QStringLiteral("/settings.ini");
-    const auto diagnostics_folder =
-        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) +
-        QStringLiteral("/logs");
-    diagnostics_folder_ = diagnostics_folder.toStdString();
+    const auto paths = hdrshot::update::application_paths(
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation),
+        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
+            QStringLiteral("/settings.ini"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) +
+            QStringLiteral("/SeriousShot"),
+        hdrshot::update::compiled_trust());
+    diagnostics_folder_ = QDir(paths.data).filePath(QStringLiteral("logs")).toStdString();
     auto session_log = std::make_shared<hdrshot::QtSessionDiagnosticsPort>(diagnostics_folder_);
     const auto log_started = session_log->start(std::string(hdrshot::build_timestamp()), "macOS");
     if (!log_started) print_error(log_started.error());
     diagnostics_ = std::move(session_log);
     capture_ = std::make_shared<hdrshot::MacCapturePort>(diagnostics_);
     settings_store_ = std::make_unique<hdrshot::QtSettingsStorePort>(
-        config.toStdString(), kDefaultGlobalHotkey, pictures.toStdString());
+        paths.config.toStdString(), kDefaultGlobalHotkey, paths.pictures.toStdString());
     const auto loaded = settings_store_->load();
     if (!loaded) {
       hdrshot::record_diagnostic_failure(diagnostics_.get(), "startup", loaded.error());
@@ -151,6 +165,7 @@ class MacApplicationShell final {
     }
     settings_ = loaded.value();
     diagnostics_->set_detailed_logging(settings_.detailed_logging);
+    if (!initialize_language()) return false;
     record_runtime_environment();
     auto export_processor = hdrshot::MacMetalExportPixelProcessor::create();
     if (!export_processor) {
@@ -188,7 +203,7 @@ class MacApplicationShell final {
         [this](bool active, hdrshot::DisplayId display) {
           set_capture_overlays_system_dialog_active(active, display);
         }, hdrshot::ExportCompletionCoordinator::Event{}, diagnostics_.get());
-    analyzer_ = std::make_unique<hdrshot::MacQtAnalyzerController>(app_,
+    analyzer_ = std::make_unique<hdrshot::MacQtAnalyzerController>(dispatch_context_,
         [this](auto command, auto snapshot, auto completed, QWidget *source) {
           return request_export(command, std::move(snapshot), std::move(completed), source);
         }, [this] { return settings_; }, [this](std::string preferences) {
@@ -202,7 +217,7 @@ class MacApplicationShell final {
           else hdrshot::record_diagnostic_failure(diagnostics_.get(), "analysis.preferences", saved.error());
         }, diagnostics_);
     pinned_ = std::make_unique<hdrshot::QtPinnedScreenshotController>(
-        app_, hdrshot::prepare_macos_pinned_screenshot,
+        dispatch_context_, hdrshot::prepare_macos_pinned_screenshot,
         hdrshot::make_macos_pinned_window_port(),
         [this](auto command, auto snapshot, auto completed, QWidget *source) {
           return request_export(command, std::move(snapshot), std::move(completed), source);
@@ -221,8 +236,8 @@ class MacApplicationShell final {
       std::cerr << "Global hotkey registration failed: ";
       print_error(registered.error());
       tray_->showMessage(
-          QStringLiteral("SeriousShot 快捷键不可用"),
-          QStringLiteral("请从菜单栏打开设置并更换全局快捷键。"),
+          /*% "SeriousShot shortcut unavailable" */ qtTrId("tray.macos.shortcut_unavailable"),
+          /*% "Open Settings from the menu bar and change the capture shortcut." */ qtTrId("tray.macos.change_shortcut"),
           QSystemTrayIcon::Warning,
           5000);
     } else {
@@ -230,7 +245,7 @@ class MacApplicationShell final {
     }
 
     std::cout << "appShellReady=1 hotkey=" << settings_.global_capture_hotkey
-              << " settingsPath=" << config.toStdString() << '\n';
+              << " settingsPath=" << paths.config.toStdString() << '\n';
     auto update_native=hdrshot::update::native_installer();
     auto update_identity=hdrshot::update::runtime_identity(update_native->install_identity());
     updater_=std::make_unique<hdrshot::update::Runtime>(std::move(update_identity),std::move(update_native),
@@ -246,7 +261,12 @@ class MacApplicationShell final {
   }
 
   bool shutdown() {
-    if (analyzer_ && !analyzer_->close_windows()) return false;
+    if (shutting_down_ || close_confirmation_active_) return false;
+    close_confirmation_active_ = true;
+    const bool can_close = !analyzer_ || analyzer_->close_windows();
+    close_confirmation_active_ = false;
+    if (!can_close) return false;
+    shutting_down_ = true;
     if (hotkey_registered_) {
       const auto unregistered = hotkey_->unregister_hotkey();
       if (!unregistered) {
@@ -267,35 +287,74 @@ class MacApplicationShell final {
   }
 
  private:
+  hdrshot::UiRestartOutcome restart_application(hdrshot::UiLanguage language) {
+    if (shutting_down_ || close_confirmation_active_ || restart_request_ || capture_lifecycle_.active() || capture_session_ ||
+        (capture_ && capture_->busy()) || export_executor_.pending() ||
+        (analyzer_ && (analyzer_->has_windows() || analyzer_->has_pending_work())) ||
+        (pinned_ && pinned_->has_windows()) ||
+        (updater_ && (updater_->barrier_active() || updater_->update_operation_active())))
+      return hdrshot::UiRestartOutcome::busy;
+    auto request = hdrshot::make_application_restart_request(language, language_runtime_);
+    if (!shutdown()) return hdrshot::UiRestartOutcome::cancelled;
+    restart_request_ = std::move(request);
+    return hdrshot::UiRestartOutcome::accepted;
+  }
+
+  bool initialize_language() {
+    const auto loaded = language_runtime_.initialize(
+        app_, settings_.ui_language, hdrshot::detect_system_ui_language);
+    if (!loaded) {
+      hdrshot::record_diagnostic_failure(diagnostics_.get(), "ui_language", loaded.error());
+      std::cerr << "SeriousShot could not load its English interface resources.\n";
+      print_error(loaded.error());
+      QMessageBox::critical(nullptr, QStringLiteral("SeriousShot"),
+                            QStringLiteral("SeriousShot could not load its English interface resources."));
+      return false;
+    }
+    const auto &receipt = loaded.value();
+    const auto name = [](hdrshot::UiLanguage language) {
+      return language == hdrshot::UiLanguage::simplified_chinese ? "zh-CN" : "en";
+    };
+    const auto *catalog_error = receipt.catalog_error ? &*receipt.catalog_error : nullptr;
+    hdrshot::record_diagnostic_stage(diagnostics_.get(), {}, {}, "ui_language",
+        std::string("requested_") + name(receipt.requested_language),
+        std::string("active_") + name(receipt.active_language), {}, catalog_error);
+    if (catalog_error) {
+      hdrshot::record_diagnostic_failure(diagnostics_.get(), "ui_language", *catalog_error);
+      print_error(*catalog_error);
+    }
+    return true;
+  }
+
   void create_tray() {
     tray_ = new QSystemTrayIcon(
         QIcon::fromTheme(
             QStringLiteral("camera-photo"),
             app_.style()->standardIcon(QStyle::SP_ComputerIcon)),
-        &app_);
+        &dispatch_context_);
     tray_->setToolTip(QStringLiteral("SeriousShot"));
     tray_menu_ = new QMenu();
     capture_action_ = tray_menu_->addAction(QString());
-    QObject::connect(capture_action_, &QAction::triggered, &app_, [this] { start_capture("menu"); });
-    auto* settings_action = tray_menu_->addAction(QStringLiteral("设置…"));
-    QObject::connect(settings_action, &QAction::triggered, &app_, [this] {
+    QObject::connect(capture_action_, &QAction::triggered, &dispatch_context_, [this] { start_capture("menu"); });
+    auto* settings_action = tray_menu_->addAction(/*% "Settings…" */ qtTrId("tray.settings"));
+    QObject::connect(settings_action, &QAction::triggered, &dispatch_context_, [this] {
       show_settings();
     });
     tray_menu_->addSeparator();
-    auto* quit_action = tray_menu_->addAction(QStringLiteral("退出 SeriousShot"));
-    QObject::connect(quit_action, &QAction::triggered, &app_, [this] { shutdown(); });
+    auto* quit_action = tray_menu_->addAction(/*% "Quit SeriousShot" */ qtTrId("tray.quit"));
+    QObject::connect(quit_action, &QAction::triggered, &dispatch_context_, [this] { shutdown(); });
     // On macOS the native context-menu path opens on mouse-down. During the
     // first accessory-app activation that same event can also deactivate and
     // immediately close the newly created menu. Finish the status-item click
     // first, then open the existing QMenu from the queued activation signal.
     QObject::connect(
-        tray_, &QSystemTrayIcon::activated, &app_,
+        tray_, &QSystemTrayIcon::activated, &dispatch_context_,
         [this](const QSystemTrayIcon::ActivationReason reason) {
       if (reason != QSystemTrayIcon::Trigger &&
           reason != QSystemTrayIcon::Context) {
         return;
       }
-      QTimer::singleShot(0, &app_, [this] { show_tray_menu(); });
+      QTimer::singleShot(0, &dispatch_context_, [this] { show_tray_menu(); });
     });
     tray_menu_->ensurePolished();
     tray_menu_->adjustSize();
@@ -304,7 +363,7 @@ class MacApplicationShell final {
   }
 
   void show_tray_menu() {
-    if (tray_menu_ == nullptr || tray_menu_->isVisible()) {
+    if (shutting_down_ || close_confirmation_active_ || tray_menu_ == nullptr || tray_menu_->isVisible()) {
       return;
     }
     const auto tray_geometry = tray_->geometry();
@@ -315,18 +374,19 @@ class MacApplicationShell final {
   }
 
   void show_settings() {
-    if (settings_open_queued_) return;
+    if (shutting_down_ || close_confirmation_active_ || settings_open_queued_) return;
     settings_open_queued_ = true;
     // Let QMenu/native menu tracking restore focus first. Then activate the
     // accessory application and its window, once, on the next event-loop turn.
     if (tray_menu_ != nullptr) tray_menu_->hide();
-    QTimer::singleShot(0, &app_, [this] {
+    QTimer::singleShot(0, &dispatch_context_, [this] {
       settings_open_queued_ = false;
       show_settings_after_menu();
     });
   }
 
   void show_settings_after_menu() {
+    if (shutting_down_ || close_confirmation_active_) return;
     if (updater_) updater_->allow_interactive_presentation();
     if (settings_window_ == nullptr) {
       settings_window_ = new hdrshot::SettingsWindow(
@@ -336,6 +396,10 @@ class MacApplicationShell final {
           input_platform_,
           kDefaultGlobalHotkey,
           diagnostics_folder_);
+      settings_window_->set_language_runtime(language_runtime_);
+      settings_window_->set_restart_requester([this](hdrshot::UiLanguage language) {
+        return restart_application(language);
+      });
       settings_window_->set_login_startup_port(&login_startup_);
       settings_window_->set_applied(
           [this](const hdrshot::SettingsSnapshot& settings) {
@@ -347,7 +411,7 @@ class MacApplicationShell final {
         update_capture_action_text();
       });
       QObject::connect(
-          settings_window_, &QObject::destroyed, &app_,
+          settings_window_, &QObject::destroyed, &dispatch_context_,
           [this] { settings_window_ = nullptr; });
     }
     if(updater_)updater_->attach(*settings_window_);
@@ -366,11 +430,13 @@ class MacApplicationShell final {
 
   void notify_capture_failure(const hdrshot::Error& error, hdrshot::SessionId session = {}, hdrshot::OperationId operation = {}) {
     if (!tray_) return;
-    tray_->showMessage(QStringLiteral("SeriousShot 截图失败"),
-        hdrshot::capture_error_message(error, QStringLiteral(
-            "尚未获得屏幕录制权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 SeriousShot，"
-            "再按截图快捷键或点菜单“截图”重试。应用只捕获画面，不录音。"),
-            QString::fromStdString(settings_.global_capture_hotkey)), QSystemTrayIcon::Critical, 10000);
+    //% "SeriousShot capture failed"
+    const auto title = qtTrId("tray.capture_failed");
+    //% "Allow SeriousShot under System Settings → Privacy & Security → Screen & System Audio Recording. Press the capture shortcut or choose “Capture” to retry. SeriousShot captures the screen without recording audio."
+    const auto guidance = qtTrId("tray.macos.capture_permission");
+    tray_->showMessage(title, hdrshot::capture_error_message(
+        error, guidance, QString::fromStdString(settings_.global_capture_hotkey)),
+        QSystemTrayIcon::Critical, 10000);
     hdrshot::record_diagnostic_stage(diagnostics_.get(), session, operation,
         "capture", "notification_requested", "submitted", {}, nullptr, true);
   }
@@ -389,7 +455,7 @@ class MacApplicationShell final {
   void update_capture_action_text() {
     if (capture_action_ != nullptr) {
       capture_action_->setText(
-          QStringLiteral("截图（%1）")
+          /*% "Capture (%1)" */ qtTrId("tray.capture_with_shortcut")
               .arg(QString::fromStdString(settings_.global_capture_hotkey)));
     }
   }
@@ -397,8 +463,8 @@ class MacApplicationShell final {
   void report_background_export_result(const QtOverlayHost::ExportResult& result) {
     if (!result) {
       tray_->showMessage(
-          QStringLiteral("SeriousShot 后台导出失败"),
-          QStringLiteral("错误：%1。请重新截图后重试。")
+          /*% "SeriousShot background export failed" */ qtTrId("tray.background_export_failed"),
+          /*% "Error: %1. Capture the screen again and retry." */ qtTrId("tray.background_export_retry")
               .arg(QString::fromStdString(hdrshot::to_string(result.error().code))),
           QSystemTrayIcon::Critical,
           5000);
@@ -410,6 +476,10 @@ class MacApplicationShell final {
   bool request_export(
       const hdrshot::UiCommand command, hdrshot::ExportSnapshot snapshot,
       QtOverlayHost::ExportCompleted completed, QWidget *source) {
+    if (shutting_down_) {
+      completed(hdrshot::ExportWorkflow::cancel(snapshot));
+      return false;
+    }
     auto anchor = hdrshot::SaveSuccessFeedback::capture(source);
     return completion_->submit(command, std::move(snapshot),
         [this, anchor = std::move(anchor), completed = std::move(completed)](QtOverlayHost::ExportResult result) mutable {
@@ -432,6 +502,7 @@ class MacApplicationShell final {
   }
 
   void start_capture(const char* source = "app") {
+    if (shutting_down_ || close_confirmation_active_) return;
     if(updater_&&updater_->barrier_active())return;
     const auto requested_session = capture_lifecycle_.active() ? capture_lifecycle_.id()
         : hdrshot::SessionId{next_session_id_};
@@ -703,6 +774,9 @@ class MacApplicationShell final {
 
   hdrshot::MacLoginStartupPort login_startup_;
   QApplication& app_;
+  QObject dispatch_context_;
+  std::optional<hdrshot::QtApplicationRestartRequest>& restart_request_;
+  hdrshot::QtUiLanguageRuntime language_runtime_;
   hdrshot::QtCaptureRuntime capture_runtime_;
   QSystemTrayIcon* tray_{};
   QMenu* tray_menu_{};
@@ -711,6 +785,8 @@ class MacApplicationShell final {
   hdrshot::SettingsWindow* settings_window_{};
   hdrshot::MacQtWindowActivation settings_activation_;
   bool settings_open_queued_{};
+  bool shutting_down_{};
+  bool close_confirmation_active_{};
   std::unique_ptr<hdrshot::QtSettingsStorePort> settings_store_;
   std::shared_ptr<hdrshot::DiagnosticsPort> diagnostics_;
   std::unique_ptr<hdrshot::MacGlobalHotkeyPort> hotkey_;
@@ -752,6 +828,9 @@ int main(int argc, char** argv) {
   std::cerr << std::unitbuf;
   std::vector<std::string_view> arguments;
   for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
+  const auto restart_launch = hdrshot::parse_application_restart_arguments(arguments);
+  if (!restart_launch) { print_error(restart_launch.error()); return 2; }
+  if (restart_launch.value()) arguments.clear();
   const auto command = hdrshot::parse_capture_command(arguments);
   if (!command) {
     print_error(command.error());
@@ -775,20 +854,39 @@ int main(int argc, char** argv) {
   if (command.value().mode != hdrshot::CaptureCommandMode::gui)
     return hdrshot::run_macos_capture_cli(app, command.value());
 
-  hdrshot::QtGuiInstanceGuard instance_guard(
-      QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/gui-instance.lock"));
-  if (instance_guard.status() == hdrshot::GuiInstanceStatus::already_running) {
-    std::cout << "guiInstanceAlreadyRunning=1\n";
-    return 0;
-  }
-  if (instance_guard.status() != hdrshot::GuiInstanceStatus::owned) {
-    std::cerr << instance_guard.diagnostic().toStdString() << '\n';
+  std::optional<hdrshot::QtApplicationRestartRequest> restart_request;
+  bool startup_ready = false;
+  bool already_running = false;
+  const auto run_gui = [&] {
+    hdrshot::QtGuiInstanceGuard instance_guard(
+        QDir(hdrshot::update::testing_namespace(
+                 QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation),
+                 hdrshot::update::compiled_trust()))
+            .filePath(QStringLiteral("gui-instance.lock")));
+    if (instance_guard.status() == hdrshot::GuiInstanceStatus::already_running) {
+      std::cout << "guiInstanceAlreadyRunning=1\n";
+      already_running = true;
+      return 0;
+    }
+    if (instance_guard.status() != hdrshot::GuiInstanceStatus::owned) {
+      std::cerr << instance_guard.diagnostic().toStdString() << '\n';
+      return 1;
+    }
+    MacApplicationShell shell(app, restart_request);
+    if (!shell.initialize()) return 1;
+    startup_ready = true;
+    launch_origin.when_ready([&shell](hdrshot::MacLaunchOrigin origin) { shell.launch_ready(origin); });
+    const int result = app.exec();
+    launch_origin.when_ready({});
+    return result;
+  };
+  const int result = run_gui();
+  // The shell and its queued-callback context are gone, and the lock is released.
+  hdrshot::MacQtWindowActivation activation;
+  if (restart_request) return hdrshot::relaunch_application(*restart_request, activation);
+  if (restart_launch.value() && !startup_ready) {
+    hdrshot::show_application_restart_failure(*restart_launch.value(), already_running, activation);
     return 1;
   }
-  MacApplicationShell shell(app);
-  if (!shell.initialize()) {
-    return 1;
-  }
-  launch_origin.when_ready([&shell](hdrshot::MacLaunchOrigin origin) { shell.launch_ready(origin); });
-  return app.exec();
+  return result;
 }

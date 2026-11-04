@@ -247,8 +247,22 @@ void OverlayEditorWidget::build_controls() {
   toolbar_layout_->setContentsMargins(toolbar_style::horizontal_margin, toolbar_style::vertical_margin, toolbar_style::horizontal_margin, toolbar_style::vertical_margin);
   toolbar_layout_->setSpacing(toolbar_style::spacing);
 
-  constexpr std::array<const char *, 7> labels{"选择", "矩形", "圆形", "直线",
-                                               "箭头", "文字", "画笔"};
+  constexpr std::array<const char*, 7> labels{
+      //% "Select"
+      QT_TRID_NOOP("capture.editor.tool.select"),
+      //% "Rectangle"
+      QT_TRID_NOOP("capture.editor.tool.rectangle"),
+      //% "Ellipse"
+      QT_TRID_NOOP("capture.editor.tool.ellipse"),
+      //% "Line"
+      QT_TRID_NOOP("capture.editor.tool.line"),
+      //% "Arrow"
+      QT_TRID_NOOP("capture.editor.tool.arrow"),
+      //% "Text"
+      QT_TRID_NOOP("capture.editor.tool.text"),
+      //% "Brush"
+      QT_TRID_NOOP("capture.editor.tool.brush"),
+  };
   constexpr std::array<const char *, 7> object_names{
       "toolSelect", "toolRectangle", "toolEllipse", "toolLine",
       "toolArrow",  "toolText",      "toolBrush"};
@@ -272,8 +286,9 @@ void OverlayEditorWidget::build_controls() {
     button->setCheckable(true);
     button->setAutoExclusive(true);
     button->setFixedSize(toolbar_style::button_size, toolbar_style::button_size);
-    button->setToolTip(QString::fromUtf8(labels[index]));
-    button->setAccessibleName(QString::fromUtf8(labels[index]));
+    const auto label = qtTrId(labels[index]);
+    button->setToolTip(label);
+    button->setAccessibleName(label);
     const auto tool = kTools[index];
     connect(button, &QToolButton::clicked, this, [this, tool] { choose_tool(tool); });
     toolbar_layout_->addWidget(button);
@@ -285,7 +300,7 @@ void OverlayEditorWidget::build_controls() {
 
   add_separator("separatorBeforeUndo");
   const auto add_action = [this](
-                              const char* label,
+                              const QString& label,
                               const UiCommand command,
                               const bool primary = false) {
     auto symbol = ToolbarSymbol::cancel;
@@ -338,8 +353,8 @@ void OverlayEditorWidget::build_controls() {
     if (command == UiCommand::pin_screenshot) {
       button->hide(); // only exposed when an actual pin service is injected
     }
-    button->setToolTip(QString::fromUtf8(label));
-    button->setAccessibleName(QString::fromUtf8(label));
+    button->setToolTip(label);
+    button->setAccessibleName(label);
     button->setFixedSize(toolbar_style::button_size, toolbar_style::button_size);
     connect(button, &QToolButton::clicked, this, [this, command] {
       if (command == UiCommand::undo) {
@@ -352,20 +367,28 @@ void OverlayEditorWidget::build_controls() {
     });
     toolbar_layout_->addWidget(button);
   };
-  add_action("撤销", UiCommand::undo);
-  add_action("重做", UiCommand::redo);
+  //% "Undo"
+  add_action(qtTrId("capture.editor.action.undo"), UiCommand::undo);
+  //% "Redo"
+  add_action(qtTrId("capture.editor.action.redo"), UiCommand::redo);
   add_separator("separatorBeforeAnalyze");
   toolbar_->findChild<QFrame*>("separatorBeforeAnalyze")->hide();
-  add_action("分析", UiCommand::analyze);
+  //% "Analyze"
+  add_action(qtTrId("capture.editor.action.analyze"), UiCommand::analyze);
   add_separator("separatorBeforeSave");
-  add_action("保存", UiCommand::save_default);
-  add_action("另存为…", UiCommand::save_as);
-  add_action("复制", UiCommand::copy_and_close, true);
+  //% "Save"
+  add_action(qtTrId("capture.editor.action.save"), UiCommand::save_default);
+  //% "Save As…"
+  add_action(qtTrId("capture.editor.action.save_as"), UiCommand::save_as);
+  //% "Copy"
+  add_action(qtTrId("capture.editor.action.copy"), UiCommand::copy_and_close, true);
   add_separator("separatorBeforePin");
   toolbar_->findChild<QFrame*>("separatorBeforePin")->hide();
-  add_action("新建贴图窗口", UiCommand::pin_screenshot);
+  //% "Pin screenshot"
+  add_action(qtTrId("capture.editor.action.pin"), UiCommand::pin_screenshot);
   add_separator("separatorBeforeCancel");
-  add_action("取消", UiCommand::cancel_capture);
+  //% "Cancel"
+  add_action(qtTrId("capture.editor.action.cancel"), UiCommand::cancel_capture);
 
   property_bar_ = new QFrame(this);
   property_bar_->setObjectName("propertyBar");
@@ -416,8 +439,10 @@ void OverlayEditorWidget::build_controls() {
       ToolbarSymbol::cancel, false, this);
   delete_annotation_button_->setObjectName("deleteSelectedAnnotation");
   delete_annotation_button_->setProperty("cancelAction", true);
-  delete_annotation_button_->setToolTip(QStringLiteral("删除标注"));
-  delete_annotation_button_->setAccessibleName(QStringLiteral("删除标注"));
+  //% "Delete annotation"
+  delete_annotation_button_->setToolTip(qtTrId("capture.editor.delete_annotation"));
+  //% "Delete annotation"
+  delete_annotation_button_->setAccessibleName(qtTrId("capture.editor.delete_annotation"));
   delete_annotation_button_->setFixedSize(28, 28);
   delete_annotation_button_->hide();
   connect(delete_annotation_button_, &QToolButton::clicked, this, [this] {
@@ -562,7 +587,8 @@ bool OverlayEditorWidget::apply_document_command(const AnnotationCommand& comman
       pending_reuse_ ? &*pending_reuse_ : nullptr);
   if (!result) {
     show_status(
-        QStringLiteral("标注渲染计划无效：%1")
+        //% "Invalid annotation render plan: %1"
+        qtTrId("capture.editor.invalid_render_plan")
             .arg(QString::fromStdString(to_string(result.error().code))),
         true);
     return false;
@@ -599,7 +625,8 @@ void OverlayEditorWidget::notify_preview_changed() {
 bool OverlayEditorWidget::rebuild_render_plan() {
   if (selection_.desktop_rect.empty()) {
     if (!document_.snapshot().objects.empty()) {
-      show_status(QStringLiteral("空选区不能包含标注"), true);
+      //% "An empty selection cannot contain annotations."
+      show_status(qtTrId("capture.editor.empty_selection"), true);
       return false;
     }
     auto prepared = prepare_selection_change(document_, nullptr, selection_,
@@ -614,7 +641,8 @@ bool OverlayEditorWidget::rebuild_render_plan() {
       text_rasterizer_, &annotation_coverage_cache_);
   if (!plan) {
     show_status(
-        QStringLiteral("标注渲染计划无效：%1")
+        //% "Invalid annotation render plan: %1"
+        qtTrId("capture.editor.invalid_render_plan")
             .arg(QString::fromStdString(to_string(plan.error().code))),
         true);
     return false;
@@ -1470,7 +1498,8 @@ void OverlayEditorWidget::begin_text_edit(const PixelRect bounds) {
   pending_text_style_ = TextStyle{color_srgb_rgb_, font_size_dip_};
   text_editor_ = new QLineEdit(this);
   text_editor_->setObjectName("annotationTextEditor");
-  text_editor_->setPlaceholderText(QStringLiteral("输入文字，Enter 确认，Esc 取消"));
+  //% "Type text. Enter to confirm, Esc to cancel."
+  text_editor_->setPlaceholderText(qtTrId("capture.editor.text_placeholder"));
   text_editor_->setGeometry(to_widget_rect(bounds).toRect());
   update_pending_text_editor_style();
   connect(text_editor_, &QLineEdit::returnPressed, this, [this] { commit_text_edit(); });

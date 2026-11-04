@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include "core/error.hpp"
 #include "core/result.hpp"
 #include <compare>
@@ -46,6 +47,13 @@ enum class Phase {
   cleanup_blocked,
   download_failed
 };
+enum class DetailKind {
+  literal,
+  up_to_date,
+  incompatible,
+  download_canceled,
+  cancel_cleanup_failed
+};
 struct View {
   Phase phase{Phase::idle};
   std::optional<Candidate> candidate;
@@ -56,6 +64,11 @@ struct View {
   std::int64_t last_check{}, last_success{};
   std::uint64_t generation{};
   std::optional<Error> error;
+  // Presentation data is independent of error/phase policy and the legacy
+  // diagnostic detail.
+  DetailKind detail_kind{DetailKind::literal};
+  std::optional<Error> detail_error;
+  std::size_t manual_open_count{};
 };
 class Schedule {
 public:

@@ -29,6 +29,9 @@ class QMessageBox;
 
 namespace hdrshot {
 
+class QtUiLanguageRuntime;
+enum class UiRestartOutcome { accepted, busy, cancelled };
+
 class SettingsWindow final : public QWidget {
  public:
   using Applied = std::function<void(const SettingsSnapshot&)>;
@@ -43,6 +46,8 @@ class SettingsWindow final : public QWidget {
       QWidget* parent = nullptr);
 
   void reload_and_show();
+  void set_language_runtime(QtUiLanguageRuntime& runtime);
+  void set_restart_requester(std::function<UiRestartOutcome(UiLanguage)> callback);
   void set_login_startup_port(LoginStartupPort* port);
   void refresh_login_startup();
   void set_update_opener(std::function<void()> open);
@@ -56,6 +61,9 @@ class SettingsWindow final : public QWidget {
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
+  void render_language_choice();
+  void persist_ui_language(UiLanguage language);
+  void confirm_language_restart();
   void choose_folder();
   void persist_login_startup(bool enabled);
   void render_login_startup();
@@ -95,6 +103,13 @@ class SettingsWindow final : public QWidget {
   std::string default_global_hotkey_;
   std::string diagnostics_folder_;
   SettingsSnapshot snapshot_{};
+  QtUiLanguageRuntime* language_runtime_{};
+  QPushButton* chinese_language_button_{};
+  QPushButton* english_language_button_{};
+  QPushButton* language_restart_hint_{};
+  std::function<UiRestartOutcome(UiLanguage)> restart_requester_;
+  QPointer<QMessageBox> restart_dialog_;
+  bool restart_pending_{};
   Applied applied_;
   LoginStartupPort* login_startup_port_{};
   LoginStartupSnapshot login_startup_snapshot_;

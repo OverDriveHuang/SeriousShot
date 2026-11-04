@@ -1,6 +1,7 @@
 #include <QTimer>
 #include "ui/qt/analysis_readings.hpp"
 #include "ui/qt/settings_window.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 #include <QCheckBox>
 #include <QTabWidget>
 #include <QGridLayout>
@@ -47,6 +48,44 @@ QLabel* shortcut_value(const QString& value, QWidget* parent) {
   return label;
 }
 
+QString login_startup_text(const LoginStartupText& text, const std::string& fallback) {
+  if (!text.id) return QString::fromStdString(fallback);
+  auto translated = qtTrId(text.id);
+  if (text.argument) translated = translated.arg(QString::fromStdString(*text.argument));
+  return translated;
+}
+
+QString login_startup_error_field(const Error& error, const std::string& field) {
+  const auto original = error.safe_context.find(field);
+  if (original == error.safe_context.end()) return {};
+  //% "The system did not allow this change. Check system settings, then check the box again."
+  [[maybe_unused]] constexpr auto disallowed_id = QT_TRID_NOOP("settings.login.change_disallowed");
+  const auto id = error.safe_context.find(field + "_id");
+  if (id == error.safe_context.end()) return QString::fromStdString(original->second);
+  auto translated = qtTrId(id->second.c_str());
+  const auto argument = error.safe_context.find(field + "_argument");
+  if (argument != error.safe_context.end())
+    translated = translated.arg(QString::fromStdString(argument->second));
+  const auto suffix = error.safe_context.find(field + "_suffix");
+  if (suffix != error.safe_context.end()) translated += QString::fromStdString(suffix->second);
+  return translated;
+}
+
+QString login_startup_diagnostic(const LoginStartupSnapshot& snapshot) {
+  if (!snapshot.diagnostic_text.id) return QString::fromStdString(snapshot.diagnostic);
+  auto message = login_startup_text(snapshot.diagnostic_text, snapshot.diagnostic);
+  if (snapshot.diagnostic_error) {
+    const auto& error = *snapshot.diagnostic_error;
+    for (const auto& field : error.safe_context) {
+      const auto& key = field.first;
+      if (key.ends_with("_id") || key.ends_with("_argument") || key.ends_with("_suffix")) continue;
+      message += " " + QString::fromStdString(key) + "=" + login_startup_error_field(error, key);
+    }
+  }
+  message += QString::fromStdString(snapshot.diagnostic_native_suffix);
+  return message;
+}
+
 #ifdef Q_OS_WIN
 QString windows_gain_text(double gain) {
   auto text = QString::number(gain, 'f', 12);
@@ -74,7 +113,8 @@ SettingsWindow::SettingsWindow(
       default_global_hotkey_(std::move(default_global_hotkey)),
       diagnostics_folder_(std::move(diagnostics_folder)) {
   qApp->installEventFilter(this);
-  setWindowTitle(QStringLiteral("SeriousShot 设置"));
+  //% "SeriousShot Settings"
+  setWindowTitle(qtTrId("settings.title"));
   setWindowFlag(Qt::WindowStaysOnTopHint, false);
 #ifdef Q_OS_WIN
   setMinimumSize(800, 780);
@@ -94,41 +134,89 @@ SettingsWindow::SettingsWindow(
   title_font.setPointSize(22);
   title_font.setBold(true);
   title->setFont(title_font);
+  title->setObjectName(QStringLiteral("settingsTitleLabel"));
   auto* author = new QLabel(QStringLiteral("by OverDrive"), this);
   author->setObjectName(QStringLiteral("authorLabel"));
   heading->addWidget(title);
   heading->addWidget(author, 0, Qt::AlignBaseline);
   heading->addStretch(1);
+  language_restart_hint_ = new QPushButton(this);
+  language_restart_hint_->setObjectName(QStringLiteral("settingsLanguageRestartHint"));
+  language_restart_hint_->setFlat(true);
+  language_restart_hint_->setCursor(Qt::PointingHandCursor);
+  language_restart_hint_->setFocusPolicy(Qt::StrongFocus);
+  language_restart_hint_->setStyleSheet(QStringLiteral(
+      "QPushButton { border: 0; padding: 2px; color: palette(link); }"
+      "QPushButton:hover { text-decoration: underline; }"
+      "QPushButton:focus { border: 1px solid palette(highlight); }"
+      "QPushButton:disabled { color: palette(text); }"));
+  connect(language_restart_hint_, &QPushButton::clicked, this,
+          [this] { confirm_language_restart(); });
+  language_restart_hint_->hide();
+  heading->addWidget(language_restart_hint_);
+  auto* language_buttons = new QHBoxLayout();
+  language_buttons->setSpacing(4);
+  heading->addLayout(language_buttons);
+  const auto add_language_button = [this, language_buttons](
+      const QString& text, const QString& name, const char* object_name, UiLanguage language) {
+    auto* button = new QPushButton(text, this);
+    button->setObjectName(QString::fromLatin1(object_name));
+    button->setAccessibleName(name);
+    button->setCheckable(true);
+    button->setEnabled(false);
+    button->setFocusPolicy(Qt::StrongFocus);
+    button->setFixedWidth(36);
+    button->setMinimumHeight(28);
+    button->setStyleSheet(QStringLiteral(
+        // Keep every state on the same compact box model. Cocoa's native
+        // unchecked button can reserve more label inset than a 36px button has.
+        "QPushButton { background-color: palette(button); color: palette(button-text); "
+        "border: 1px solid palette(mid); border-radius: 3px; padding: 0px 4px; } "
+        "QPushButton:checked { background-color: palette(highlight); "
+        "color: palette(highlighted-text); border-color: palette(highlight); } "
+        "QPushButton:focus { border-color: palette(highlight); } "
+        "QPushButton:checked:focus { border-color: palette(highlighted-text); }"));
+    language_buttons->addWidget(button);
+    connect(button, &QPushButton::clicked, this, [this, language] {
+      persist_ui_language(language);
+    });
+    return button;
+  };
+  //% "Simplified Chinese"
+  chinese_language_button_ = add_language_button(
+      QStringLiteral("中"), qtTrId("language.simplified_chinese.accessible"),
+      "settingsLanguageChineseButton", UiLanguage::simplified_chinese);
+  //% "English"
+  english_language_button_ = add_language_button(
+      QStringLiteral("EN"), qtTrId("language.english.accessible"),
+      "settingsLanguageEnglishButton", UiLanguage::english);
   root->addLayout(heading);
 
-  auto* description = new QLabel(
-      QStringLiteral("配置截图入口、完成动作与默认输出。修改后立即生效。"),
-      this);
-  description->setObjectName(QStringLiteral("settingsDescriptionLabel"));
-  description->setWordWrap(true);
-  root->addWidget(description);
-
-  auto* tabs=new QTabWidget(this);
+  auto* tabs = new QTabWidget(this);
   tabs->setObjectName("settingsTabs");
   root->addWidget(tabs,1);
   auto* general_page=new QWidget(tabs);
   auto* general_root=new QVBoxLayout(general_page);
   general_root->setContentsMargins(0,0,0,0);
-  tabs->addTab(general_page,"通用");
+  //% "General"
+  tabs->addTab(general_page,qtTrId("settings.tab.general"));
   auto* analysis_page=new QWidget(tabs);
-  tabs->addTab(analysis_page,"分析");
+  //% "Analysis"
+  tabs->addTab(analysis_page,qtTrId("settings.tab.analysis"));
   build_analysis_tab(analysis_page);
   auto* pinned_page = new QWidget(tabs);
-  tabs->addTab(pinned_page, QStringLiteral("贴图"));
+  //% "Pinned"
+  tabs->addTab(pinned_page, qtTrId("settings.tab.pinned"));
   build_pinned_screenshot_tab(pinned_page);
   const auto analysis_margins = analysis_page->layout()->contentsMargins();
   general_root->setContentsMargins(analysis_margins);
   auto* general_section = new QVBoxLayout();
   general_section->setContentsMargins(0, 0, 0, 0);
   general_section->setSpacing(6);
-  auto* general_label = new QLabel(QStringLiteral("通用"), this);
+  //% "General"
+  auto* general_label = new QLabel(qtTrId("settings.section.general"), this);
   general_label->setObjectName(QStringLiteral("generalSectionLabel"));
-  general_label->setFont(description->font());
+  general_label->setFont(font());
   general_section->addWidget(general_label);
   auto* general = new QGroupBox(this);
   general->setObjectName(QStringLiteral("generalSettingsContainer"));
@@ -140,8 +228,10 @@ SettingsWindow::SettingsWindow(
   general_form_->setVerticalSpacing(14);
   login_startup_check_ = new QCheckBox(general);
   login_startup_check_->setObjectName(QStringLiteral("loginStartupCheckBox"));
-  login_startup_check_->setAccessibleName(QStringLiteral("登录时自动启动"));
-  general_form_->addRow(QStringLiteral("登录时自动启动"), login_startup_check_);
+  //% "Launch at login"
+  login_startup_check_->setAccessibleName(qtTrId("settings.login.label"));
+  //% "Launch at login"
+  general_form_->addRow(qtTrId("settings.login.label"), login_startup_check_);
   general_form_->setRowVisible(login_startup_check_, false);
   connect(login_startup_check_, &QCheckBox::clicked, this, [this](bool enabled) {
     persist_login_startup(enabled);
@@ -156,7 +246,8 @@ SettingsWindow::SettingsWindow(
   auto* hotkey_row = new QWidget(general);
   auto* hotkey_layout = new QHBoxLayout(hotkey_row);
   hotkey_layout->setContentsMargins(0, 0, 0, 0);
-  customize_hotkey_button_ = new QPushButton(QStringLiteral("自定义"), hotkey_row);
+  //% "Customize"
+  customize_hotkey_button_ = new QPushButton(qtTrId("settings.shortcut.customize"), hotkey_row);
   customize_hotkey_button_->setObjectName(QStringLiteral("customizeGlobalHotkeyButton"));
   connect(customize_hotkey_button_, &QPushButton::clicked, this, [this] {
     if (recording_hotkey_) {
@@ -165,7 +256,8 @@ SettingsWindow::SettingsWindow(
       start_hotkey_recording();
     }
   });
-  auto* reset_hotkey = new QPushButton(QStringLiteral("恢复默认"), hotkey_row);
+  //% "Reset"
+  auto* reset_hotkey = new QPushButton(qtTrId("settings.shortcut.reset"), hotkey_row);
   reset_hotkey->setObjectName(QStringLiteral("resetGlobalHotkeyButton"));
   connect(reset_hotkey, &QPushButton::clicked, this, [this] {
     finish_hotkey_recording(false);
@@ -182,24 +274,29 @@ SettingsWindow::SettingsWindow(
   hotkey_layout->addWidget(hotkey_edit_, 1);
   hotkey_layout->addWidget(customize_hotkey_button_);
   hotkey_layout->addWidget(reset_hotkey);
-  general_form_->addRow(QStringLiteral("全局截图快捷键"), hotkey_row);
+  //% "Capture shortcut"
+  general_form_->addRow(qtTrId("settings.shortcut.label"), hotkey_row);
 
   const auto add_completion_items = [](QComboBox* combo) {
     combo->addItem(
-        QStringLiteral("复制到剪贴板"),
+        //% "Copy to clipboard"
+        qtTrId("settings.completion.copy"),
         static_cast<int>(CompletionAction::copy_to_clipboard));
     combo->addItem(
-        QStringLiteral("保存到默认文件夹"),
+        //% "Save to default folder"
+        qtTrId("settings.completion.save_default"),
         static_cast<int>(CompletionAction::save_default));
     combo->addItem(
-        QStringLiteral("另存为…"),
+        //% "Save as…"
+        qtTrId("settings.completion.save_as"),
         static_cast<int>(CompletionAction::save_as));
   };
   enter_completion_combo_ = new QComboBox(general);
   enter_completion_combo_->setObjectName(QStringLiteral("enterCompletionActionCombo"));
   enter_completion_combo_->setMinimumWidth(390);
   add_completion_items(enter_completion_combo_);
-  general_form_->addRow(QStringLiteral("按 Enter 时"), enter_completion_combo_);
+  //% "On Enter"
+  general_form_->addRow(qtTrId("settings.completion.enter"), enter_completion_combo_);
 
   double_click_completion_combo_ = new QComboBox(general);
   double_click_completion_combo_->setObjectName(
@@ -207,7 +304,8 @@ SettingsWindow::SettingsWindow(
   double_click_completion_combo_->setMinimumWidth(390);
   add_completion_items(double_click_completion_combo_);
   general_form_->addRow(
-      QStringLiteral("双击选区时"), double_click_completion_combo_);
+      //% "On double-click"
+      qtTrId("settings.completion.double_click"), double_click_completion_combo_);
 
   auto* folder_row = new QWidget(general);
   auto* folder_layout = new QHBoxLayout(folder_row);
@@ -217,31 +315,38 @@ SettingsWindow::SettingsWindow(
   folder_edit_->setReadOnly(true);
   folder_edit_->setMinimumWidth(160);
   folder_edit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-  auto* choose = new QPushButton(QStringLiteral("选择"), folder_row);
+  //% "Choose"
+  auto* choose = new QPushButton(qtTrId("settings.folder.choose"), folder_row);
   choose->setObjectName(QStringLiteral("chooseDefaultSaveFolderButton"));
   choose->setFixedWidth(96);
-  auto* open = new QPushButton(QStringLiteral("打开"), folder_row);
+  //% "Open"
+  auto* open = new QPushButton(qtTrId("settings.folder.open"), folder_row);
   open->setObjectName(QStringLiteral("openDefaultSaveFolderButton"));
   open->setFixedWidth(96);
   connect(choose, &QPushButton::clicked, this, [this] { choose_folder(); });
   connect(open, &QPushButton::clicked, this, [this] {
-    open_folder(folder_edit_->text().toStdString(), QStringLiteral("默认保存文件夹"));
+    //% "Default save folder"
+    open_folder(folder_edit_->text().toStdString(), qtTrId("settings.folder.default_name"));
   });
   folder_layout->addWidget(folder_edit_, 1);
   folder_layout->addWidget(choose);
   folder_layout->addWidget(open);
-  general_form_->addRow(QStringLiteral("默认保存文件夹"), folder_row);
+  //% "Save folder"
+  general_form_->addRow(qtTrId("settings.folder.label"), folder_row);
 
   save_format_combo_ = new QComboBox(general);
   save_format_combo_->setObjectName(QStringLiteral("saveFormatCombo"));
   save_format_combo_->setMinimumWidth(390);
   save_format_combo_->addItem(
-      QStringLiteral("PNG（SDR：Display P3 ICC；HDR：Display P3 PQ）"),
+      //% "PNG (SDR: Display P3 ICC; HDR: Display P3 PQ)"
+      qtTrId("settings.format.png"),
       static_cast<int>(SaveFormat::png_display_p3_dual_range));
   save_format_combo_->addItem(
-      QStringLiteral("JPEG（ISO 21496-1 + XMP）"),
+      //% "JPEG (ISO 21496-1 + XMP)"
+      qtTrId("settings.format.jpeg"),
       static_cast<int>(SaveFormat::ultra_hdr_jpeg));
-  general_form_->addRow(QStringLiteral("保存为"), save_format_combo_);
+  //% "Format"
+  general_form_->addRow(qtTrId("settings.format.label"), save_format_combo_);
   pq_diffuse_white_combo_ = new QComboBox(general);
   pq_diffuse_white_combo_->setObjectName(QStringLiteral("pqDiffuseWhiteCombo"));
   pq_diffuse_white_combo_->setMinimumWidth(390);
@@ -250,41 +355,53 @@ SettingsWindow::SettingsWindow(
   pq_diffuse_white_combo_->addItem(
       QStringLiteral("203 nit"), static_cast<int>(PqDiffuseWhite::nits_203));
   pq_diffuse_white_combo_->setToolTip(
-      QStringLiteral("只影响 HDR 的 Display P3 PQ 输出；SDR 输出不使用此值。"));
+      //% "Applies to HDR Display P3 PQ output only."
+      qtTrId("settings.diffuse_white.hint"));
   general_form_->addRow(
-      QStringLiteral("Diffuse White 在 PQ 中的亮度"), pq_diffuse_white_combo_);
+      //% "PQ Diffuse White"
+      qtTrId("settings.diffuse_white.label"), pq_diffuse_white_combo_);
   hdr_pq_precision_combo_ = new QComboBox(general);
   hdr_pq_precision_combo_->setObjectName(QStringLiteral("hdrPqPrecisionCombo"));
   hdr_pq_precision_combo_->setMinimumWidth(390);
   hdr_pq_precision_combo_->addItem(
-      QStringLiteral("超高质量（16-bit PQ）"),
+      //% "Very high (16-bit PQ)"
+      qtTrId("settings.png_precision.highest"),
       static_cast<int>(HdrPqPrecision::bits_16));
   hdr_pq_precision_combo_->addItem(
-      QStringLiteral("高质量（12-bit PQ）"),
+      //% "High (12-bit PQ)"
+      qtTrId("settings.png_precision.high"),
       static_cast<int>(HdrPqPrecision::bits_12));
   hdr_pq_precision_combo_->addItem(
-      QStringLiteral("小体积（10-bit PQ，默认）"),
+      //% "Compact (10-bit PQ, default)"
+      qtTrId("settings.png_precision.compact"),
       static_cast<int>(HdrPqPrecision::bits_10));
   hdr_pq_precision_combo_->setToolTip(
-      QStringLiteral("只影响 HDR PQ 的有效码值精度；PNG 容器仍为标准 16-bit RGB。"));
-  general_form_->addRow(QStringLiteral("HDR PNG 数据精度"), hdr_pq_precision_combo_);
+      //% "Affects HDR PQ code precision. The PNG container still uses standard 16-bit RGB."
+      qtTrId("settings.png_precision.hint"));
+  //% "HDR PNG precision"
+  general_form_->addRow(qtTrId("settings.png_precision.label"), hdr_pq_precision_combo_);
   ultra_hdr_jpeg_quality_combo_ = new QComboBox(general);
   ultra_hdr_jpeg_quality_combo_->setObjectName(
       QStringLiteral("ultraHdrJpegQualityCombo"));
   ultra_hdr_jpeg_quality_combo_->setMinimumWidth(390);
   ultra_hdr_jpeg_quality_combo_->addItem(
-      QStringLiteral("超高质量（100）"),
+      //% "Very high (100)"
+      qtTrId("settings.jpeg_quality.highest"),
       static_cast<int>(UltraHdrJpegQuality::maximum));
   ultra_hdr_jpeg_quality_combo_->addItem(
-      QStringLiteral("均衡（95，默认）"),
+      //% "Balanced (95, default)"
+      qtTrId("settings.jpeg_quality.balanced"),
       static_cast<int>(UltraHdrJpegQuality::balanced));
   ultra_hdr_jpeg_quality_combo_->addItem(
-      QStringLiteral("小体积（85）"),
+      //% "Compact (85)"
+      qtTrId("settings.jpeg_quality.compact"),
       static_cast<int>(UltraHdrJpegQuality::compact));
   ultra_hdr_jpeg_quality_combo_->setToolTip(
-      QStringLiteral("同时用于 SDR 底图与增益图 JPEG；纯 SDR 内容仅生成普通 JPEG。"));
+      //% "Applies to both the SDR base JPEG and the gain map JPEG. SDR-only content produces a standard JPEG."
+      qtTrId("settings.jpeg_quality.hint"));
   general_form_->addRow(
-      QStringLiteral("JPEG 质量"), ultra_hdr_jpeg_quality_combo_);
+      //% "JPEG quality"
+      qtTrId("settings.jpeg_quality.label"), ultra_hdr_jpeg_quality_combo_);
 #ifdef Q_OS_WIN
   auto* compatibility_row = new QWidget(general);
   auto* compatibility_layout = new QHBoxLayout(compatibility_row);
@@ -293,11 +410,13 @@ SettingsWindow::SettingsWindow(
       QString{}, compatibility_row);
   windows_capture_compatibility_check_->setObjectName(
       QStringLiteral("windowsCaptureCompatibilityCheckBox"));
-  windows_capture_compatibility_check_->setAccessibleName(QStringLiteral("Win 10 截图亮度兼容"));
+  //% "Win 10 capture brightness fix"
+  windows_capture_compatibility_check_->setAccessibleName(qtTrId("settings.windows_compatibility.accessible"));
   windows_capture_compatibility_check_->setTristate(true);
   compatibility_layout->addWidget(windows_capture_compatibility_check_);
   auto* compatibility_help = new QLabel(
-      QStringLiteral("异常时可开启"),
+      //% "Enable if brightness is incorrect"
+      qtTrId("settings.windows_compatibility.hint"),
       compatibility_row);
   compatibility_help->setObjectName(QStringLiteral("windowsCaptureCompatibilityHelp"));
   auto help_palette = compatibility_help->palette();
@@ -307,7 +426,8 @@ SettingsWindow::SettingsWindow(
   compatibility_help->setPalette(help_palette);
   compatibility_layout->addWidget(compatibility_help);
   compatibility_layout->addStretch(1);
-  general_form_->addRow(QStringLiteral("Win 10 截图亮度兼容"), compatibility_row);
+  //% "Win 10 brightness fix"
+  general_form_->addRow(qtTrId("settings.windows_compatibility.label"), compatibility_row);
 
   auto* compatibility_options = new QWidget(general);
   auto* options_layout = new QHBoxLayout(compatibility_options);
@@ -323,12 +443,14 @@ SettingsWindow::SettingsWindow(
   gain_validator->setLocale(QLocale::c());
   gain_validator->setNotation(QDoubleValidator::StandardNotation);
   windows_scrgb_gain_edit_->setValidator(gain_validator);
-  windows_scrgb_gain_edit_->setToolTip(QStringLiteral("Windows 截图源的 scRGB RGB 增益（0–3）；默认 0.5。"));
+  //% "scRGB RGB gain for Windows capture (0–3). Default: 0.5."
+  windows_scrgb_gain_edit_->setToolTip(qtTrId("settings.windows_compatibility.gain_hint"));
   windows_scrgb_gain_edit_->installEventFilter(this);
   options_layout->addWidget(windows_scrgb_gain_edit_);
   options_layout->addSpacing(18);
   windows_capture_bypass_sdr_white_check_ = new QCheckBox(
-      QStringLiteral("HDR 捕获不使用 SDRWhiteLevel 归一化。"), compatibility_options);
+      //% "Skip SDRWhiteLevel normalization for HDR capture."
+      qtTrId("settings.windows_compatibility.bypass"), compatibility_options);
   windows_capture_bypass_sdr_white_check_->setObjectName(
       QStringLiteral("windowsCaptureBypassSdrWhiteCheckBox"));
   options_layout->addWidget(windows_capture_bypass_sdr_white_check_);
@@ -341,16 +463,28 @@ SettingsWindow::SettingsWindow(
   auto* shortcuts_section = new QVBoxLayout();
   shortcuts_section->setContentsMargins(0, 0, 0, 0);
   shortcuts_section->setSpacing(6);
-  auto* shortcuts_label = new QLabel(QStringLiteral("截图界面固定操作"), this);
+  //% "Capture shortcuts"
+  auto* shortcuts_label = new QLabel(qtTrId("settings.fixed_shortcuts.title"), this);
   shortcuts_label->setObjectName(QStringLiteral("fixedOperationsSectionLabel"));
-  shortcuts_label->setFont(description->font());
+  shortcuts_label->setFont(font());
   shortcuts_section->addWidget(shortcuts_label);
   auto* shortcuts = new QGroupBox(this);
   shortcuts->setObjectName(QStringLiteral("fixedOperationsContainer"));
   auto* shortcuts_grid = new QGridLayout(shortcuts);
   shortcuts_grid->setHorizontalSpacing(24);
   shortcuts_grid->setVerticalSpacing(10);
-  const std::array<const char*, 5> names{"取消", "保存", "另存为", "撤销", "重做"};
+  constexpr std::array<const char*, 5> names{
+      //% "Cancel"
+      QT_TRID_NOOP("settings.fixed_shortcuts.cancel"),
+      //% "Save"
+      QT_TRID_NOOP("settings.fixed_shortcuts.save"),
+      //% "Save As"
+      QT_TRID_NOOP("settings.fixed_shortcuts.save_as"),
+      //% "Undo"
+      QT_TRID_NOOP("settings.fixed_shortcuts.undo"),
+      //% "Redo"
+      QT_TRID_NOOP("settings.fixed_shortcuts.redo"),
+  };
   const std::array<UiCommand, 5> commands{UiCommand::cancel_capture, UiCommand::save_default, UiCommand::save_as, UiCommand::undo, UiCommand::redo};
   std::array<QGridLayout*, 3> groups{};
   for (int col=0;col<3;++col) {
@@ -367,7 +501,7 @@ SettingsWindow::SettingsWindow(
   }
   for (int i=0;i<5;++i) {
     const int col=i<3?i:i-2;
-    auto* label = new QLabel(QString::fromUtf8(names[i]),shortcuts);
+    auto* label = new QLabel(qtTrId(names[i]),shortcuts);
     auto* value = shortcut_value(input_platform_.fixed_shortcut_label(commands[i]),shortcuts);
     label->setObjectName(QString("fixedOperation%1").arg(i));
     value->setObjectName(QString("fixedShortcut%1").arg(i));
@@ -404,19 +538,34 @@ SettingsWindow::SettingsWindow(
   root->addWidget(status_label_);
 
   auto* identity_row = new QHBoxLayout();
-  auto* identity_label = new QLabel(QStringLiteral("版本 %1").arg(QString::fromLatin1(product_version().data(),static_cast<qsizetype>(product_version().size()))),this);
+  //% "Version %1"
+  auto* identity_label = new QLabel(qtTrId("settings.build.version").arg(QString::fromLatin1(product_version().data(),static_cast<qsizetype>(product_version().size()))),this);
   identity_label->setObjectName(QStringLiteral("buildIdentityLabel"));
   identity_label->setWordWrap(true);
   identity_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
   identity_label->setToolTip(source_commit().empty()
-      ? QStringLiteral("未找到可信的源代码提交信息；不会以构建时间代替。")
-      : (source_commit().size() == 64 ? QStringLiteral("源码快照 SHA-256：%1")
-                                      : QStringLiteral("源代码提交：%1")).arg(QString::fromLatin1(
+      //% "Trusted source revision unavailable."
+      ? qtTrId("settings.build.revision_missing")
+      //% "Snapshot SHA-256: %1"
+      : (source_commit().size() == 64 ? qtTrId("settings.build.snapshot")
+                                      //% "Source commit: %1"
+                                      : qtTrId("settings.build.commit")).arg(QString::fromLatin1(
             source_commit().data(), static_cast<qsizetype>(source_commit().size()))));
   const auto source_time=QDateTime::fromString(QString::fromLatin1(source_commit_timestamp().data(),static_cast<qsizetype>(source_commit_timestamp().size())),Qt::ISODate);
-  identity_label->setToolTip(identity_label->toolTip()+QStringLiteral("\n源代码时间：")+(source_time.isValid()?source_time.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'")):QStringLiteral("未知"))+(source_modified()?QStringLiteral("\n含未提交修改"):QString()));
+  const auto source_time_text = source_time.isValid()
+      ? source_time.toUTC().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss 'UTC'"))
+      //% "Unknown"
+      : qtTrId("settings.build.source_time_unknown");
+  //% "\nSource time: %1"
+  auto source_tooltip = identity_label->toolTip() + qtTrId("settings.build.source_time").arg(source_time_text);
+  if (source_modified()) {
+    //% "\nIncludes uncommitted changes"
+    source_tooltip += qtTrId("settings.build.modified");
+  }
+  identity_label->setToolTip(source_tooltip);
   identity_row->addWidget(identity_label, 1);
-  update_entry_=new QPushButton(QStringLiteral("查看更新"),this);
+  //% "Check for Updates"
+  update_entry_=new QPushButton(qtTrId("settings.update.check"),this);
   update_entry_->setObjectName(QStringLiteral("checkUpdatesButton"));update_entry_->setFlat(true);update_entry_->setEnabled(false);
   identity_row->addWidget(update_entry_);
   connect(update_entry_,&QPushButton::clicked,this,[this]{if(update_opener_)update_opener_();});
@@ -424,7 +573,8 @@ SettingsWindow::SettingsWindow(
 
   auto* actions = new QHBoxLayout();
   actions->addStretch(1);
-  detailed_logging_check_ = new QCheckBox(QStringLiteral("详细日志（调试）"), this);
+  //% "Verbose logs (debug)"
+  detailed_logging_check_ = new QCheckBox(qtTrId("settings.logging.verbose"), this);
   detailed_logging_check_->setObjectName(QStringLiteral("detailedLoggingCheckBox"));
   actions->addWidget(detailed_logging_check_);
   connect(detailed_logging_check_, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -432,18 +582,23 @@ SettingsWindow::SettingsWindow(
     const auto saved = SettingsWorkflow::change_detailed_logging(enabled, settings_store_);
     if (!saved) {
       restore_controls_from_snapshot();
-      show_status(QStringLiteral("日志设置保存失败：%1")
+      //% "Could not save logging settings: %1"
+      show_status(qtTrId("settings.logging.save_failed")
           .arg(QString::fromStdString(to_string(saved.error().code))), true);
       return;
     }
-    finish_saved_change(QStringLiteral("日志设置已生效"));
+    //% "Logging settings applied."
+    finish_saved_change(qtTrId("settings.logging.saved"));
   });
-  auto* open_logs = new QPushButton(QStringLiteral("打开日志文件夹"), this);
+  //% "Open Log Folder"
+  auto* open_logs = new QPushButton(qtTrId("settings.logging.open_folder"), this);
   open_logs->setObjectName(QStringLiteral("openLogsFolderButton"));
   connect(open_logs, &QPushButton::clicked, this, [this] {
-    open_folder(diagnostics_folder_, QStringLiteral("日志文件夹"));
+    //% "Log folder"
+    open_folder(diagnostics_folder_, qtTrId("settings.logging.folder_name"));
   });
-  auto* close = new QPushButton(QStringLiteral("关闭"), this);
+  //% "Close"
+  auto* close = new QPushButton(qtTrId("settings.close"), this);
   close->setObjectName(QStringLiteral("closeSettingsButton"));
   close->setDefault(true);
   connect(close, &QPushButton::clicked, this, &QWidget::hide);
@@ -483,6 +638,112 @@ SettingsWindow::SettingsWindow(
       [this] { persist_enter_completion_action(); });
   connect(double_click_completion_combo_, &QComboBox::currentIndexChanged, this,
       [this] { persist_double_click_completion_action(); });
+}
+
+void SettingsWindow::set_language_runtime(QtUiLanguageRuntime& runtime) {
+  language_runtime_ = &runtime;
+  chinese_language_button_->setEnabled(true);
+  english_language_button_->setEnabled(true);
+  render_language_choice();
+}
+
+void SettingsWindow::render_language_choice() {
+  if (!language_runtime_) return;
+  const auto active = language_runtime_->active_language();
+  const auto preferred = snapshot_.ui_language.value_or(active);
+  chinese_language_button_->setChecked(preferred == UiLanguage::simplified_chinese);
+  english_language_button_->setChecked(preferred == UiLanguage::english);
+  if (preferred == active) {
+    language_restart_hint_->hide();
+  } else {
+    language_restart_hint_->setText(language_runtime_->restart_hint(preferred));
+    language_restart_hint_->setEnabled(!restart_pending_ &&
+        language_runtime_->restart_available(preferred));
+    language_restart_hint_->show();
+  }
+}
+
+void SettingsWindow::set_restart_requester(
+    std::function<UiRestartOutcome(UiLanguage)> callback) {
+  restart_requester_ = std::move(callback);
+}
+
+void SettingsWindow::confirm_language_restart() {
+  if (!language_runtime_ || !restart_requester_ || restart_pending_ || !snapshot_.ui_language)
+    return;
+  const auto target = *snapshot_.ui_language;
+  if (target == language_runtime_->active_language() ||
+      !language_runtime_->restart_available(target)) return;
+  restart_pending_ = true;
+  render_language_choice();
+  //% "Restart SeriousShot"
+  const auto title = language_runtime_->text(target, QT_TRID_NOOP("language.restart.title"));
+  //% "Restart SeriousShot and switch to Simplified Chinese?"
+  const auto* chinese_question = QT_TRID_NOOP("language.restart.confirm_zh");
+  //% "Restart SeriousShot and switch to English?"
+  const auto* english_question = QT_TRID_NOOP("language.restart.confirm_en");
+  auto* dialog = new QMessageBox(QMessageBox::Question, title,
+      language_runtime_->text(target, target == UiLanguage::simplified_chinese
+          ? chinese_question : english_question), QMessageBox::NoButton, this);
+  dialog->setObjectName(QStringLiteral("settingsLanguageRestartConfirmation"));
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setTextFormat(Qt::PlainText);
+  //% "Restart"
+  auto* restart = dialog->addButton(
+      language_runtime_->text(target, QT_TRID_NOOP("language.restart.action")),
+      QMessageBox::AcceptRole);
+  restart->setObjectName(QStringLiteral("settingsRestartConfirmButton"));
+  //% "Cancel"
+  auto* cancel = dialog->addButton(
+      language_runtime_->text(target, QT_TRID_NOOP("language.restart.cancel")),
+      QMessageBox::RejectRole);
+  dialog->setDefaultButton(cancel);
+  dialog->setEscapeButton(cancel);
+  restart_dialog_ = dialog;
+  connect(dialog, &QMessageBox::finished, this, [this, dialog, restart, target] {
+    const bool accepted = dialog->clickedButton() == restart;
+    restart_dialog_.clear();
+    // Leave the dialog's finished dispatch before asking the native shell to exit.
+    QTimer::singleShot(0, this, [this, accepted, target] {
+      if (!accepted || snapshot_.ui_language != target ||
+          target == language_runtime_->active_language() ||
+          !language_runtime_->restart_available(target)) {
+        restart_pending_ = false;
+        render_language_choice();
+        return;
+      }
+      const auto outcome = restart_requester_ ? restart_requester_(target) : UiRestartOutcome::cancelled;
+      if (outcome == UiRestartOutcome::accepted) return;
+      restart_pending_ = false;
+      render_language_choice();
+      if (outcome == UiRestartOutcome::busy) {
+        //% "Finish the capture, save, or update and close analysis and pinned windows, then try restarting again."
+        show_status(language_runtime_->text(target, QT_TRID_NOOP("language.restart.busy")), true);
+      }
+    });
+  });
+  dialog->open();
+}
+
+void SettingsWindow::persist_ui_language(UiLanguage language) {
+  if (!language_runtime_) return;
+  if (snapshot_.ui_language == language) {
+    render_language_choice();
+    return;
+  }
+  const auto saved = SettingsWorkflow::change_ui_language(language, settings_store_);
+  if (!saved) {
+    render_language_choice();
+    //% "Could not save the display language: %1"
+    show_status(qtTrId("language.save_failed")
+                    .arg(QString::fromStdString(to_string(saved.error().code))),
+                true);
+    return;
+  }
+  snapshot_.ui_language = language;
+  snapshot_.revision = saved.value().settings_revision;
+  render_language_choice();
+  status_label_->hide();
 }
 
 void SettingsWindow::set_applied(Applied callback) {
@@ -533,12 +794,15 @@ void SettingsWindow::render_login_startup() {
   // it again, but never writes unless that query establishes a capability.
   login_startup_check_->setEnabled(!login_startup_pending_ && login_startup_port_ != nullptr);
   QString hint;
-  if (awaiting_login_startup_user_retry_) hint = QStringLiteral("请再次勾选以检查并确认登录启动状态。");
-  else if (state == LoginStartupState::unknown) hint = QStringLiteral("无法确认登录启动状态，勾选时将检查。");
-  else if (state == LoginStartupState::service_not_found) hint = QStringLiteral("尚未确认登录启动状态，可勾选尝试启用。");
+  //% "Check the box again to verify launch at login."
+  if (awaiting_login_startup_user_retry_) hint = qtTrId("settings.login.retry");
+  //% "Launch at login could not be verified. Check the box to retry."
+  else if (state == LoginStartupState::unknown) hint = qtTrId("settings.login.unknown");
+  //% "Launch at login has yet to be verified. Check the box to try enabling it."
+  else if (state == LoginStartupState::service_not_found) hint = qtTrId("settings.login.unconfirmed");
   else if (state == LoginStartupState::requires_approval || state == LoginStartupState::blocked)
-    hint = QString::fromStdString(login_startup_snapshot_.approval_message);
-  else hint = QString::fromStdString(login_startup_snapshot_.diagnostic);
+    hint = login_startup_text(login_startup_snapshot_.approval_text, login_startup_snapshot_.approval_message);
+  else hint = login_startup_diagnostic(login_startup_snapshot_);
   login_startup_check_->setToolTip(hint);
   login_startup_check_->setAccessibleDescription(hint);
 }
@@ -547,32 +811,39 @@ void SettingsWindow::show_login_startup_result() {
   const auto& snapshot = login_startup_snapshot_;
   QString message;
   if (snapshot.state == LoginStartupState::requires_approval || snapshot.state == LoginStartupState::blocked)
-    message = QString::fromStdString(snapshot.approval_message);
-  if (message.isEmpty() && !snapshot.diagnostic.empty()) message = QString::fromStdString(snapshot.diagnostic);
-  if (message.isEmpty()) message = QStringLiteral("登录启动操作未完成，请检查当前状态后再试。");
+    message = login_startup_text(snapshot.approval_text, snapshot.approval_message);
+  if (message.isEmpty()) message = login_startup_diagnostic(snapshot);
+  //% "Launch at login could not be changed. Check its status and try again."
+  if (message.isEmpty()) message = qtTrId("settings.login.not_completed");
   if (login_startup_error_) {
     const auto& error = *login_startup_error_;
     const auto description = error.safe_context.find("description");
     const auto reason = error.safe_context.find("reason");
-    if (description != error.safe_context.end()) message += "\n" + QString::fromStdString(description->second);
+    if (description != error.safe_context.end()) message += "\n" + login_startup_error_field(error, "description");
     else if (reason != error.safe_context.end() && snapshot.approval_message.empty())
-      message += "\n" + QString::fromStdString(reason->second);
+      message += "\n" + login_startup_error_field(error, "reason");
     const auto domain = error.safe_context.find("domain"), code = error.safe_context.find("native_code");
     if (domain != error.safe_context.end()) message += "\n" + QString::fromStdString(domain->second);
-    if (code != error.safe_context.end()) message += QStringLiteral("（%1）").arg(QString::fromStdString(code->second));
+    //% " (%1)"
+    if (code != error.safe_context.end()) message += qtTrId("settings.login.native_code").arg(QString::fromStdString(code->second));
   }
   if (snapshot.state == LoginStartupState::invalid_target && !snapshot.current_bundle_path.empty())
-    message += QStringLiteral("\n当前应用：") + QString::fromStdString(snapshot.current_bundle_path);
-  auto* dialog = new QMessageBox(QMessageBox::Information, QStringLiteral("登录时自动启动"), message,
+    //% "\nCurrent app: %1"
+    message += qtTrId("settings.login.current_app").arg(QString::fromStdString(snapshot.current_bundle_path));
+  //% "Launch at Login"
+  auto* dialog = new QMessageBox(QMessageBox::Information, qtTrId("settings.login.dialog_title"), message,
                                 QMessageBox::NoButton, this);
   dialog->setObjectName(QStringLiteral("loginStartupResultDialog"));
   dialog->setTextFormat(Qt::PlainText);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
-  auto* cancel = dialog->addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+  //% "Cancel"
+  auto* cancel = dialog->addButton(qtTrId("settings.login.cancel"), QMessageBox::RejectRole);
   dialog->setDefaultButton(cancel);
   QPushButton* system_settings = nullptr;
-  if (snapshot.can_open_system_settings && snapshot.state != LoginStartupState::invalid_target)
-    system_settings = dialog->addButton(QStringLiteral("打开系统设置"), QMessageBox::ActionRole);
+  if (snapshot.can_open_system_settings && snapshot.state != LoginStartupState::invalid_target) {
+    //% "Open System Settings"
+    system_settings = dialog->addButton(qtTrId("settings.login.open_system_settings"), QMessageBox::ActionRole);
+  }
   login_startup_dialog_ = dialog;
   connect(dialog, &QMessageBox::finished, this, [this, dialog, system_settings](int) {
     const bool open = system_settings && dialog->clickedButton() == system_settings;
@@ -600,7 +871,8 @@ void SettingsWindow::reload_and_show() {
   const auto loaded = settings_store_.load();
   if (!loaded) {
     show_status(
-        QStringLiteral("设置读取失败：%1")
+        //% "Could not load settings: %1"
+        qtTrId("settings.load_failed")
             .arg(QString::fromStdString(to_string(loaded.error().code))),
         true);
   } else {
@@ -616,6 +888,7 @@ void SettingsWindow::reload_and_show() {
 }
 
 void SettingsWindow::restore_controls_from_snapshot() {
+  render_language_choice();
   const auto& d=snapshot_.analysis_defaults;
   {QSignalBlocker b(magnifier_enabled_); magnifier_enabled_->setChecked(d.magnifier_enabled);}
   const double values[]{double(d.magnifier_zoom),double(int(d.hdr_space)),double(int(d.sdr_space)),d.reference_white_nits,d.blur_sigma_px,double(d.sample_side)};
@@ -692,7 +965,8 @@ void SettingsWindow::restore_controls_from_snapshot() {
 void SettingsWindow::finish_saved_change(const QString& success_message) {
   const auto loaded = settings_store_.load();
   if (!loaded) {
-    show_status(QStringLiteral("设置已写入，但重新读取失败。"), true);
+    //% "Settings were saved, but could not be reloaded."
+    show_status(qtTrId("settings.reload_failed"), true);
     return;
   }
   snapshot_ = loaded.value();
@@ -806,7 +1080,8 @@ void SettingsWindow::build_pinned_screenshot_tab(QWidget* page) {
   auto* section = new QVBoxLayout();
   section->setContentsMargins(0, 0, 0, 0);
   section->setSpacing(6);
-  auto* title = new QLabel(QStringLiteral("新建贴图默认行为"), content);
+  //% "New pinned windows"
+  auto* title = new QLabel(qtTrId("settings.pinned.title"), content);
   title->setObjectName(QStringLiteral("pinnedScreenshotSectionTitle"));
   section->addWidget(title);
   auto* group = new QGroupBox(content);
@@ -817,17 +1092,22 @@ void SettingsWindow::build_pinned_screenshot_tab(QWidget* page) {
   form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
   form->setRowWrapPolicy(QFormLayout::DontWrapRows);
   pinned_always_on_top_check_ = new QCheckBox(group);
-  pinned_always_on_top_check_->setAccessibleName(QStringLiteral("默认置顶"));
+  //% "Always on top by default"
+  pinned_always_on_top_check_->setAccessibleName(qtTrId("settings.pinned.topmost_accessible"));
   pinned_always_on_top_check_->setObjectName(QStringLiteral("pinnedScreenshotAlwaysOnTopCheckBox"));
-  form->addRow(QStringLiteral("默认置顶"), pinned_always_on_top_check_);
+  //% "Always on top"
+  form->addRow(qtTrId("settings.pinned.topmost"), pinned_always_on_top_check_);
   pinned_short_edge_combo_ = new QComboBox(group);
   pinned_short_edge_combo_->setObjectName(QStringLiteral("pinnedScreenshotShortEdgeCombo"));
   for (int edge = minimum_pinned_screenshot_short_edge; edge <= 800; edge += 50) {
     pinned_short_edge_combo_->addItem(edge == PinnedScreenshotDefaults{}.short_edge
-        ? QStringLiteral("%1 DIP（默认）").arg(edge) : QStringLiteral("%1 DIP").arg(edge), edge);
+        //% "%1 DIP (default)"
+        ? qtTrId("settings.pinned.default_size").arg(edge) : QStringLiteral("%1 DIP").arg(edge), edge);
   }
-  form->addRow(QStringLiteral("默认窗口短边"), pinned_short_edge_combo_);
-  auto* hint = new QLabel(QStringLiteral("窗口尺寸使用逻辑像素（DIP），适应屏幕缩放。"), group);
+  //% "Default short edge"
+  form->addRow(qtTrId("settings.pinned.short_edge"), pinned_short_edge_combo_);
+  //% "Window size uses device-independent pixels (DIP) to account for display scaling."
+  auto* hint = new QLabel(qtTrId("settings.pinned.scale_hint"), group);
   hint->setObjectName(QStringLiteral("pinnedScreenshotLogicalPixelHint"));
   hint->setWordWrap(true);
   form->addRow(QString(), hint);
@@ -838,7 +1118,8 @@ void SettingsWindow::build_pinned_screenshot_tab(QWidget* page) {
   section->addWidget(group);
   layout->addLayout(section);
   auto* note = new QLabel(
-      QStringLiteral("每张贴图创建后可单独调整大小和置顶状态。"), content);
+      //% "Resize or change the always-on-top setting for each pinned window after opening it."
+      qtTrId("settings.pinned.per_window_hint"), content);
   note->setObjectName(QStringLiteral("pinnedScreenshotDefaultsNote"));
   note->setWordWrap(true);
   layout->addWidget(note);
@@ -862,10 +1143,12 @@ void SettingsWindow::persist_pinned_screenshot_defaults() {
       requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("贴图设置保存失败，已恢复。"), true);
+    //% "Could not save pinned-window settings. Previous settings restored."
+    show_status(qtTrId("settings.pinned.save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("贴图默认设置已更新，将应用于之后新建的贴图。"));
+  //% "New pinned windows will use the updated settings."
+  finish_saved_change(qtTrId("settings.pinned.saved"));
 }
 
 void SettingsWindow::build_analysis_tab(QWidget* page) {
@@ -879,7 +1162,8 @@ void SettingsWindow::build_analysis_tab(QWidget* page) {
   auto* v=new QVBoxLayout(content);v->setSpacing(14);
   magnifier_enabled_=new QCheckBox(content);
   magnifier_enabled_->setObjectName("magnifierEnabledCheck");
-  magnifier_enabled_->setAccessibleName(QStringLiteral("截图放大镜"));
+  //% "Capture magnifier"
+  magnifier_enabled_->setAccessibleName(qtTrId("settings.analysis.magnifier"));
   connect(magnifier_enabled_,&QCheckBox::clicked,this,[this]{persist_analysis_defaults();});
   auto combo=[&](int index,const char* name,const QString& label,const QStringList& labels,const std::vector<double>& values,QFormLayout* form) {
     auto* c=new QComboBox(content);c->setObjectName(name);analysis_combos_[index]=c;
@@ -887,21 +1171,38 @@ void SettingsWindow::build_analysis_tab(QWidget* page) {
     c->setMinimumHeight(28);form->setHorizontalSpacing(18);form->setVerticalSpacing(14);form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);form->addRow(label,c);connect(c,&QComboBox::currentIndexChanged,this,[this]{persist_analysis_defaults();});
   };
   auto* mf=new QFormLayout;v->addLayout(mf);
-  mf->addRow(QStringLiteral("截图放大镜"),magnifier_enabled_);
-  combo(0,"magnifierZoomCombo","放大倍率",{"4×","8×","12×","16×"},{4,8,12,16},mf);
-  magnifier_readings_=new ReadingSelector(magnifier_reading_names(),"magnifierReadings",content);mf->addRow("默认读数",magnifier_readings_);
+  //% "Capture magnifier"
+  mf->addRow(qtTrId("settings.analysis.magnifier"),magnifier_enabled_);
+  //% "Zoom"
+  combo(0,"magnifierZoomCombo",qtTrId("settings.analysis.zoom"),{"4×","8×","12×","16×"},{4,8,12,16},mf);
+  magnifier_readings_ = new ReadingSelector(magnifier_reading_names(), "magnifierReadings", content);
+  //% "Default readings"
+  mf->addRow(qtTrId("settings.analysis.default_readings"), magnifier_readings_);
   magnifier_readings_->changed=[this]{persist_analysis_defaults();};
   auto* line=new QFrame(content);line->setFrameShape(QFrame::HLine);line->setStyleSheet("border:0;border-top:1px solid palette(mid);");v->addWidget(line);
-  auto* heading=new QLabel("分析默认设置",content);auto heading_font=heading->font();heading_font.setBold(true);heading->setFont(heading_font);v->addWidget(heading);
+  //% "Analysis defaults"
+  auto* heading=new QLabel(qtTrId("settings.analysis.defaults"),content);auto heading_font=heading->font();heading_font.setBold(true);heading->setFont(heading_font);v->addWidget(heading);
   auto* f=new QFormLayout;v->addLayout(f);
-  combo(1,"analysisHdrSpaceCombo","HDR 默认工作空间",{"P3-PQ","BT.2020-PQ"},{2,3},f);
-  combo(2,"analysisSdrSpaceCombo","SDR 默认工作空间",{"P3-sRGB","sRGB-sRGB"},{1,0},f);
-  combo(3,"analysisWhiteCombo","分析参考白",{"203 nit","100 nit"},{203,100},f);
-  v->addWidget(new QLabel("分析器默认处理",content));auto* processing=new QFormLayout;v->addLayout(processing);
-  combo(4,"analysisBlurCombo","Blur（σ）",{"关闭","0.5 px","1 px","2 px","4 px","8 px"},{0,.5,1,2,4,8},processing);
-  v->addWidget(new QLabel("分析器吸管",content));auto* eyedropper=new QFormLayout;v->addLayout(eyedropper);
-  combo(5,"analysisSampleCombo","采样范围",{"1×1","3×3","5×5","11×11","31×31","101×101"},{1,3,5,11,31,101},eyedropper);
-  analyzer_readings_=new ReadingSelector(analyzer_reading_names(),"analyzerReadings",content);eyedropper->addRow("默认读数",analyzer_readings_);
+  //% "HDR Working Space"
+  combo(1,"analysisHdrSpaceCombo",qtTrId("settings.analysis.hdr_space"),{"P3-PQ","BT.2020-PQ"},{2,3},f);
+  //% "SDR Working Space"
+  combo(2,"analysisSdrSpaceCombo",qtTrId("settings.analysis.sdr_space"),{"P3-sRGB","sRGB-sRGB"},{1,0},f);
+  //% "Reference white"
+  combo(3,"analysisWhiteCombo",qtTrId("settings.analysis.reference_white"),{"203 nit","100 nit"},{203,100},f);
+  //% "Analyzer processing"
+  v->addWidget(new QLabel(qtTrId("settings.analysis.processing"),content));auto* processing=new QFormLayout;v->addLayout(processing);
+  combo(4,"analysisBlurCombo",
+      //% "Blur (σ)"
+      qtTrId("settings.analysis.blur"),{
+      //% "Off"
+      qtTrId("settings.analysis.blur_off"),"0.5 px","1 px","2 px","4 px","8 px"},{0,.5,1,2,4,8},processing);
+  //% "Analyzer eyedropper"
+  v->addWidget(new QLabel(qtTrId("settings.analysis.eyedropper"),content));auto* eyedropper=new QFormLayout;v->addLayout(eyedropper);
+  //% "Sample area"
+  combo(5,"analysisSampleCombo",qtTrId("settings.analysis.sample_area"),{"1×1","3×3","5×5","11×11","31×31","101×101"},{1,3,5,11,31,101},eyedropper);
+  analyzer_readings_ = new ReadingSelector(analyzer_reading_names(), "analyzerReadings", content);
+  //% "Default readings"
+  eyedropper->addRow(qtTrId("settings.analysis.default_readings"), analyzer_readings_);
   analyzer_readings_->changed=[this]{persist_analysis_defaults();};
   for(auto* form:{mf,f,processing,eyedropper})for(int row=0;row<form->rowCount();++row){auto* item=form->itemAt(row,QFormLayout::LabelRole);if(item&&item->widget())item->widget()->setMinimumWidth(130);}
   v->addStretch();
@@ -914,14 +1215,23 @@ void SettingsWindow::persist_analysis_defaults() {
   d.magnifier=magnifier_readings_from_menu(magnifier_readings_->selected<MagnifierReadings::count>());d.analyzer.selected=analyzer_readings_->selected<7>();
   if(d==snapshot_.analysis_defaults)return;
   SettingsPatch patch;patch.analysis_defaults=d;auto saved=settings_store_.save(patch);
-  if(!saved){restore_controls_from_snapshot();show_status("分析设置保存失败，已恢复",true);return;}
-  snapshot_.analysis_defaults=d;snapshot_.revision=saved.value().revision;finish_saved_change("分析默认设置已生效");
+  if (!saved) {
+    restore_controls_from_snapshot();
+    //% "Could not save analysis settings. Previous settings restored."
+    show_status(qtTrId("settings.analysis.save_failed"), true);
+    return;
+  }
+  snapshot_.analysis_defaults = d;
+  snapshot_.revision = saved.value().revision;
+  //% "Analysis defaults applied."
+  finish_saved_change(qtTrId("settings.analysis.saved"));
 }
 
 void SettingsWindow::choose_folder() {
   const auto chosen = QFileDialog::getExistingDirectory(
       this,
-      QStringLiteral("选择默认保存文件夹"),
+      //% "Choose Default Save Folder"
+      qtTrId("settings.folder.dialog_title"),
       folder_edit_->text(),
       QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
   if (!chosen.isEmpty()) {
@@ -930,12 +1240,14 @@ void SettingsWindow::choose_folder() {
     if (!changed) {
       restore_controls_from_snapshot();
       show_status(
-          QStringLiteral("保存位置更新失败：%1")
+          //% "Could not change the save folder: %1"
+          qtTrId("settings.folder.save_failed")
               .arg(QString::fromStdString(to_string(changed.error().code))),
           true);
       return;
     }
-    finish_saved_change(QStringLiteral("默认保存位置已更新。"));
+    //% "Default save folder updated."
+    finish_saved_change(qtTrId("settings.folder.saved"));
   }
 }
 
@@ -943,7 +1255,8 @@ void SettingsWindow::open_folder(const std::string& folder, const QString& label
   const auto opened = folder_opener_.open_folder(OpenFolderRequest{folder, true});
   if (!opened) {
     show_status(
-        QStringLiteral("%1无法打开：%2")
+        //% "Could not open %1: %2"
+        qtTrId("settings.folder.open_failed")
             .arg(label, QString::fromStdString(to_string(opened.error().code))),
         true);
   }
@@ -953,12 +1266,14 @@ void SettingsWindow::persist_hotkey(const std::string& canonical_hotkey) {
   const auto displayed = input_platform_.display_global_hotkey(canonical_hotkey);
   if (!displayed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("快捷键必须包含修饰键，并使用 A–Z 或 0–9。"), true);
+    //% "Use a modifier and a key from A–Z or 0–9."
+    show_status(qtTrId("settings.shortcut.invalid"), true);
     return;
   }
   if (canonical_hotkey == snapshot_.global_capture_hotkey) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("全局截图快捷键未改变。"), false);
+    //% "Capture shortcut is unchanged."
+    show_status(qtTrId("settings.shortcut.unchanged"), false);
     return;
   }
   const auto replaced = SettingsWorkflow::replace_global_hotkey(
@@ -969,12 +1284,14 @@ void SettingsWindow::persist_hotkey(const std::string& canonical_hotkey) {
   if (!replaced) {
     restore_controls_from_snapshot();
     show_status(
-        QStringLiteral("快捷键更新失败：%1")
+        //% "Could not change the capture shortcut: %1"
+        qtTrId("settings.shortcut.save_failed")
             .arg(QString::fromStdString(to_string(replaced.error().code))),
         true);
     return;
   }
-  finish_saved_change(QStringLiteral("全局截图快捷键已更新。"));
+  //% "Capture shortcut updated."
+  finish_saved_change(qtTrId("settings.shortcut.saved"));
 }
 
 void SettingsWindow::persist_save_format() {
@@ -984,10 +1301,12 @@ void SettingsWindow::persist_save_format() {
   const auto changed = SettingsWorkflow::change_save_format(requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("保存格式更新失败。"), true);
+    //% "Could not change the output format."
+    show_status(qtTrId("settings.format.save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("保存格式已更新。"));
+  //% "Output format updated."
+  finish_saved_change(qtTrId("settings.format.saved"));
 }
 
 void SettingsWindow::update_format_specific_controls() {
@@ -1009,10 +1328,12 @@ void SettingsWindow::persist_pq_diffuse_white() {
       requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("PQ Diffuse White 更新失败。"), true);
+    //% "Could not update PQ Diffuse White."
+    show_status(qtTrId("settings.diffuse_white.save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("PQ Diffuse White 已更新。"));
+  //% "PQ Diffuse White updated."
+  finish_saved_change(qtTrId("settings.diffuse_white.saved"));
 }
 
 void SettingsWindow::persist_windows_scrgb_gain() {
@@ -1037,7 +1358,8 @@ void SettingsWindow::persist_windows_capture_compatibility(
   }
   if (!parsed || !valid_windows_scrgb_gain(requested)) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("Windows 10 截图亮度兼容：scRGB gain 须为 0 至 3 的有限小数。"), true);
+    //% "Win 10 brightness fix: scRGB gain must be a finite number from 0 to 3."
+    show_status(qtTrId("settings.windows_compatibility.gain_invalid"), true);
     return;
   }
   if (gain_enabled == snapshot_.windows_capture_gain_enabled &&
@@ -1047,10 +1369,12 @@ void SettingsWindow::persist_windows_capture_compatibility(
       gain_enabled, bypass_sdr_white_enabled, requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("Windows 10 截图亮度兼容设置更新失败。"), true);
+    //% "Could not update Win 10 capture compatibility."
+    show_status(qtTrId("settings.windows_compatibility.save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("Windows 10 截图亮度兼容设置已更新。"));
+  //% "Win 10 capture compatibility updated."
+  finish_saved_change(qtTrId("settings.windows_compatibility.saved"));
 #endif
 }
 
@@ -1063,10 +1387,12 @@ void SettingsWindow::persist_hdr_pq_precision() {
       requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("HDR PNG 数据精度更新失败。"), true);
+    //% "Could not update HDR PNG precision."
+    show_status(qtTrId("settings.png_precision.save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("HDR PNG 数据精度已更新。"));
+  //% "HDR PNG precision updated."
+  finish_saved_change(qtTrId("settings.png_precision.saved"));
 }
 
 void SettingsWindow::persist_ultra_hdr_jpeg_quality() {
@@ -1078,10 +1404,12 @@ void SettingsWindow::persist_ultra_hdr_jpeg_quality() {
       requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("JPEG 质量更新失败。"), true);
+    //% "Could not update JPEG quality."
+    show_status(qtTrId("settings.jpeg_quality.save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("JPEG 质量已更新。"));
+  //% "JPEG quality updated."
+  finish_saved_change(qtTrId("settings.jpeg_quality.saved"));
 }
 
 void SettingsWindow::persist_enter_completion_action() {
@@ -1093,10 +1421,12 @@ void SettingsWindow::persist_enter_completion_action() {
       requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("Enter 行为更新失败。"), true);
+    //% "Could not update the Enter action."
+    show_status(qtTrId("settings.completion.enter_save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("Enter 行为已更新。"));
+  //% "Enter action updated."
+  finish_saved_change(qtTrId("settings.completion.enter_saved"));
 }
 
 void SettingsWindow::persist_double_click_completion_action() {
@@ -1108,21 +1438,25 @@ void SettingsWindow::persist_double_click_completion_action() {
       requested, settings_store_);
   if (!changed) {
     restore_controls_from_snapshot();
-    show_status(QStringLiteral("双击行为更新失败。"), true);
+    //% "Could not update the double-click action."
+    show_status(qtTrId("settings.completion.double_click_save_failed"), true);
     return;
   }
-  finish_saved_change(QStringLiteral("双击行为已更新。"));
+  //% "Double-click action updated."
+  finish_saved_change(qtTrId("settings.completion.double_click_saved"));
 }
 
 void SettingsWindow::start_hotkey_recording() {
   hotkey_before_recording_ = hotkey_edit_->keySequence();
   recording_hotkey_ = true;
-  customize_hotkey_button_->setText(QStringLiteral("取消录制"));
+  //% "Cancel"
+  customize_hotkey_button_->setText(qtTrId("settings.shortcut.cancel_recording"));
   hotkey_edit_->setAttribute(Qt::WA_TransparentForMouseEvents, false);
   hotkey_edit_->setFocusPolicy(Qt::StrongFocus);
   hotkey_edit_->clear();
   hotkey_edit_->setFocus(Qt::OtherFocusReason);
-  show_status(QStringLiteral("请按下新的全局截图快捷键。"), false);
+  //% "Press the new capture shortcut."
+  show_status(qtTrId("settings.shortcut.recording"), false);
 }
 
 void SettingsWindow::finish_hotkey_recording(const bool keep_new_sequence) {
@@ -1140,12 +1474,14 @@ void SettingsWindow::finish_hotkey_recording(const bool keep_new_sequence) {
   hotkey_edit_->clearFocus();
   hotkey_edit_->setFocusPolicy(Qt::NoFocus);
   hotkey_edit_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  customize_hotkey_button_->setText(QStringLiteral("自定义"));
+  //% "Customize"
+  customize_hotkey_button_->setText(qtTrId("settings.shortcut.customize"));
   if (keep_new_sequence) {
     const auto hotkey = input_platform_.canonical_global_hotkey(requested_sequence);
     if (!hotkey) {
       hotkey_edit_->setKeySequence(hotkey_before_recording_);
-      show_status(QStringLiteral("快捷键必须包含修饰键，并使用 A–Z 或 0–9。"), true);
+      //% "Use a modifier and a key from A–Z or 0–9."
+      show_status(qtTrId("settings.shortcut.invalid"), true);
       return;
     }
     persist_hotkey(hotkey.value());
@@ -1165,6 +1501,10 @@ void SettingsWindow::show_status(const QString& text, const bool error) {
 namespace hdrshot {
 void SettingsWindow::set_update_opener(std::function<void()> open){update_opener_=std::move(open);update_entry_->setEnabled(bool(update_opener_));}
 void SettingsWindow::set_update_view(const update::View& view,bool){
-  update_entry_->setText(view.candidate?QStringLiteral("发现新版本 %1 · 查看更新").arg(QString::fromStdString(view.candidate->version.text())):QStringLiteral("查看更新"));
+  update_entry_->setText(view.candidate?
+      //% "Update %1 available"
+      qtTrId("settings.update.available").arg(QString::fromStdString(view.candidate->version.text())):
+      //% "Check for Updates"
+      qtTrId("settings.update.check"));
 }
 }

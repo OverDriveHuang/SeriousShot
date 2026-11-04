@@ -13,7 +13,9 @@ LoginStartupChange LoginStartupWorkflow::change_enabled(bool enabled) {
       (!enabled && state == LoginStartupState::disabled)) return result;
   if (!(enabled ? before.value().can_enable : before.value().can_disable)) {
     result.operation_error = Error{ErrorCode::precondition_failed, "login_startup",
-        Retryability::after_user_action, {{"reason", "系统当前状态不允许此操作，请检查系统设置后再次勾选。"}}};
+        Retryability::after_user_action,
+        {{"reason", "系统当前状态不允许此操作，请检查系统设置后再次勾选。"},
+         {"reason_id", "settings.login.change_disallowed"}}};
     return result;
   }
   const auto changed = port_.set_enabled(enabled);

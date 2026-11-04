@@ -28,6 +28,7 @@ public:
   // Returns false if the user elects to retain an analysis window.
   bool close_windows();
   bool has_windows() const {for(const auto& window:windows_)if(!window.expired())return true;return false;}
+  bool has_pending_work() const { return pending_preparations_ != 0; }
   void shutdown();
 
 private:
@@ -48,6 +49,7 @@ private:
   std::optional<std::string> pending_preferences_;
   QTimer preference_timer_;
   std::uint64_t next_operation_{1000};
+  std::size_t pending_preparations_{};
   bool shutting_down_{}, closing_windows_{};
 };
 } // namespace hdrshot

@@ -1,6 +1,8 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-11-01 12:45:52 CST
+最后更新：2026-11-05 00:53:09 CST
+
+[For the English README, please click here.](README.en.md)
 
 **在 HDR 与广色域屏幕上截图，直接标注，保留颜色；需要时，再深入分析。**
 
@@ -25,7 +27,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接添加形状、直线、画笔笔迹、箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-当前版本 [0.2.1](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.1) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
+当前版本 [0.2.2](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
 
 ## 截图、标注、分享，一次完成
 
@@ -64,7 +66,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 - **Waveform／Parade**：观察亮度与各通道在画面中的分布，添加参考线，检查高光与暗部。
 - **Histogram**：查看亮度、RGB、色相分布，支持 Adobe Style 的 SDR／HDR 分段显示。
 - **Vectorscope**：查看 Y′CbCr、Lab 或 ITP 色平面中的分布及当前工作色域轮廓。
-- **吸管与 Swatches**：读取像素或区域平均值，保留采样色块，并在图表中定位均值与区域分布。
+- **吸管与采样色块**：读取像素或区域平均值，保留采样色块，并在图表中定位均值与区域分布。
 - **Mask 与 False Color**：限定分析区域，或用伪色辅助观察亮度；切换伪色不会改变其他图表的分析数据。
 
 支持 Display P3／sRGB／BT.2020 对应的四种分析工作空间、100／203 nit 分析参考白、Blur 与显示 Gain。面板可以拖动分隔线调整布局，图表可缩放和平移；当前分析界面也可以保存或复制为一张图（也支持HDR）。
@@ -77,6 +79,8 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 <img src="docs/images/settings-general-20261101-124450.png" alt="SeriousShot 0.2.1 通用设置：登录时自动启动、截图快捷键、完成动作与输出设置" width="860">
 
 配置全局截图快捷键、按 Enter／双击选区时的完成动作、默认保存位置，以及 PNG 或 JPEG 输出。PNG 可选择 HDR 精度与参考白；选择 JPEG 时显示对应质量选项。Windows 设置页还提供“Win 10 截图亮度兼容”选项；设置修改后立即生效。
+
+界面支持简体中文和英文。未手动选择时，按系统显示语言决定：中文使用简体中文，其他语言使用英文。可用设置窗口右上角的 **中** 和 **EN** 保存语言偏好；点击旁边的重启提示并确认，程序重启后生效。
 
 “登录时自动启动”默认关闭。开启后，登录系统时在托盘或菜单栏运行，截图快捷键可直接使用；手动打开程序时显示设置。退出程序保留下次登录自启的设置。Windows 若已在系统中禁用此项，请在 Windows 设置的“启动”设置中将 SeriousShot 设为“开”，切回程序后会自动更新勾选状态。
 
@@ -92,7 +96,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### Windows 解压运行与更新
 
-下载 [0.2.1 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.1)，完整解压到一个可写目录，不要直接在压缩包中启动。
+下载 [0.2.2 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2)，完整解压到一个可写目录，不要直接在压缩包中启动。
 
 ### macOS 软件更新
 
@@ -100,7 +104,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### macOS 安装与首次使用
 
-下载 [0.2.1 的 macOS arm64 DMG](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.1)。
+下载 [0.2.2 的 macOS arm64 DMG](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2)。
 
 1. 打开下载的 **DMG**，把 **SeriousShot.app** 图标拖到 **Applications（应用程序）** 文件夹。
 2. 从“应用程序”启动 SeriousShot，设置截图快捷键与默认输出格式。不要直接从 DMG 中运行。

@@ -15,6 +15,12 @@ namespace hdrshot::update {
 Error failure(const char *reason, ErrorCode code, Retryability retry) {
   return {code, "update", retry, {{"reason", reason}}};
 }
+Error translated_failure(const char *reason, const char *message_id,
+                         ErrorCode code, Retryability retry) {
+  auto error = failure(reason, code, retry);
+  error.safe_context["update_ui_id"] = message_id;
+  return error;
+}
 Result<QJsonObject, Error> read_json(const QString &path) {
   QFile f(path);
   if (!f.exists())
@@ -201,13 +207,33 @@ std::optional<Error> install_result_error(const QJsonObject &result,const QStrin
      result["candidate"].toString().toStdString()!=c.key() || result["phase"]!="rolled_back")return {};
   const auto version=result["restored_version"].toString();
   if(!Version::parse(version.toStdString()))return {};
-  QString reason=QStringLiteral("安装过程被中断");
-  const auto raw=result["reason"].toString(),native=result["native_error"].toString();
-  if(raw=="replace_move")reason=QStringLiteral("无法替换应用文件，请关闭同目录程序并检查写入权限");
-  else if(raw=="startup_receipt_timeout")reason=QStringLiteral("新版本启动确认失败");
-  if(!native.isEmpty())reason+=QStringLiteral("（Windows 错误 %1）").arg(native);
-  auto error=failure("install_rolled_back",ErrorCode::path_not_writable,Retryability::after_user_action);
-  error.safe_context["reason"]=(QStringLiteral("更新失败，已恢复 %1。%2").arg(version,reason)).toStdString();
+  QString reason = QStringLiteral("安装过程被中断");
+  auto reason_id = /*% "Installation was interrupted" */ QT_TRID_NOOP(
+      "update.detail.rollback.interrupted");
+  const auto raw = result["reason"].toString(),
+             native = result["native_error"].toString();
+  if (raw == "replace_move") {
+    reason = QStringLiteral("无法替换应用文件，请关闭同目录程序并检查写入权限");
+    //% "Could not replace application files. Close other apps in this folder and check write permissions."
+    reason_id = QT_TRID_NOOP("update.detail.rollback.replace_failed");
+  } else if (raw == "startup_receipt_timeout") {
+    reason = QStringLiteral("新版本启动确认失败");
+    reason_id =
+        /*% "Could not confirm that the new version started" */ QT_TRID_NOOP(
+            "update.detail.rollback.startup_timeout");
+  }
+  if (!native.isEmpty())
+    reason += QStringLiteral("（Windows 错误 %1）").arg(native);
+  auto error = translated_failure(
+      "install_rolled_back",
+      /*% "Update failed. Restored %1. %2" */
+      QT_TRID_NOOP("update.detail.rollback.restored"),
+      ErrorCode::path_not_writable, Retryability::after_user_action);
+  error.safe_context["reason"] = QStringLiteral("更新失败，已恢复 %1。%2")
+                                     .arg(version, reason)
+                                     .toStdString();
+  error.safe_context["update_rollback_version"] = version.toStdString();
+  error.safe_context["update_rollback_reason_id"] = reason_id;
   if(!native.isEmpty())error.safe_context["native_error"]=native.toStdString();
   for (const auto *field : {"qt_file_error", "qt_error_string", "save_stage", "save_attempt",
                             "state_committed", "move_attempt"}) {
@@ -253,7 +279,10 @@ Result<bool, Error> Slot::acquire() {
   if (!lock->tryLock(0)) {
     lock.reset();
     return Result<bool, Error>::failure(
-        failure("另一实例正在更新", ErrorCode::precondition_failed));
+        translated_failure("另一实例正在更新",
+                           /*% "Another instance is updating" */
+                           QT_TRID_NOOP("update.detail.slot_locked"),
+                           ErrorCode::precondition_failed));
   }
   auto loaded = read_json(root + "/slot.json");
   if (!loaded) {
@@ -317,14 +346,25 @@ Result<bool, Error> Slot::recover() {
         process_alive(record["helper_pid"].toVariant().toLongLong(),
                       record["helper_creation"].toString()))
       return Result<bool, Error>::failure(
-          failure("安装事务仍在运行", ErrorCode::precondition_failed));
+          translated_failure("安装事务仍在运行",
+                             /*% "Installation is still running" */
+                             QT_TRID_NOOP("update.detail.install_in_progress"),
+                             ErrorCode::precondition_failed));
     // Even a durable terminal journal can precede native slot finalization.
     // The independent verifier/finalizer owns this handoff; missing evidence
     // is never equivalent to a successful install.
     const auto journal = record["journal"].toString();
     if (journal.isEmpty() || !QFileInfo::exists(journal))
-      return Result<bool, Error>::failure(failure("安装事务缺少恢复记录", ErrorCode::state_inconsistent));
-    return Result<bool, Error>::failure(failure("需要运行独立恢复工具", ErrorCode::state_inconsistent));
+      return Result<bool, Error>::failure(translated_failure(
+          "安装事务缺少恢复记录",
+          /*% "The recovery record for this installation is missing" */
+          QT_TRID_NOOP("update.detail.recovery_record_missing"),
+          ErrorCode::state_inconsistent));
+    return Result<bool, Error>::failure(translated_failure(
+        "需要运行独立恢复工具",
+        /*% "Run the standalone recovery tool" */
+        QT_TRID_NOOP("update.detail.standalone_recovery_required"),
+        ErrorCode::state_inconsistent));
   }
   if (phase == "downloading") {
     // Holding the operation lock proves the previous writer is dead; do not
@@ -344,8 +384,11 @@ Result<bool, Error> Slot::remove_payload() {
   if (!lock)
     return Result<bool, Error>::failure(failure("slot_unlocked"));
   if (record["phase"] == "manual_pending")
-    return Result<bool, Error>::failure(
-        failure("安装包仍已挂载，请完成安装或取消", ErrorCode::path_not_writable));
+    return Result<bool, Error>::failure(translated_failure(
+        "安装包仍已挂载，请完成安装或取消",
+        /*% "The installer is still mounted. Finish or cancel installation." */
+        QT_TRID_NOOP("update.detail.package_mounted"),
+        ErrorCode::path_not_writable));
   // Exact owned filenames only; all complete/partial variants count as the one
   // global slot.
   for (const auto &suffix : {QString(".part"), QString(".zip"), QString(".dmg")}) {
@@ -353,8 +396,11 @@ Result<bool, Error> Slot::remove_payload() {
     if (QFileInfo(path).isSymLink())
       return Result<bool, Error>::failure(failure("payload_symlink"));
     if (QFileInfo::exists(path) && !QFile::remove(path))
-      return Result<bool, Error>::failure(
-          failure("旧安装包清理失败", ErrorCode::path_not_writable));
+      return Result<bool, Error>::failure(translated_failure(
+          "旧安装包清理失败",
+          /*% "Could not remove the previous installer" */
+          QT_TRID_NOOP("update.detail.remove_previous_package_failed"),
+          ErrorCode::path_not_writable));
   }
   if (!durable_directory(root))
     return Result<bool, Error>::failure(failure("cleanup_durability"));
@@ -499,8 +545,11 @@ Result<bool, Error> cleanup_managed(const QString &root) {
       if (directory != expected || QFileInfo(directory).isSymLink())
         return Result<bool, Error>::failure(failure("cleanup_path"));
       if (QFileInfo::exists(directory) && !QDir(directory).removeRecursively())
-        return Result<bool, Error>::failure(
-            failure("受管更新文件清理失败，稍后重试", ErrorCode::path_not_writable));
+        return Result<bool, Error>::failure(translated_failure(
+            "受管更新文件清理失败，稍后重试",
+            /*% "Could not remove managed update files. Try again later." */
+            QT_TRID_NOOP("update.detail.managed_cleanup_failed"),
+            ErrorCode::path_not_writable));
       record[field] = "";
       auto saved = save_json(path, record);
       if (!saved)

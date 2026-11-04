@@ -20,8 +20,7 @@ public:
                                     std::function<void(std::uint64_t, std::uint64_t)>,
                                     std::function<void(Result<Receipt, Error>)>) = 0;
   virtual void cancel_download(Done) = 0;
-  virtual void persist_prompt(const std::string &, Done) = 0;
-  virtual bool was_prompted(const std::string &) const = 0;
+  virtual bool update_operation_active() const { return false; }
   virtual bool busy() const = 0;
   virtual void ask_install(const Candidate &, std::function<void(bool)>) = 0;
   virtual void install(const Candidate &, const Receipt &, Done) = 0;

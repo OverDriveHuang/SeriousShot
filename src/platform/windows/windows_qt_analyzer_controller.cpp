@@ -1,3 +1,4 @@
+#include <QScopeGuard>
 #include "platform/windows/windows_qt_analyzer_controller.hpp"
 #include "application/analysis_session.hpp"
 #include "application/analysis_workflow.hpp"
@@ -22,9 +23,9 @@ Error adapter_error(const char *reason) {
           {{"reason", reason}}};
 }
 QString readable_error(const Error &error) {
-  return QStringLiteral("%1：%2").arg(
-      QString::fromStdString(error.module),
-      QString::fromStdString(to_string(error.code)));
+  return qtTrId("analyzer.error.module_code")
+      .arg(QString::fromStdString(error.module),
+           QString::fromStdString(to_string(error.code)));
 }
 } // namespace
 struct WindowsQtAnalyzerController::Window {
@@ -82,6 +83,7 @@ void WindowsQtAnalyzerController::open(
   record_diagnostic_stage(diagnostics.get(), snapshot.session_id,
                           snapshot.operation_id, "analysis", "prepare",
                           "begin");
+  ++pending_preparations_;
   prepare_executor_.background([guard, gate, diagnostics,
                                 snapshot = std::move(snapshot),
                                 completed = std::move(completed)]() mutable {
@@ -142,6 +144,9 @@ void WindowsQtAnalyzerController::open(
     snapshot = {};
     gate->post([guard, result = std::move(result),
                 completed = std::move(completed)]() mutable {
+      const auto finish_preparation = qScopeGuard([guard] {
+        if (guard) --guard->pending_preparations_;
+      });
       if (!guard || guard->shutting_down_ || guard->closing_windows_) {
         completed(Result<bool, Error>::failure(adapter_error("shutting_down")));
         return;
@@ -330,8 +335,7 @@ void WindowsQtAnalyzerController::export_from(
       });
   if (!queued) {
     runtime->widget->set_export_busy(false);
-    runtime->widget->show_error(
-        QStringLiteral("分析图任务未能加入队列，请重试。"));
+    runtime->widget->show_error(qtTrId("analyzer.error.queue_analysis"));
   }
 }
 
@@ -360,7 +364,8 @@ void WindowsQtAnalyzerController::submit_export(
   if (!accepted && runtime->widget) {
     runtime->widget->set_export_busy(false);
     runtime->widget->show_error(
-        QStringLiteral("导出任务未能加入队列，请重试。"));
+        /*% "Could not queue the export. Try again." */ qtTrId(
+            "analyzer.error.queue_export"));
   }
 }
 

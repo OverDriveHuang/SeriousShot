@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "domain/analysis/engine.hpp"
 #include "domain/color/extended_p3_mapper.hpp"
 #include "test_support.hpp"
@@ -1029,7 +1030,7 @@ void close_dialog_stays_dark_with_light_and_dark_application_palettes() {
           HDRSHOT_CHECK(box);
           visited = true;
           HDRSHOT_CHECK(box->testOption(QMessageBox::Option::DontUseNativeDialog));
-          HDRSHOT_CHECK(box->defaultButton()->text() == QStringLiteral("结束分析 · Enter"));
+          HDRSHOT_CHECK(box->defaultButton()->text() == QStringLiteral("关闭分析 · Enter"));
           HDRSHOT_CHECK(box->escapeButton()->text() == QStringLiteral("继续分析 · Esc"));
           HDRSHOT_CHECK(box->escapeButton() != box->defaultButton());
           auto check_dark = [&] {
@@ -2967,6 +2968,42 @@ int main(int argc, char **argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" +
         QDir::current().relativeFilePath(platform_config.fileName()).toUtf8());
   QApplication app(argc, argv);
+  const bool english = app.arguments().contains("--english");
+  hdrshot::QtUiLanguageRuntime language;
+  const auto locale = english ? hdrshot::UiLanguage::english
+                              : hdrshot::UiLanguage::simplified_chinese;
+  const auto initialized = language.initialize(app, locale, {});
+  if (!initialized || initialized.value().active_language != locale)
+    qFatal("Unable to initialize the requested test translations");
+  const auto localized_counts = [english] {
+    Fixture f;
+    auto *status = child<QLabel>(f.window, "analyzerStatus");
+    HDRSHOT_CHECK(f.window.windowTitle() ==
+                  (english ? "SeriousShot · Image Analysis" : "SeriousShot · 图像分析"));
+    HDRSHOT_CHECK(status->isHidden());
+    constexpr std::uint64_t wide_count = 4294967297;
+    const auto accept_count = [&](std::uint64_t count) {
+      auto result = std::make_shared<analysis::ResultData>(*f.last_result);
+      result->invalid_count = count;
+      f.window.accept_result(result);
+    };
+    accept_count(1);
+    HDRSHOT_CHECK(!status->isHidden());
+    HDRSHOT_CHECK(status->text() == (english ? "Non-finite sample excluded: 1"
+                                            : "1 个非有限样本未参与分析"));
+    accept_count(wide_count);
+    const QString expected = english ? "Non-finite samples excluded: 4294967297"
+                                     : "4294967297 个非有限样本未参与分析";
+    HDRSHOT_CHECK(status->text() == expected);
+    f.window.show_display_error("fixture native error");
+    f.window.clear_display_error();
+    HDRSHOT_CHECK(status->text() == expected);
+    accept_count(0);
+    HDRSHOT_CHECK(status->isHidden());
+  };
+  if (english)
+    return hdrshot::test::run({{"English analyzer title and wide sample counts", localized_counts}});
+
   app.setFont(QFont("Arial", 10));
 #ifdef __APPLE__
   if((qEnvironmentVariableIsSet("HDRSHOT_ANALYZER_PRESS_NATIVE") ||
@@ -3010,7 +3047,8 @@ int main(int argc, char **argv) {
          {"danger palette matches linear Display P3 reference",
           danger_palette_matches_linear_display_p3_reference}});
   return hdrshot::test::run(
-      {{"global defaults initialize real windows and local toggles stay independent", global_defaults_enter_real_windows_without_local_writeback},
+      {{"Chinese analyzer title and wide sample counts", localized_counts},
+       {"global defaults initialize real windows and local toggles stay independent", global_defaults_enter_real_windows_without_local_writeback},
        {"new source defaults and safe preference restore",
         new_inputs_and_preferences},
        {"bounded three-size eight-visibility layout",

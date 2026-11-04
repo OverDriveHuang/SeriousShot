@@ -1,6 +1,6 @@
 # 从源码构建 SeriousShot
 
-最后更新：2026-10-29 13:15:32 CST
+最后更新：2026-11-04 13:18:48 CST
 
 [返回产品介绍](../README.md)
 
@@ -22,6 +22,8 @@ python3 scripts/build-macos.py
 
 不启用 Qt 宿主可使用 `mac-release` preset。原生和图形测试有相应环境要求；固定PQ图片的libuhdr误差专项按已验证输入决定是否运行；需要执行时路径未配置或不可读会报告未完成。macOS 15.5 外接 HDR 截图不受支持，详见首页系统支持。
 
+Qt 图形构建需要同一套 6.11.2 SDK 的 LinguistTools 和 Qt Translations。`bootstrap_macos_dependencies.sh` 会运行 `lupdate -version`、`lrelease -version`，并检查 `qtbase_en.qm` 和 `qtbase_zh_CN.qm`。旧的裁剪 SDK 可能缺少 `QtQml.framework`，脚本会从同版、同架构 Qt 官方 `qtdeclarative` 归档补齐该框架。使用其他 SDK 路径时，也可按 Qt 官方发布元数据校验同版归档并保留框架符号链接，在独立构建目录用 `-DCMAKE_PREFIX_PATH=<SDK>` 配置。QtQml 是这里的构建工具依赖，SeriousShot 应用不使用 QML。
+
 ## Windows
 
 需要 Windows 11、MSVC x64 / Windows SDK、CMake、Ninja 和 Qt 6.11.2。需要 Python 3.9 或更高版本；Qt 安装脚本还需要 requests 与 py7zr。将 zlib 1.3.1 的源码和安装结果分别准备至 `.build-tools/zlib/src` 与 `.build-tools/zlib/install`，或按本机环境调整 preset 的 `ZLIB_ROOT`。
@@ -31,6 +33,8 @@ python3 scripts/build-macos.py
 python scripts/install-windows-qt.py
 ./scripts/build-windows.ps1
 ```
+
+图形构建需要 SDK 中的 `lupdate.exe`、`lrelease.exe` 及 `translations/qtbase_{en,zh_CN}.qm`。安装脚本会从 Qt 官方同版 MSVC x64 SDK 安装 Qt Declarative 构建工具依赖，运行两个工具的 `-version` 并检查标准文案目录。使用自备 SDK 时，工具、DLL 和翻译目录也需来自同一 Qt 版本。
 
 Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR 颜色处理。Windows 10 21H2 在同时启用 scRGB gain=0.5 与“HDR 捕获不使用 SDRWhiteLevel 归一化”的已测条件下，HDR 和 Legacy 广色域截图均未发现问题；完整条件见首页实测矩阵。Windows 更新器已验证 89 个原生事务场景，包括真实进程退出、原目录替换、文件占用、回滚和中断恢复；本机 66 个 CTest 用例通过。隔离 testing 构建可显式开启原生自动覆盖，最终用户安装试用仍需按测试包操作验证。部分 Windows 10 环境截图偏亮或发浅时，可尝试开启设置中的“Windows 10 截图亮度兼容”。总开关默认关闭，全选时启用 scRGB gain 和“HDR 捕获不使用 SDRWhiteLevel 归一化”两个独立子项，只启用其一时显示半选；scRGB gain 可编辑，预设 0.5，仅启用该子项后生效。应按实际截图结果判断是否开启，不能推断所有 Windows 10 都需要调整。已测试的 Windows 11 环境未见上述现象。
 
@@ -51,6 +55,12 @@ Windows 已接入原生分析器、命令行截图，以及 Legacy／ACM／HDR �
 更新器构建选项：正式渠道使用 `HDRSHOT_UPDATE_CHANNEL=stable` 与正式 `HDRSHOT_UPDATE_PUBLIC_KEY`、`HDRSHOT_UPDATE_KEY_ID`；测试渠道须显式启用 `HDRSHOT_UPDATE_TESTING` 并配置独立测试公钥。私钥不得编入客户端。`HDRSHOT_WINDOWS_UPDATE_NATIVE_VALIDATED` 默认关闭，只有完成 Windows 原生更新事务验收后才启用自动覆盖；macOS 当前使用 DMG 安装路径。Windows 构建脚本已调用更新依赖准备脚本。
 
 更新清单签名、版本规则及平台启用条件见 [软件更新协议](UPDATES.md)。
+
+## 界面翻译
+
+中英应用文案在 `src/ui/qt/i18n/seriousshot_zh_CN.ts` 和 `seriousshot_en.ts`。图形构建把它们和同版 Qt 标准控件文案合并，嵌入可执行文件。常规构建不会改写 TS。
+
+新增界面文案时，使用语义稳定的 ID、`qtTrId` 和 `//%` 源文案；表驱动的 ID 用 `QT_TRID_NOOP` 声明。新增翻译源码也要加入 `cmake/ui_language_sources.txt`，让 macOS 和 Windows 提取同一份目录。显式运行 `cmake --build <构建目录> --target hdrshot_i18n_lupdate` 后，更新两份 TS 的译文，保持参数占位符，最后运行 `ctest --test-dir <构建目录> -R 'hdrshot_ui_(language_tests|catalog_check)'`。也可直接运行 `python3 scripts/check-ui-catalogs.py --lupdate <SDK中的lupdate路径>`，在临时目录重新提取并核对完整性。
 
 ## 默认测试范围
 

@@ -9,9 +9,62 @@
 #include <QUrl>
 #include <QVBoxLayout>
 namespace hdrshot::update {
+namespace {
+QString localized_detail(const View &view) {
+  auto detail = QString::fromStdString(view.detail);
+  for (std::size_t i = 0; i < view.manual_open_count; ++i)
+    detail.remove(0, QStringLiteral("安装包已打开。\n").size());
+  switch (view.detail_kind) {
+  case DetailKind::up_to_date:
+    detail = /*% "Up to date" */ qtTrId("update.detail.up_to_date");
+    break;
+  case DetailKind::incompatible:
+    if (view.candidate)
+      detail = /*% "Version %1 requires a newer OS" */ qtTrId(
+                   "update.detail.incompatible")
+                   .arg(QString::fromStdString(view.candidate->version.text()));
+    break;
+  case DetailKind::download_canceled:
+    detail =
+        /*% "Download canceled" */ qtTrId("update.detail.download_canceled");
+    break;
+  case DetailKind::cancel_cleanup_failed:
+    detail = /*% "Could not remove the installer" */ qtTrId(
+        "update.detail.cancel_cleanup_failed");
+    break;
+  case DetailKind::literal:
+    break;
+  }
+  if (view.detail_error) {
+    const auto &context = view.detail_error->safe_context;
+    const auto message = context.find("update_ui_id");
+    if (message != context.end()) {
+      detail = qtTrId(message->second.c_str());
+      const auto rollback_version = context.find("update_rollback_version");
+      const auto rollback_reason = context.find("update_rollback_reason_id");
+      if (rollback_version != context.end() &&
+          rollback_reason != context.end()) {
+        auto reason = qtTrId(rollback_reason->second.c_str());
+        const auto native_error = context.find("native_error");
+        if (native_error != context.end())
+          reason += /*% " (Windows error %1)" */ qtTrId(
+                        "update.detail.rollback.native_error")
+                        .arg(QString::fromStdString(native_error->second));
+        detail = detail.arg(QString::fromStdString(rollback_version->second),
+                            reason);
+      }
+    }
+  }
+  for (std::size_t i = 0; i < view.manual_open_count; ++i)
+    detail =
+        /*% "Installer opened.\n%1" */ qtTrId("update.detail.package_opened")
+            .arg(detail);
+  return detail;
+}
+} // namespace
 UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   setObjectName("softwareUpdateWindow");
-  setWindowTitle(QStringLiteral("软件更新"));
+  setWindowTitle(/*% "Software Update" */ qtTrId("update.title"));
   setMinimumSize(400, 300);
   resize(440, 320);
   auto *root = new QVBoxLayout(this);
@@ -45,7 +98,8 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
   root->addStretch();
   auto *release_row = new QHBoxLayout;
   release_row->addStretch();
-  releases_ = new QPushButton(QStringLiteral("查看发布说明 ↗"), this);
+  releases_ = new QPushButton(
+      /*% "Release Notes ↗" */ qtTrId("update.release_notes"), this);
   releases_->setObjectName("openReleasesButton");
   releases_->setFlat(true);
   release_row->addWidget(releases_);
@@ -59,7 +113,9 @@ UpdateWindow::UpdateWindow(QWidget *parent) : QWidget(parent, Qt::Window) {
                              QString::fromStdString(view_.candidate->release_tag)
                        : QString("https://github.com/OverDriveHuang/SeriousShot/releases"));
     if (!(release_opener_ ? release_opener_(url) : QDesktopServices::openUrl(url))) {
-      detail_->setText(QStringLiteral("无法打开浏览器，请稍后重试。"));
+      detail_->setText(
+          /*% "Could not open the browser. Try again in a moment." */ qtTrId(
+              "update.browser_error"));
       detail_->show();
     }
   });
@@ -112,7 +168,9 @@ void UpdateWindow::set_view(const View &view) {
   view_ = view;
   const bool failed = view.phase == Phase::check_failed || view.phase == Phase::download_failed ||
                       view.phase == Phase::cleanup_blocked || view.error.has_value();
-  releases_->setText(failed ? QStringLiteral("前往官网下载 ↗") : QStringLiteral("查看发布说明 ↗"));
+  releases_->setText(
+      failed ? /*% "Download Manually ↗" */ qtTrId("update.download_manually")
+             : qtTrId("update.release_notes"));
   const auto version =
       view.candidate ? QString::fromStdString(view.candidate->version.text()) : QString();
   heading_->setText(version.isEmpty() ? QStringLiteral("SeriousShot")
@@ -120,101 +178,121 @@ void UpdateWindow::set_view(const View &view) {
   QString status, detail, action;
   bool enabled = true;
   progress_->hide();
-  secondary_->setText(QStringLiteral("关闭"));
+  secondary_->setText(/*% "Close" */ qtTrId("update.close"));
   switch (view.phase) {
   case Phase::idle:
-    status =
-        view.detail.empty() ? QStringLiteral("尚未检查更新") : QString::fromStdString(view.detail);
-    action = QStringLiteral("检查更新");
+    status = view.detail.empty()
+                 ? /*% "Not checked yet" */ qtTrId("update.not_checked")
+                 : localized_detail(view);
+    action = /*% "Check for Updates" */ qtTrId("update.check_now");
     break;
   case Phase::checking:
-    status = QStringLiteral("正在检查更新…（%1/3）").arg(view.attempts);
+    status = /*% "Checking for updates… (%1/3)" */ qtTrId("update.checking")
+                 .arg(view.attempts);
     enabled = false;
     break;
   case Phase::retry_wait:
-    status = QStringLiteral("正在等待重试…");
+    status = /*% "Waiting to retry…" */ qtTrId("update.waiting_retry");
     enabled = false;
     break;
   case Phase::cleaning:
-    status = QStringLiteral("正在准备更新下载…");
+    status = /*% "Preparing download…" */ qtTrId("update.preparing_download");
     enabled = false;
     break;
   case Phase::downloading: {
     const auto percent = view.total ? static_cast<int>(view.received * 100 / view.total) : 0;
-    status = QStringLiteral("正在下载更新 · %1%").arg(percent);
+    status =
+        /*% "Downloading update · %1%" */ qtTrId("update.download_progress")
+            .arg(percent);
     progress_->setValue(percent);
     progress_->show();
-    detail = QStringLiteral("关闭此窗口后下载不会停止。");
-    action = QStringLiteral("取消下载");
+    detail = /*% "The download continues after this window closes." */ qtTrId(
+        "update.download_continues");
+    action = /*% "Cancel Download" */ qtTrId("update.cancel_download");
     break;
   }
   case Phase::verifying:
-    status = QStringLiteral("正在校验更新…");
+    status = /*% "Verifying update…" */ qtTrId("update.verifying");
     enabled = false;
     break;
   case Phase::ready:
   case Phase::deferred:
   case Phase::manual_pending:
-    status = QStringLiteral("新版本已下载，是否安装？");
-    secondary_->setText(QStringLiteral("稍后"));
-    action = QStringLiteral("安装");
+    status = /*% "Install the downloaded update?" */ qtTrId(
+        "update.install_question");
+    secondary_->setText(/*% "Later" */ qtTrId("update.later"));
+    action = /*% "Install" */ qtTrId("update.install");
     enabled = !view.busy;
     if (view.error) {
-      status = view.error->code == ErrorCode::operation_cancelled ? QStringLiteral("安装已取消")
-                                                                  : QStringLiteral("安装未完成");
-      detail = QString::fromStdString(view.detail);
+      status =
+          view.error->code == ErrorCode::operation_cancelled
+              ? /*% "Installation canceled" */ qtTrId("update.install_canceled")
+              : /*% "Installation incomplete" */ qtTrId(
+                    "update.install_incomplete");
+      detail = localized_detail(view);
       const auto manual=view.error->safe_context.find("manual_install_required");
       if(manual!=view.error->safe_context.end() && manual->second=="true") {
-        action=QStringLiteral("打开安装包");
-        detail+=QStringLiteral("\n打开安装包后，从托盘退出 SeriousShot，将 ZIP 内全部文件解压覆盖到下面的当前文件夹，再运行 SeriousShot.exe：");
+        action = /*% "Open Package" */ qtTrId("update.open_package");
+        detail +=
+            //% "\nOpen the package, quit SeriousShot from the tray, then extract all ZIP files into the current folder below, replacing existing files. Run SeriousShot.exe when finished:"
+            qtTrId("update.windows.manual_instructions");
         const auto directory=view.error->safe_context.find("install_directory");
         if(directory!=view.error->safe_context.end())detail+="\n"+QString::fromStdString(directory->second);
       }
     } else if (view.busy) {
-      status = QStringLiteral("新版本已下载");
-      detail = QStringLiteral("当前工作结束后询问是否安装。");
+      status = /*% "Update downloaded" */ qtTrId("update.downloaded");
+      //% "SeriousShot will ask to install once your current task is complete."
+      detail = qtTrId("update.wait_current_task");
     }
     break;
   case Phase::preparing:
-    status = QStringLiteral("正在检查安装条件…");
+    status = /*% "Checking install requirements…" */ qtTrId(
+        "update.preparing_install");
     enabled = false;
     break;
   case Phase::installing:
-    status = QStringLiteral("正在安装并重启…");
+    status = /*% "Installing and restarting…" */ qtTrId("update.installing");
     enabled = false;
     break;
   case Phase::check_failed:
-    status = QStringLiteral("检查更新失败：%1").arg(QString::fromStdString(view.detail));
-    action = QStringLiteral("重试");
+    status = /*% "Update check failed: %1" */ qtTrId("update.check_failed")
+                 .arg(localized_detail(view));
+    action = /*% "Retry" */ qtTrId("update.retry");
     break;
   case Phase::download_failed:
-    status = QStringLiteral("下载失败：%1").arg(QString::fromStdString(view.detail));
-    action = QStringLiteral("重试");
+    status = /*% "Download failed: %1" */ qtTrId("update.download_failed")
+                 .arg(localized_detail(view));
+    action = qtTrId("update.retry");
     break;
   case Phase::cleanup_blocked:
-    status = QStringLiteral("更新暂缓：%1").arg(QString::fromStdString(view.detail));
-    action = QStringLiteral("重试");
+    status = /*% "Update deferred: %1" */ qtTrId("update.deferred")
+                 .arg(localized_detail(view));
+    action = qtTrId("update.retry");
     break;
   case Phase::recovery_required:
-    status = QStringLiteral("更新需要恢复：%1").arg(QString::fromStdString(view.detail));
+    status =
+        /*% "Update recovery required: %1" */ qtTrId("update.recovery_required")
+            .arg(localized_detail(view));
     enabled = false;
     break;
   }
   if (view.phase == Phase::check_failed || view.phase == Phase::download_failed ||
-      view.phase == Phase::cleanup_blocked)
-    detail = QStringLiteral("当前程序可以继续使用。请重试，或点击“前往官网下载”手动下载。");
+      view.phase == Phase::cleanup_blocked) {
+    //% "You can continue using SeriousShot. Retry or choose “Download Manually”."
+    detail = qtTrId("update.can_continue");
+  }
   status_->setText(status);
   detail_->setText(detail);
   detail_->setVisible(!detail.isEmpty());
   QString times;
   if (view.last_check > 0)
-    times = QStringLiteral("最近检查：%1")
+    times = /*% "Last checked: %1" */ qtTrId("update.last_check")
                 .arg(QDateTime::fromSecsSinceEpoch(view.last_check)
                          .toLocalTime()
                          .toString(QStringLiteral("MM-dd HH:mm")));
   if (view.last_success > 0)
     times += (times.isEmpty() ? QString() : QStringLiteral("\n")) +
-             QStringLiteral("最近成功：%1")
+             /*% "Last successful check: %1" */ qtTrId("update.last_success")
                  .arg(QDateTime::fromSecsSinceEpoch(view.last_success)
                           .toLocalTime()
                           .toString(QStringLiteral("MM-dd HH:mm")));

@@ -11,6 +11,11 @@
 namespace hdrshot::update {
 Error failure(const char *reason, ErrorCode code = ErrorCode::state_inconsistent,
               Retryability retry = Retryability::never);
+// The diagnostic reason is stable for logs and recovery. The ID is for the UI
+// only.
+Error translated_failure(const char *reason, const char *message_id,
+                         ErrorCode code = ErrorCode::state_inconsistent,
+                         Retryability retry = Retryability::never);
 Result<QJsonObject, Error> read_json(const QString &);
 Result<bool, Error> save_json(const QString &, const QJsonObject &);
 #ifdef Q_OS_WIN

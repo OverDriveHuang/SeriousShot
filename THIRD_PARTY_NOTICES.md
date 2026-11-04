@@ -1,6 +1,6 @@
 # Third-party notices
 
-最后更新：2026-10-31 19:55:11 CST
+最后更新：2026-11-05 00:55:19 CST
 
 SeriousShot currently uses the following third-party components.
 Release bundles must include this notice and the referenced license texts.
@@ -23,6 +23,15 @@ list is not a substitute for the full notices of the exact binaries shipped.
   obligations; dynamic linkage alone is not a compliance claim.
 - FreeType is available under the FreeType License or GPLv2; retain the
   applicable license/attribution from the SDK. See [FreeType licenses](https://freetype.org/license.html).
+
+## Qt Translations
+
+SeriousShot embeds the `qtbase_en.qm` and `qtbase_zh_CN.qm` catalogs from
+[Qt Translations 6.11.2](https://github.com/qt/qttranslations/tree/v6.11.2)
+into its application resources. These catalogs are distributed under
+BSD-3-Clause. The copyright notice and full terms are included in each
+release bundle as `licenses/Qt-Translations-BSD-3-Clause.txt` and in the source
+tree at [assets/licenses/Qt-Translations-BSD-3-Clause.txt](assets/licenses/Qt-Translations-BSD-3-Clause.txt).
 
 ## zlib
 

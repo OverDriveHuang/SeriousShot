@@ -87,8 +87,11 @@ public:
     setIcon(QIcon(symbol));
     analyzer_control_style::set_icon_button(this);
     setObjectName("analyzerSwatchPairHandle" + QString::number(id));
-    setAccessibleName("配对色样 #" + QString::number(id));
-    setToolTip("Δ 配对：拖动或点击，再选择目标 Δ");
+    setAccessibleName(
+        /*% "Pair swatch #%1" */ qtTrId("analyzer.swatch.pair_accessibility")
+            .arg(id));
+    setToolTip(/*% "Pair Δ: drag or click, then choose the target Δ" */ qtTrId(
+        "analyzer.swatch.pairing_hint"));
     setCursor(Qt::CrossCursor);
     setFocusPolicy(Qt::StrongFocus);
     connect(this, &QToolButton::clicked, this, [this] {
@@ -536,7 +539,9 @@ void AnalyzerSwatchPanel::rebuild() {
     auto *copy = new analyzer_control_style::PressToolButton(header);
     copy->setObjectName("analyzerCopySwatch" + QString::number(sample.id));
     copy->setIcon(copy_icon_);
-    copy->setToolTip("复制色样 #" + QString::number(sample.id) + " 的读数");
+    copy->setToolTip(/*% "Copy readings for swatch #%1" */ qtTrId(
+                         "analyzer.swatch.copy_readings")
+                         .arg(sample.id));
     copy->setAccessibleName(copy->toolTip());
     analyzer_control_style::set_icon_button(copy);
     row->addWidget(copy, 0, Qt::AlignVCenter);
@@ -580,8 +585,12 @@ void AnalyzerSwatchPanel::rebuild() {
     auto *remove = new analyzer_control_style::PressToolButton(header);
     remove->setObjectName("analyzerRemoveSwatch" + QString::number(sample.id));
     remove->setIcon(analyzer_control_style::danger_glyph(false));
-    remove->setToolTip("删除色样 #" + QString::number(sample.id));
-    remove->setAccessibleName("删除色样 " + QString::number(sample.id));
+    remove->setToolTip(
+        /*% "Delete swatch #%1" */ qtTrId("analyzer.swatch.delete_tooltip")
+            .arg(sample.id));
+    remove->setAccessibleName(
+        /*% "Delete swatch %1" */ qtTrId("analyzer.swatch.delete_accessibility")
+            .arg(sample.id));
     analyzer_control_style::set_icon_button(remove, true);
     row->addWidget(remove, 0, Qt::AlignVCenter);
     const auto id = sample.id;
@@ -614,8 +623,10 @@ void AnalyzerSwatchPanel::rebuild() {
       pair_row->setObjectName("analyzerSwatchPairRow" + pair_key(evaluation.pair));
       pair_row->setProperty("pairSource", QVariant::fromValue<qulonglong>(evaluation.pair.source_id));
       pair_row->setProperty("pairTarget", QVariant::fromValue<qulonglong>(evaluation.pair.target_id));
-      pair_row->setAccessibleName("配对色样 #" + QString::number(evaluation.pair.source_id) +
-                                  " 与 #" + QString::number(evaluation.pair.target_id));
+      pair_row->setAccessibleName(/*% "Pair swatches #%1 and #%2" */ qtTrId(
+                                      "analyzer.swatch.pair_row_accessibility")
+                                      .arg(evaluation.pair.source_id)
+                                      .arg(evaluation.pair.target_id));
       pair_row->setProperty("swatchPairRow", true);
       pair_row->setStyleSheet("QFrame[swatchPairRow=\"true\"]"
                               "{border:0;background:#202328;}");
@@ -633,8 +644,12 @@ void AnalyzerSwatchPanel::rebuild() {
                                  color_of(evaluation.source_color), endpoints);
       auto *color_b = color_chip("analyzerPairColorB_" + suffix,
                                  color_of(evaluation.target_color), endpoints);
-      color_a->setAccessibleName("配对色样 #" + QString::number(evaluation.pair.source_id) + " 颜色");
-      color_b->setAccessibleName("配对色样 #" + QString::number(evaluation.pair.target_id) + " 颜色");
+      color_a->setAccessibleName(/*% "Color of paired swatch #%1" */ qtTrId(
+                                     "analyzer.swatch.pair_color_accessibility")
+                                     .arg(evaluation.pair.source_id));
+      color_b->setAccessibleName(
+          qtTrId("analyzer.swatch.pair_color_accessibility")
+              .arg(evaluation.pair.target_id));
       endpoint_layout->addWidget(color_a);
       endpoint_layout->addWidget(new QLabel("#" + QString::number(evaluation.pair.source_id), endpoints));
       endpoint_layout->addWidget(new QLabel("↔", endpoints));
@@ -649,10 +664,14 @@ void AnalyzerSwatchPanel::rebuild() {
       auto *value = new QLabel(evaluation.value ? QString::number(*evaluation.value, 'f', 2) : "—", pair_row);
       value->setObjectName("analyzerSwatchPairValue" + suffix);
       value->setToolTip(evaluation.state == analysis::PairState::pending
-                            ? "配对结果等待当前采样完成"
-                            : evaluation.state == analysis::PairState::unavailable
-                                ? "配对样本无有效值"
-                                : evaluation.metric == analysis::PairMetric::itp ? "ΔE_ITP" : "ΔE00");
+                            ? /*% "Waiting for current samples" */ qtTrId(
+                                  "analyzer.swatch.pair_waiting")
+                        : evaluation.state == analysis::PairState::unavailable
+                            ? /*% "No valid paired samples" */ qtTrId(
+                                  "analyzer.swatch.pair_invalid")
+                        : evaluation.metric == analysis::PairMetric::itp
+                            ? "ΔE_ITP"
+                            : "ΔE00");
       auto *metric = new QLabel(evaluation.metric == analysis::PairMetric::itp ? "ΔE_ITP" : "ΔE00", result_line);
       metric->setObjectName("analyzerSwatchPairMetric" + suffix);
       auto *separator = new QLabel("│", result_line);
@@ -666,9 +685,11 @@ void AnalyzerSwatchPanel::rebuild() {
       unlink->setIcon(unlink_icon());
       unlink->setIconSize(QSize(16, 16));
       unlink->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-      unlink->setText("解除");
-      unlink->setToolTip("解除 #" + QString::number(evaluation.pair.source_id) +
-                         " ↔ #" + QString::number(evaluation.pair.target_id));
+      unlink->setText(/*% "Unlink" */ qtTrId("analyzer.swatch.unlink"));
+      unlink->setToolTip(
+          /*% "Unlink #%1 from #%2" */ qtTrId("analyzer.swatch.unlink_tooltip")
+              .arg(evaluation.pair.source_id)
+              .arg(evaluation.pair.target_id));
       unlink->setAccessibleName(unlink->toolTip());
       analyzer_control_style::set_danger_text_button(unlink);
       result_layout->addWidget(unlink);
@@ -774,10 +795,12 @@ void AnalyzerSwatchPanel::update_existing() {
     if (auto *value = row->findChild<QLabel *>("analyzerSwatchPairValue" + suffix)) {
       value->setText(evaluation.value ? QString::number(*evaluation.value, 'f', 2) : "—");
       value->setToolTip(evaluation.state == analysis::PairState::pending
-                            ? "配对结果等待当前采样完成"
-                            : evaluation.state == analysis::PairState::unavailable
-                                ? "配对样本无有效值"
-                                : evaluation.metric == analysis::PairMetric::itp ? "ΔE_ITP" : "ΔE00");
+                            ? qtTrId("analyzer.swatch.pair_waiting")
+                        : evaluation.state == analysis::PairState::unavailable
+                            ? qtTrId("analyzer.swatch.pair_invalid")
+                        : evaluation.metric == analysis::PairMetric::itp
+                            ? "ΔE_ITP"
+                            : "ΔE00");
     }
     if (auto *metric = row->findChild<QLabel *>("analyzerSwatchPairMetric" + suffix))
       metric->setText(evaluation.metric == analysis::PairMetric::itp ? "ΔE_ITP" : "ΔE00");

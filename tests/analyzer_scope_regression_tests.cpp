@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "ui/qt/analyzer_scope_plot.hpp"
 #include "domain/analysis/math.hpp"
 #include "domain/analysis/gamut_boundary.hpp"
@@ -676,6 +677,13 @@ void picker_colored_gain_is_four_times_user_gain_without_overdraw() {
 int main(int argc, char **argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication app(argc, argv);
+  hdrshot::QtUiLanguageRuntime language;
+  const auto locale = false ? hdrshot::UiLanguage::english
+                              : hdrshot::UiLanguage::simplified_chinese;
+  const auto initialized = language.initialize(app, locale, {});
+  if (!initialized || initialized.value().active_language != locale)
+    qFatal("Unable to initialize the requested test translations");
+
   app.setFont(QFont("Arial", 10));
   return hdrshot::test::run({
       {"major ticks suppress colliding subdivisions", tick_collision},

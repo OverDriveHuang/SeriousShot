@@ -5,6 +5,7 @@
 #include "core/build_metadata.hpp"
 #include "platform/qt/qt_session_diagnostics_port.hpp"
 #include "platform/qt/qt_settings_store_port.hpp"
+#include "platform/qt/update/application_paths.hpp"
 #include "platform/windows/windows_capture.hpp"
 #include "platform/windows/windows_d3d_export.hpp"
 #include "platform/windows/windows_qt_ports.hpp"
@@ -86,22 +87,22 @@ Result<T, Error> wait_for_capture(QApplication &app, Start start,
 } // namespace
 
 int run_windows_capture_cli(QApplication &app, const CaptureCommand &command) {
-  QtSettingsStorePort settings_store(
+  const auto paths = update::application_paths(
+      QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation),
       QDir(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
-          .filePath(QStringLiteral("settings.ini"))
-          .toStdString(),
-      "Control+Shift+2",
+          .filePath(QStringLiteral("settings.ini")),
       QDir(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation))
-          .filePath(QStringLiteral("SeriousShot"))
-          .toStdString());
+          .filePath(QStringLiteral("SeriousShot")),
+      update::compiled_trust());
+  QtSettingsStorePort settings_store(
+      paths.config.toStdString(),
+      "Control+Shift+2",
+      paths.pictures.toStdString());
   auto settings = settings_store.load();
   if (!settings)
     return failed(settings.error());
   auto log = std::make_shared<QtSessionDiagnosticsPort>(
-      QDir(QStandardPaths::writableLocation(
-               QStandardPaths::AppLocalDataLocation))
-          .filePath("logs")
-          .toStdString());
+      QDir(paths.data).filePath(QStringLiteral("logs")).toStdString());
   (void)log->start(std::string(build_timestamp()), "Windows");
   log->set_detailed_logging(settings.value().detailed_logging);
   record_diagnostic_stage(log.get(), SessionId{1}, OperationId{1}, "trigger",

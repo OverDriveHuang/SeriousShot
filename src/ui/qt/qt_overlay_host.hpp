@@ -1,4 +1,6 @@
 #pragma once
+
+#include <QCoreApplication>
 #include "application/capture_session.hpp"
 #include "application/magnifier_sampler.hpp"
 #include "application/async_clean_content_cache.hpp"
@@ -267,7 +269,8 @@ class QtOverlayHost final : public QWidget {
       }
       if (command == hdrshot::UiCommand::analyze ? !analysis_requested_ :
           command == hdrshot::UiCommand::pin_screenshot ? !pin_requested_ : !export_requested_) {
-        editor_->show_status(QStringLiteral("导出服务尚未就绪"), true);
+        //% "Export is not ready."
+        editor_->show_status(qtTrId("capture.export.unavailable"), true);
         return;
       }
 
@@ -282,14 +285,16 @@ class QtOverlayHost final : public QWidget {
           clean_content_, annotation_document_.revision};
       if (async_clean_cache_ && annotation_render_plan_) {
         exporting_ = true; hide_magnifier(); editor_->setEnabled(false);
-        editor_->show_status(QStringLiteral("正在准备图像…"), false);
+        //% "Preparing image…"
+        editor_->show_status(qtTrId("capture.export.preparing"), false);
         const QPointer<QtOverlayHost> guard(this);
         async_clean_cache_->exact(frozen_desktop_, target_display_id_, annotation_render_plan_,
             [guard, command, snapshot=std::move(snapshot)](auto result) mutable {
           if (!guard || !guard->capture_active_ || guard->session_id_ != snapshot.session_id || guard->frozen_desktop_ != snapshot.frozen_desktop) return;
           if (!result) {
             guard->exporting_ = false; guard->editor_->setEnabled(true);
-            guard->editor_->show_status(QStringLiteral("标注合成失败，编辑内容已保留"), true);
+            //% "Failed to render annotations. Your edits were kept."
+            guard->editor_->show_status(qtTrId("capture.export.annotation_failed"), true);
             record_diagnostic_failure(guard->diagnostics_.get(), "overlay.clean_content", result.error());
             return;
           }
@@ -428,14 +433,22 @@ class QtOverlayHost final : public QWidget {
       if (command == hdrshot::UiCommand::analyze || command == hdrshot::UiCommand::pin_screenshot) {
         const bool pin = command == hdrshot::UiCommand::pin_screenshot;
         editor_->setEnabled(false);
-        editor_->show_status(pin ? QStringLiteral("正在准备贴图…") : QStringLiteral("正在准备分析…"), false);
+        editor_->show_status(pin ?
+            //% "Preparing pinned window…"
+            qtTrId("capture.export.preparing_pin") :
+            //% "Preparing analysis…"
+            qtTrId("capture.export.preparing_analysis"), false);
         (pin ? pin_requested_ : analysis_requested_)(std::move(snapshot),
             [guard, pin](Result<bool, Error> result) {
               if (!guard) return;
               guard->exporting_ = false;
               if (result && result.value()) { guard->finish_capture(); return; }
               guard->editor_->setEnabled(true);
-              guard->editor_->show_status(pin ? QStringLiteral("贴图准备失败，选区和标注已保留") : QStringLiteral("分析准备失败，选区和标注已保留"), true);
+              guard->editor_->show_status(pin ?
+                  //% "Could not prepare the pinned window. Selection and annotations were kept."
+                  qtTrId("capture.export.pin_failed") :
+                  //% "Could not prepare analysis. Selection and annotations were kept."
+                  qtTrId("capture.export.analysis_failed"), true);
               if (!result) record_diagnostic_failure(guard->diagnostics_.get(), pin ? "pin.prepare" : "analysis.prepare", result.error());
             });
         return;
@@ -613,7 +626,8 @@ class QtOverlayHost final : public QWidget {
       print_overlay_error(exported.error());
       if (editor_ != nullptr) {
         editor_->show_status(
-            QStringLiteral("导出失败：%1；当前编辑内容已保留")
+            //% "Export failed: %1. Your edits were kept."
+            qtTrId("capture.export.failed")
                 .arg(QString::fromStdString(hdrshot::to_string(exported.error().code))),
             true);
       }
@@ -621,7 +635,8 @@ class QtOverlayHost final : public QWidget {
     }
     if (std::holds_alternative<hdrshot::UserCancelled>(exported.value().destination)) {
       if (editor_ != nullptr) {
-        editor_->show_status(QStringLiteral("已取消另存为，当前编辑内容已保留"), false);
+        //% "Save As canceled. Your edits were kept."
+        editor_->show_status(qtTrId("capture.export.save_as_canceled"), false);
       }
       return;
     }
@@ -664,7 +679,8 @@ class QtOverlayHost final : public QWidget {
     if (!clean_cache_ || !annotation_render_plan_) return true;
     auto result = clean_cache_->get(frozen_desktop_, target_display_id_, annotation_render_plan_);
     if (!result) {
-      if (editor_) editor_->show_status(QStringLiteral("标注合成失败，编辑内容已保留"), true);
+      //% "Failed to render annotations. Your edits were kept."
+      if (editor_) editor_->show_status(qtTrId("capture.export.annotation_failed"), true);
       return false;
     }
     clean_content_ = std::move(result.value());
@@ -720,7 +736,8 @@ class QtOverlayHost final : public QWidget {
               if (!result) {
                 if (result.error().code != ErrorCode::operation_cancelled) {
                   guard->editor_->show_status(
-                      QStringLiteral("标注合成失败，编辑内容已保留"), true);
+                      //% "Failed to render annotations. Your edits were kept."
+                      qtTrId("capture.export.annotation_failed"), true);
                   record_diagnostic_failure(guard->diagnostics_.get(),
                                             "overlay.clean_content",
                                             result.error());

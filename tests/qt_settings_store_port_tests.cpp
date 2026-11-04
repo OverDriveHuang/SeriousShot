@@ -1,16 +1,187 @@
+#include "application/settings_workflow.hpp"
 #include "platform/qt/qt_settings_store_port.hpp"
 #include "test_support.hpp"
 #include "ui/qt/analysis_readings.hpp"
 #include "ui/qt/analysis_defaults_json.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 
+#include <QCoreApplication>
+#include <QFile>
+#include <QProcess>
 #include <QSettings>
 #include <QTemporaryDir>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 #include <string>
 #include <limits>
 #include <vector>
 
 namespace {
+
+QByteArray ini_bytes(const QString& path) {
+  QFile file(path);
+  HDRSHOT_CHECK(file.open(QIODevice::ReadOnly));
+  return file.readAll();
+}
+
+bool raw_language_matches(const QSettings& raw, const QString& expected) {
+  return expected.isNull() ? !raw.contains("uiLanguage")
+      : raw.contains("uiLanguage") && raw.value("uiLanguage").toString() == expected;
+}
+
+void ui_language_is_optional_and_only_changes_on_a_language_patch() {
+  using namespace hdrshot;
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  for (unsigned int schema = 1; schema <= 5; ++schema) {
+    const auto path = directory.filePath(QString::number(schema) + ".ini");
+    {
+      QSettings raw(path, QSettings::IniFormat);
+      raw.setValue("schemaVersion", schema);
+      raw.setValue("globalCaptureHotkey", "Ctrl+Alt+9");
+      raw.sync();
+      HDRSHOT_CHECK(raw.status() == QSettings::NoError);
+    }
+    QtSettingsStorePort store(path.toStdString(), "Ctrl+Shift+2", "/Pictures");
+    HDRSHOT_CHECK(!store.load().value().ui_language);
+    HDRSHOT_CHECK(SettingsWorkflow::change_detailed_logging(true, store).has_value());
+    QSettings raw(path, QSettings::IniFormat);
+    HDRSHOT_CHECK(!raw.contains("uiLanguage"));
+    HDRSHOT_CHECK(raw.value("schemaVersion").toUInt() == 5);
+    HDRSHOT_CHECK(raw.value("globalCaptureHotkey").toString() == "Ctrl+Alt+9");
+    for (const auto& invalid : {QStringLiteral(""), QStringLiteral("zh-Hant"), QStringLiteral("EN")}) {
+      raw.setValue("uiLanguage", invalid);
+      raw.sync();
+      HDRSHOT_CHECK(!store.load().value().ui_language);
+      HDRSHOT_CHECK(SettingsWorkflow::mark_initial_settings_presented(store).has_value());
+      HDRSHOT_CHECK(raw_language_matches(raw, invalid));
+    }
+    for (const auto language : {UiLanguage::simplified_chinese, UiLanguage::english}) {
+      const auto before = store.load().value();
+      const auto saved = SettingsWorkflow::change_ui_language(language, store);
+      HDRSHOT_CHECK(saved && saved.value().settings_revision == before.revision + 1);
+      auto expected = before;
+      expected.ui_language = language;
+      ++expected.revision;
+      QtSettingsStorePort reopened(path.toStdString(), "ignored", "ignored");
+      HDRSHOT_CHECK(reopened.load().value() == expected);
+      HDRSHOT_CHECK(raw_language_matches(raw, language == UiLanguage::simplified_chinese
+          ? QStringLiteral("zh-CN") : QStringLiteral("en")));
+    }
+  }
+}
+
+void ui_language_rejects_invalid_and_combined_patches_without_mutating() {
+  using namespace hdrshot;
+  QTemporaryDir directory;
+  HDRSHOT_CHECK(directory.isValid());
+  const auto path = directory.filePath("settings.ini");
+  QtSettingsStorePort store(path.toStdString(), "Ctrl+Shift+2", "/Pictures");
+  HDRSHOT_CHECK(SettingsWorkflow::change_ui_language(UiLanguage::simplified_chinese, store).has_value());
+  const auto before = ini_bytes(path);
+  const auto snapshot = store.load().value();
+  const auto rejected = [&](const SettingsPatch& patch) {
+    const auto result = store.save(patch);
+    HDRSHOT_CHECK(!result && result.error().code == ErrorCode::invalid_input);
+    HDRSHOT_CHECK(ini_bytes(path) == before);
+    HDRSHOT_CHECK(store.load().value() == snapshot);
+  };
+  for (const auto assign : {
+       +[](SettingsPatch& patch) { patch.detailed_logging = false; },
+       +[](SettingsPatch& patch) { patch.analysis_defaults = AnalysisDefaults{}; },
+       +[](SettingsPatch& patch) { patch.pinned_screenshot_defaults = PinnedScreenshotDefaults{}; },
+       +[](SettingsPatch& patch) { patch.windows_capture_bypass_sdr_white_enabled = false; }}) {
+    SettingsPatch patch;
+    patch.ui_language = UiLanguage::english;
+    assign(patch);
+    rejected(patch);
+  }
+  SettingsPatch invalid;
+  invalid.ui_language = static_cast<UiLanguage>(-1);
+  rejected(invalid);
+}
+
+class ScopedIniWriteBlock {
+ public:
+  ScopedIniWriteBlock(const QString& file, const QString& directory) {
+#ifdef Q_OS_WIN
+    (void)directory;
+    // QSettings can read, but its atomic rename cannot replace this open file.
+    handle_ = CreateFileW(reinterpret_cast<LPCWSTR>(file.utf16()), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+    HDRSHOT_CHECK(handle_ != INVALID_HANDLE_VALUE);
+#else
+    (void)file;
+    directory_ = directory;
+    HDRSHOT_CHECK(QFile::setPermissions(directory_, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+#endif
+  }
+  ~ScopedIniWriteBlock() {
+#ifdef Q_OS_WIN
+    CloseHandle(handle_);
+#else
+    QFile::setPermissions(directory_, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+#endif
+  }
+  ScopedIniWriteBlock(const ScopedIniWriteBlock&) = delete;
+  ScopedIniWriteBlock& operator=(const ScopedIniWriteBlock&) = delete;
+
+ private:
+#ifdef Q_OS_WIN
+  HANDLE handle_{INVALID_HANDLE_VALUE};
+#else
+  QString directory_;
+#endif
+};
+
+void failed_ui_language_write_cannot_leak_into_the_next_save() {
+  using namespace hdrshot;
+  for (const auto& [prior, prior_revision] :
+       {std::pair{QString{}, 41}, std::pair{QStringLiteral("invalid"), 41},
+        std::pair{QStringLiteral("zh-CN"), 41}, std::pair{QString{}, 0}}) {
+    QTemporaryDir directory;
+    HDRSHOT_CHECK(directory.isValid());
+    const auto path = directory.filePath("settings.ini");
+    {
+      QSettings raw(path, QSettings::IniFormat);
+      raw.setValue("unrelatedKey", "original");
+      if (prior_revision) raw.setValue("revision", prior_revision);
+      if (!prior.isNull()) raw.setValue("uiLanguage", prior);
+      raw.sync();
+      HDRSHOT_CHECK(raw.status() == QSettings::NoError);
+    }
+    const auto bytes_before = ini_bytes(path);
+    QtSettingsStorePort store(path.toStdString(), "Ctrl+Shift+2", "/Pictures");
+    {
+      const ScopedIniWriteBlock write_block(path, directory.path());
+      const auto failed = SettingsWorkflow::change_ui_language(UiLanguage::english, store);
+      HDRSHOT_CHECK(!failed && failed.error().code == ErrorCode::permission_denied);
+      HDRSHOT_CHECK(failed.error().safe_context.at("qtStatus") ==
+          std::to_string(QSettings::AccessError));
+      HDRSHOT_CHECK(ini_bytes(path) == bytes_before);
+      const QSettings second_instance(path, QSettings::IniFormat);
+      HDRSHOT_CHECK(raw_language_matches(second_instance, prior));
+      HDRSHOT_CHECK(second_instance.contains("revision") == (prior_revision != 0));
+      HDRSHOT_CHECK(second_instance.value("revision").toInt() == prior_revision);
+    }
+    const auto unrelated = SettingsWorkflow::change_detailed_logging(true, store);
+    HDRSHOT_CHECK(unrelated && unrelated.value().settings_revision ==
+        static_cast<std::uint64_t>(prior_revision + 1));
+    const auto independent_read = [&](const QString& expected_language, const int revision) {
+      const QStringList args{"--verify-ini", path,
+          expected_language.isNull() ? QStringLiteral("<absent>") : expected_language,
+          QString::number(revision)};
+      HDRSHOT_CHECK(QProcess::execute(QCoreApplication::applicationFilePath(), args) == 0);
+    };
+    independent_read(prior, prior_revision + 1);
+    HDRSHOT_CHECK(SettingsWorkflow::change_ui_language(UiLanguage::english, store).has_value());
+    independent_read(QStringLiteral("en"), prior_revision + 2);
+  }
+}
 
 void pinned_defaults_roundtrip_and_invalid_patch_is_atomic() {
   QTemporaryDir directory;
@@ -563,9 +734,24 @@ void invalid_completion_action_fails_explicitly() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  QCoreApplication app(argc, argv);
+  const auto args = app.arguments();
+  if (args.size() == 5 && args[1] == "--verify-ini") {
+    const QSettings raw(args[2], QSettings::IniFormat);
+    const auto expected = args[3] == "<absent>" ? QString{} : args[3];
+    return raw_language_matches(raw, expected) && raw.value("revision").toInt() == args[4].toInt() &&
+        raw.value("detailedLogging").toBool() && raw.value("unrelatedKey") == "original" ? 0 : 1;
+  }
+  hdrshot::QtUiLanguageRuntime language;
+  const auto localized = language.initialize(app, hdrshot::UiLanguage::simplified_chinese,
+      [] { return hdrshot::UiLanguage::english; });
+  HDRSHOT_CHECK(localized && !localized.value().catalog_error);
   using hdrshot::test::TestCase;
   return hdrshot::test::run(std::vector<TestCase>{
+      {"language preference is optional and changed only by a language patch", ui_language_is_optional_and_only_changes_on_a_language_patch},
+      {"invalid and mixed language patches leave every key intact", ui_language_rejects_invalid_and_combined_patches_without_mutating},
+      {"failed language and revision do not leak into a later save", failed_ui_language_write_cannot_leak_into_the_next_save},
       {"pinned defaults roundtrip and invalid patches are atomic", pinned_defaults_roundtrip_and_invalid_patch_is_atomic},
       {"pinned defaults migrate old config and recover corrupt fields independently", pinned_defaults_migrate_missing_and_recover_corrupt_fields_independently},
       {"scalar readings preserve precision, separate components, deduplicate I and reject nonfinite", scalar_readings_are_separate_precise_and_deduplicated},

@@ -11,7 +11,6 @@ public:
   void install();
   void later();
   void cancel();
-  void restore(Candidate, Receipt, bool manual_pending);
   void manual_open_result(Result<bool, Error>);
   const View &view() const { return view_; }
   std::function<void(const View &)> changed;
@@ -21,8 +20,8 @@ private:
   void download();
   void prompt();
   void publish();
-  bool reminder_due() const;
-  void consume_reminder(bool displayed);
+  void set_detail(std::string text, DetailKind kind = DetailKind::literal);
+  void set_detail(const Error &error);
   Identity identity_;
   Effects &effects_;
   Schedule schedule_;
@@ -30,10 +29,7 @@ private:
   std::optional<Receipt> receipt_;
   std::uint64_t generation_{};
   bool active_{}, installing_{}, pending_question_{};
-  std::int64_t now_{};
-  std::string reminder_key_;
-  std::optional<std::int64_t> reminder_origin_;
-  std::uint64_t consumed_period_{};
+  bool round_checked_{}, round_prompt_consumed_{};
   std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
 };
 } // namespace hdrshot::update

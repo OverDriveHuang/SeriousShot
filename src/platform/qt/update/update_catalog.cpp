@@ -54,7 +54,9 @@ static std::optional<std::uint64_t> number(const QJsonValue &value) {
 Result<Catalog, Error> verify_catalog(const QByteArray &bytes, const Trust &trust) {
   using R = Result<Catalog, Error>;
   if (!trust.configured())
-    return R::failure(failure("正式更新签名源尚未配置"));
+    return R::failure(translated_failure(
+        "正式更新签名源尚未配置",
+        QT_TRID_NOOP("update.detail.signed_source_missing")));
   if (bytes.size() > 512 * 1024)
     return R::failure(failure("catalog_size"));
   QJsonParseError parse;
@@ -136,7 +138,10 @@ Result<bool, Error> verify_release(const QJsonObject &release, const Candidate &
       release["url"].toString() !=
           QString("https://api.github.com/repos/OverDriveHuang/SeriousShot/releases/") +
               QString::number(c.release_id))
-    return R::failure(failure("Release 不是匹配的正式发布"));
+    return R::failure(translated_failure(
+        "Release 不是匹配的正式发布",
+        /*% "The release does not match the official update" */ QT_TRID_NOOP(
+            "update.detail.release_mismatch")));
   for (const auto asset : release["assets"].toArray()) {
     const auto a = asset.toObject();
     if (number(a["id"]) != c.asset_id)

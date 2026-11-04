@@ -34,7 +34,9 @@ protected:
 
 AnalyzerSourceView::AnalyzerSourceView(QWidget *parent) : QWidget(parent) {
   setObjectName("analyzerSourceView");
-  setAccessibleName("Source Signal：缩放、平移、吸管与分析 Mask");
+  setAccessibleName(
+      /*% "Source Signal: zoom, pan, eyedropper, and analysis mask" */ qtTrId(
+          "analyzer.source.accessibility"));
   setMouseTracking(true);
   setFocusPolicy(Qt::StrongFocus);
   setMinimumSize(1, 1);

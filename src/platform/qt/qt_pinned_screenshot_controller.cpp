@@ -12,7 +12,8 @@ Error pin_error(const char *reason) {
           Retryability::after_user_action, {{"reason",reason}}};
 }
 QString readable(const Error &e) {
-  return QStringLiteral("%1：%2").arg(QString::fromStdString(e.module),
+  //% "%1: %2"
+  return qtTrId("pinned.error.module_code").arg(QString::fromStdString(e.module),
                                      QString::fromStdString(to_string(e.code)));
 }
 }

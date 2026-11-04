@@ -163,7 +163,11 @@ public:
       reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(slot.payload()).utf16()),nullptr,nullptr,SW_SHOWNORMAL);
     if(reinterpret_cast<INT_PTR>(opened)>32)return Result<bool,Error>::success(true);
     slot.record["phase"]="ready";(void)slot.save();
-    auto error=failure("无法打开安装包，请检查系统的 ZIP 打开方式后重试。",ErrorCode::permission_denied,Retryability::after_user_action);
+    auto error = translated_failure(
+        "无法打开安装包，请检查系统的 ZIP 打开方式后重试。",
+        //% "Could not open the installer. Check the default app for ZIP files and try again."
+        QT_TRID_NOOP("update.detail.windows.zip_open_failed"),
+        ErrorCode::permission_denied, Retryability::after_user_action);
     error.safe_context["manual_install_required"]="true";
     return Result<bool,Error>::failure(std::move(error));
   }
@@ -176,7 +180,10 @@ public:
                       slot.record["parent_creation"].toString()) ||
         process_alive(slot.record["helper_pid"].toString().toLongLong(),
                       slot.record["helper_creation"].toString()))
-      return Result<bool, Error>::failure(failure("恢复事务仍被占用"));
+      return Result<bool, Error>::failure(translated_failure(
+          "恢复事务仍被占用",
+          /*% "The recovery operation is still in use" */ QT_TRID_NOOP(
+              "update.detail.windows.recovery_busy")));
     QProcess helper;
     // FreeType's CRT font stream is inheritable. The independent helper must
     // never retain application resources after the GUI has exited.
@@ -204,7 +211,10 @@ public:
     auto recovered = read_json(journal);
     if (!recovered ||
         !(recovered.value()["phase"] == "complete" || recovered.value()["phase"] == "rolled_back"))
-      return Result<bool, Error>::failure(failure("恢复需要人工处理"));
+      return Result<bool, Error>::failure(
+          translated_failure("恢复需要人工处理",
+                             /*% "Manual recovery is required" */ QT_TRID_NOOP(
+                                 "update.detail.windows.manual_recovery")));
     return slot.acquire();
   }
   Result<bool, Error> cancel_manual(Slot &slot) override {
@@ -219,8 +229,11 @@ public:
                         reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(slot.payload()).utf16()),
                         nullptr, nullptr, SW_SHOWNORMAL);
       if (reinterpret_cast<INT_PTR>(opened) <= 32)
-        return Result<bool, Error>::failure(
-            failure("请从发布页面手动安装", ErrorCode::permission_denied));
+        return Result<bool, Error>::failure(translated_failure(
+            "请从发布页面手动安装",
+            /*% "Install manually from the releases page" */
+            QT_TRID_NOOP("update.detail.windows.use_releases"),
+            ErrorCode::permission_denied));
       slot.record["phase"] = "manual_pending";
       return slot.save();
     }
@@ -228,28 +241,47 @@ public:
     const auto target = QFileInfo(exe).absolutePath();
     if (QFileInfo(target).isSymLink())
       return Result<bool, Error>::failure(failure("target_reparse"));
-    const auto manual_required=[&target](const char *reason) {
-      auto error=failure(reason,ErrorCode::permission_denied,Retryability::after_user_action);
+    const auto manual_required = [&target](const char *reason,
+                                           const char *message_id) {
+      auto error =
+          translated_failure(reason, message_id, ErrorCode::permission_denied,
+                             Retryability::after_user_action);
       error.safe_context["manual_install_required"]="true";
       error.safe_context["install_directory"]=target.toStdString();
       return Result<bool,Error>::failure(std::move(error));
     };
     if(!QFileInfo::exists(target+"/package_manifest.json"))
-      return manual_required("当前目录缺少安装文件清单，自动更新未执行。当前版本仍可使用。");
+      return manual_required(
+          "当前目录缺少安装文件清单，自动更新未执行。当前版本仍可使用。",
+          //% "The installation manifest is missing. Automatic update was skipped. You can keep using this version."
+          QT_TRID_NOOP("update.detail.windows.manifest_missing"));
     auto old_json = read_json(target + "/package_manifest.json");
     if (!old_json)
-      return manual_required("安装文件清单无法读取，自动更新未执行。当前版本仍可使用。");
+      return manual_required(
+          "安装文件清单无法读取，自动更新未执行。当前版本仍可使用。",
+          //% "The installation manifest could not be read. Automatic update was skipped. You can keep using this version."
+          QT_TRID_NOOP("update.detail.windows.manifest_unreadable"));
     auto old_version = Version::parse(old_json.value()["version"].toString().toStdString());
     if (!old_version)
-      return manual_required("安装文件清单的版本信息无效，自动更新未执行。当前版本仍可使用。");
+      return manual_required(
+          "安装文件清单的版本信息无效，自动更新未执行。当前版本仍可使用。",
+          //% "The installation manifest has an invalid version. Automatic update was skipped. You can keep using this version."
+          QT_TRID_NOOP("update.detail.windows.manifest_version_invalid"));
     auto old_candidate = c;
     old_candidate.version = old_version.value();
     auto old = package_manifest(target, old_candidate);
     if (!old || (target + "/" + old.value().entrypoint).compare(exe,Qt::CaseInsensitive)!=0)
-      return manual_required("安装文件清单与当前程序不一致，自动更新未执行。当前版本仍可使用。");
+      return manual_required(
+          "安装文件清单与当前程序不一致，自动更新未执行。当前版本仍可使用。",
+          //% "The installation manifest does not match the current app. Automatic update was skipped. You can keep using this version."
+          QT_TRID_NOOP("update.detail.windows.manifest_mismatch"));
     auto old_verified = verify_tree(target, old.value());
     if (!old_verified)
-      return manual_required("当前目录的应用文件不完整或已被修改，自动更新未执行。当前版本仍可使用。");
+      return manual_required(
+          "当前目录的应用文件不完整或已被修改，自动更新未执行。当前版本仍可使用"
+          "。",
+          //% "Application files are missing or modified. Automatic update was skipped. You can keep using this version."
+          QT_TRID_NOOP("update.detail.windows.installed_files_modified"));
     const auto transaction = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto nonce = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto staging = target + "/.seriousshot-stage-" + transaction;
@@ -334,11 +366,17 @@ public:
             return f.path.compare(file.path, Qt::CaseInsensitive) == 0;
           });
       if (!known && QFileInfo::exists(target + "/" + file.path))
-        return Result<bool, Error>::failure(failure("更新文件与用户文件重名"));
+        return Result<bool, Error>::failure(translated_failure(
+            "更新文件与用户文件重名",
+            /*% "An update file conflicts with a user file" */ QT_TRID_NOOP(
+                "update.detail.windows.user_file_conflict")));
     }
     if (!QDir().mkpath(backup))
-      return Result<bool, Error>::failure(
-          failure("当前目录不可写，请手动安装", ErrorCode::path_not_writable));
+      return Result<bool, Error>::failure(translated_failure(
+          "当前目录不可写，请手动安装",
+          /*% "This folder is not writable. Install the update manually." */
+          QT_TRID_NOOP("update.detail.windows.install_folder_not_writable"),
+          ErrorCode::path_not_writable));
     if (!QDir().mkpath(runtime))
       return Result<bool, Error>::failure(failure("helper_directory"));
     // A deployed helper runtime has the same pinned Qt dependency files as the
@@ -420,7 +458,11 @@ public:
     if (!written)
       return written;
     if (!quit())
-      return Result<bool, Error>::failure(failure("退出已取消", ErrorCode::operation_cancelled));
+      return Result<bool, Error>::failure(translated_failure(
+          "退出已取消",
+          /*% "Quitting was canceled" */
+          QT_TRID_NOOP("update.detail.windows.quit_canceled"),
+          ErrorCode::operation_cancelled));
     if (!SetEvent(arm_event))
       return Result<bool, Error>::failure(failure("arm_event_signal"));
     transferred = true;

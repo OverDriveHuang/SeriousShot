@@ -39,8 +39,7 @@ public:
   void acquire_and_download(const Candidate &, std::function<void(std::uint64_t, std::uint64_t)>,
                             std::function<void(Result<Receipt, Error>)>) override;
   void cancel_download(Done) override;
-  void persist_prompt(const std::string &, Done) override;
-  bool was_prompted(const std::string &) const override;
+  bool update_operation_active() const override;
   bool busy() const override;
   void ask_install(const Candidate &, std::function<void(bool)>) override;
   void install(const Candidate &, const Receipt &, Done) override;

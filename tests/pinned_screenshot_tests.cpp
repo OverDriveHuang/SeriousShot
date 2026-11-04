@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "platform/qt/qt_pinned_screenshot_controller.hpp"
 #include <QFontDatabase>
 #include "ui/qt/analyzer_source_view.hpp"
@@ -993,6 +994,10 @@ void thumbnail_preview_contract() {
 }
 int main(int argc,char **argv) {
   QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
+  hdrshot::QtUiLanguageRuntime language_runtime;
+  constexpr auto chinese = hdrshot::UiLanguage::simplified_chinese;
+  const auto initialization = language_runtime.initialize(app, chinese, [=] { return chinese; });
+  HDRSHOT_CHECK(initialization && initialization.value().active_language == chinese);
   if(qEnvironmentVariableIsSet("HDRSHOT_PIN_LAYOUT_CAPTURE")) {
     const int id=QFontDatabase::addApplicationFont(
         QCoreApplication::applicationDirPath()+"/assets/fonts/NotoSansSC-VF.ttf");

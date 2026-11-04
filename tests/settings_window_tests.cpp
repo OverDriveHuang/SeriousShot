@@ -1,4 +1,6 @@
 #include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 #ifdef Q_OS_WIN
 #include "platform/windows/windows_login_startup_port.hpp"
 #include <QTemporaryDir>
@@ -8,6 +10,7 @@
 #include <QTimer>
 #include <QGroupBox>
 #include "ui/qt/settings_window.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 #include "ui/qt/analysis_readings.hpp"
 #include "core/build_metadata.hpp"
 #include "ui/qt/qt_window_activation_port.hpp"
@@ -38,6 +41,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStyleHints>
+#include <QStyleOptionButton>
 #include <QWindow>
 #include <QVBoxLayout>
 #include <QTabWidget>
@@ -54,9 +58,16 @@ class MemorySettingsStore final : public SettingsStorePort {
  public:
   SettingsSnapshot snapshot{5, 0, "Command+Option+8", "/Pictures/SeriousShot"};
   bool fail_next_save{};
+  bool fail_next_load{};
   int save_attempts{};
+  int load_attempts{};
 
   Result<SettingsSnapshot, Error> load() override {
+    ++load_attempts;
+    if (std::exchange(fail_next_load, false)) {
+      return Result<SettingsSnapshot, Error>::failure(
+          Error{ErrorCode::permission_denied, "MemorySettingsStore", Retryability::after_user_action, {}});
+    }
     return Result<SettingsSnapshot, Error>::success(snapshot);
   }
 
@@ -71,6 +82,7 @@ class MemorySettingsStore final : public SettingsStorePort {
           {},
       });
     }
+    if (patch.ui_language) snapshot.ui_language = *patch.ui_language;
     if (patch.detailed_logging) snapshot.detailed_logging = *patch.detailed_logging;
     if (patch.analysis_defaults) snapshot.analysis_defaults = *patch.analysis_defaults;
     if (patch.pinned_screenshot_defaults)
@@ -150,6 +162,12 @@ class MemoryFolderOpener final : public FolderOpenerPort {
 };
 
 struct Fixture {
+  static inline QtUiLanguageRuntime* language_runtime{};
+
+  Fixture() {
+    window.set_language_runtime(*language_runtime);
+  }
+
   MemorySettingsStore store;
   MemoryGlobalHotkey hotkey;
   MemoryFolderOpener folder_opener;
@@ -462,17 +480,21 @@ void general_rows_are_wide_aligned_and_folder_actions_are_explicit() {
                 double_click_action != nullptr);
   HDRSHOT_CHECK(build_timestamp != nullptr);
   HDRSHOT_CHECK(author != nullptr && author->text() == QStringLiteral("by OverDrive"));
-  HDRSHOT_CHECK(description != nullptr && general_label != nullptr && fixed_label != nullptr);
+  HDRSHOT_CHECK(description == nullptr && general_label != nullptr && fixed_label != nullptr);
+  auto* title = fixture.window.findChild<QLabel*>("settingsTitleLabel");
+  HDRSHOT_CHECK(title && title->text() == QStringLiteral("SeriousShot"));
+  auto* tabs = fixture.window.findChild<QTabWidget*>("settingsTabs");
+  HDRSHOT_CHECK(tabs && tabs->y() - title->geometry().bottom() <= 20);
   HDRSHOT_CHECK(general_container != nullptr && fixed_container != nullptr);
   HDRSHOT_CHECK(fixture.window.findChild<QWidget*>(
                     QStringLiteral("completionActionSeparator")) == nullptr);
   HDRSHOT_CHECK(fixture.window.windowTitle() == QStringLiteral("SeriousShot 设置"));
-  const auto description_x = description->mapTo(&fixture.window, QPoint{}).x();
-  HDRSHOT_CHECK(general_label->mapTo(&fixture.window, QPoint{}).x() >= description_x);
+  const auto title_x = title->mapTo(&fixture.window, QPoint{}).x();
+  HDRSHOT_CHECK(general_label->mapTo(&fixture.window, QPoint{}).x() >= title_x);
   HDRSHOT_CHECK(fixed_label->mapTo(&fixture.window, QPoint{}).x() ==
       general_label->mapTo(&fixture.window, QPoint{}).x());
-  HDRSHOT_CHECK(general_label->font().pointSizeF() == description->font().pointSizeF());
-  HDRSHOT_CHECK(fixed_label->font().pointSizeF() == description->font().pointSizeF());
+  HDRSHOT_CHECK(general_label->font().pointSizeF() == fixture.window.font().pointSizeF());
+  HDRSHOT_CHECK(fixed_label->font().pointSizeF() == fixture.window.font().pointSizeF());
   HDRSHOT_CHECK(general_label->geometry().bottom() < general_container->geometry().top());
   HDRSHOT_CHECK(fixed_label->geometry().bottom() < fixed_container->geometry().top());
   HDRSHOT_CHECK(hotkey->width() >= 160);
@@ -1186,6 +1208,287 @@ void update_footer_states() {
     entry->click();
   }
   HDRSHOT_CHECK(opened==4);
+  // Every displayed result delegates exactly once to the same runtime entry.
+  for(auto phase:{update::Phase::idle,update::Phase::checking,update::Phase::check_failed}) {
+    view.phase=phase;fixture.window.set_update_view(view,true);
+    const auto before=opened;entry->click();HDRSHOT_CHECK(opened==before+1);
+  }
+}
+
+}  // namespace
+
+namespace {
+
+void language_selection_saves_without_switching_the_running_language() {
+  Fixture f;
+  const auto active = Fixture::language_runtime->active_language();
+  const auto chinese = active == UiLanguage::simplified_chinese;
+  const auto target = chinese ? UiLanguage::english : UiLanguage::simplified_chinese;
+  const auto title_text = chinese ? QStringLiteral("SeriousShot 设置") : QStringLiteral("SeriousShot Settings");
+  const auto hint_text = chinese ? QStringLiteral("Restart SeriousShot to apply English.")
+                                : QStringLiteral("重启 SeriousShot 后切换为简体中文。");
+
+  f.window.resize(f.window.minimumSize());
+  f.window.reload_and_show();
+  QApplication::processEvents();
+  auto* zh = f.window.findChild<QPushButton*>("settingsLanguageChineseButton");
+  auto* en = f.window.findChild<QPushButton*>("settingsLanguageEnglishButton");
+  auto* hint = f.window.findChild<QPushButton*>("settingsLanguageRestartHint");
+  auto* title = f.window.findChild<QLabel*>("settingsTitleLabel");
+  auto* status = f.window.findChild<QLabel*>("settingsStatusLabel");
+  HDRSHOT_CHECK(zh && en && hint && title && status);
+  auto* current = chinese ? zh : en;
+  auto* other = chinese ? en : zh;
+  HDRSHOT_CHECK(zh->text() == QStringLiteral("中") && en->text() == QStringLiteral("EN"));
+  HDRSHOT_CHECK(zh->accessibleName() == (chinese ? QStringLiteral("简体中文") : QStringLiteral("Simplified Chinese")));
+  HDRSHOT_CHECK(en->accessibleName() == (chinese ? QStringLiteral("英文") : QStringLiteral("English")));
+  for (const auto* button : {zh, en}) {
+    HDRSHOT_CHECK(button->isVisible() && button->isEnabled());
+    HDRSHOT_CHECK(button->focusPolicy() & Qt::TabFocus);
+    HDRSHOT_CHECK(std::abs(button->geometry().center().y() - title->geometry().center().y()) <= 2);
+  }
+  HDRSHOT_CHECK(current->isChecked() && !other->isChecked() && hint->isHidden());
+  HDRSHOT_CHECK(!f.store.snapshot.ui_language && f.store.save_attempts == 0);
+
+  current->click();
+  HDRSHOT_CHECK(f.store.snapshot.ui_language == active && f.store.save_attempts == 1);
+  HDRSHOT_CHECK(current->isChecked() && !other->isChecked() && hint->isHidden());
+  current->click();
+  HDRSHOT_CHECK(current->isChecked() && f.store.save_attempts == 1);
+
+  f.store.fail_next_save = true;
+  other->click();
+  HDRSHOT_CHECK(current->isChecked() && !other->isChecked() && hint->isHidden());
+  HDRSHOT_CHECK(f.store.snapshot.ui_language == active && f.store.snapshot.revision == 1);
+  HDRSHOT_CHECK(status->isVisible() && status->text().contains(
+      chinese ? QStringLiteral("界面语言保存失败") : QStringLiteral("Could not save the display language")));
+
+  const auto loads = f.store.load_attempts;
+  f.store.fail_next_load = true;
+  other->click();
+  QApplication::processEvents();
+  HDRSHOT_CHECK(f.store.load_attempts == loads);
+  HDRSHOT_CHECK(f.store.snapshot.ui_language == target && f.store.snapshot.revision == 2);
+  HDRSHOT_CHECK(other->isChecked() && !current->isChecked() && hint->isVisible() && status->isHidden());
+  HDRSHOT_CHECK(hint->text() == hint_text);
+  HDRSHOT_CHECK(hint->geometry().right() < zh->geometry().left());
+  HDRSHOT_CHECK(hint->width() >= hint->sizeHint().width());
+  HDRSHOT_CHECK(f.window.windowTitle() == title_text);
+
+  f.window.hide();
+  f.window.reload_and_show();
+  HDRSHOT_CHECK(status->isVisible() && status->text().contains(
+      chinese ? QStringLiteral("设置读取失败") : QStringLiteral("Could not load settings")));
+  HDRSHOT_CHECK(other->isChecked() && hint->isVisible() && hint->text() == hint_text);
+  f.window.hide();
+  f.window.reload_and_show();
+  HDRSHOT_CHECK(other->isChecked() && hint->isVisible() && status->isHidden());
+  Fixture opened_after_save;
+  opened_after_save.store.snapshot = f.store.snapshot;
+  opened_after_save.window.reload_and_show();
+  HDRSHOT_CHECK(opened_after_save.window.windowTitle() == title_text);
+  HDRSHOT_CHECK(opened_after_save.window.findChild<QPushButton*>("settingsLanguageRestartHint")->text() == hint_text);
+
+  f.store.fail_next_save = true;
+  current->click();
+  HDRSHOT_CHECK(other->isChecked() && !current->isChecked());
+  HDRSHOT_CHECK(hint->isVisible() && hint->text() == hint_text && status->isVisible());
+  current->click();
+  HDRSHOT_CHECK(current->isChecked() && !other->isChecked() && hint->isHidden());
+  HDRSHOT_CHECK(f.store.snapshot.ui_language == active && f.store.snapshot.revision == 3);
+  HDRSHOT_CHECK(Fixture::language_runtime->active_language() == active);
+}
+
+void language_buttons_keep_complete_labels_and_stable_insets_across_states() {
+  Fixture f;
+  f.window.reload_and_show();
+  QApplication::processEvents();
+  for (const auto* name : {"settingsLanguageChineseButton", "settingsLanguageEnglishButton"}) {
+    auto* button = f.window.findChild<QPushButton*>(name);
+    HDRSHOT_CHECK(button && button->isEnabled());
+    std::optional<QRect> stable_content;
+    for (bool checked : {false, true}) {
+      for (bool focused : {false, true}) {
+        button->setChecked(checked);
+        if (focused) button->setFocus(Qt::TabFocusReason);
+        else button->clearFocus();
+        QApplication::processEvents();
+        QStyleOptionButton option;
+        option.initFrom(button);
+        option.text = button->text();
+        option.state |= checked ? QStyle::State_On : QStyle::State_Off;
+        const auto content = button->style()->subElementRect(QStyle::SE_PushButtonContents, &option, button);
+        const auto ink = button->fontMetrics().tightBoundingRect(button->text());
+        HDRSHOT_CHECK(button->size() == QSize(36, 28));
+        HDRSHOT_CHECK(content.width() >= button->fontMetrics().horizontalAdvance(button->text()));
+        HDRSHOT_CHECK(content.width() >= ink.width() && content.height() >= ink.height());
+        HDRSHOT_CHECK(button->rect().contains(content));
+        if (stable_content) HDRSHOT_CHECK(content == *stable_content);
+        else stable_content = content;
+      }
+    }
+  }
+}
+
+void language_restart_confirmation_is_queued_targeted_and_recoverable() {
+  Fixture f;
+  const auto active = Fixture::language_runtime->active_language();
+  const auto target = active == UiLanguage::english ? UiLanguage::simplified_chinese : UiLanguage::english;
+  f.window.reload_and_show();
+  auto* target_button = f.window.findChild<QPushButton*>(target == UiLanguage::english
+      ? "settingsLanguageEnglishButton" : "settingsLanguageChineseButton");
+  auto* current_button = f.window.findChild<QPushButton*>(active == UiLanguage::english
+      ? "settingsLanguageEnglishButton" : "settingsLanguageChineseButton");
+  auto* hint = f.window.findChild<QPushButton*>("settingsLanguageRestartHint");
+  auto outcome = UiRestartOutcome::busy;
+  int requested = 0;
+  f.window.set_restart_requester([&](UiLanguage selected) {
+    HDRSHOT_CHECK(selected == target);
+    HDRSHOT_CHECK(QApplication::activeModalWidget() == nullptr);
+    ++requested;
+    return outcome;
+  });
+  const auto flush = [] {
+    QApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QApplication::processEvents();
+  };
+  target_button->click();
+  const auto open = [&](bool keyboard = false) {
+    if (keyboard) {
+      hint->setFocus();
+      QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+      QKeyEvent release(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier);
+      QApplication::sendEvent(hint, &press);
+      QApplication::sendEvent(hint, &release);
+    } else hint->click();
+    QApplication::processEvents();
+    auto* dialog = f.window.findChild<QMessageBox*>("settingsLanguageRestartConfirmation");
+    HDRSHOT_CHECK(dialog && !hint->isEnabled());
+    std::printf("restartDialogTitle actual=[%s] requested=[%s]\n",
+        dialog->windowTitle().toUtf8().constData(),
+        Fixture::language_runtime->text(target, "language.restart.title").toUtf8().constData());
+#ifdef Q_OS_MACOS
+    // Qt documents that QMessageBox deliberately ignores window titles on macOS.
+    HDRSHOT_CHECK(dialog->windowTitle().isEmpty());
+#else
+    HDRSHOT_CHECK(dialog->windowTitle() == Fixture::language_runtime->text(target, "language.restart.title"));
+#endif
+    HDRSHOT_CHECK(dialog->findChild<QPushButton*>("settingsRestartConfirmButton")->text() ==
+        Fixture::language_runtime->text(target, "language.restart.action"));
+    HDRSHOT_CHECK(dialog->text() == Fixture::language_runtime->text(target,
+        target == UiLanguage::english ? "language.restart.confirm_en" : "language.restart.confirm_zh"));
+    HDRSHOT_CHECK(dialog->defaultButton() == dialog->escapeButton());
+    HDRSHOT_CHECK(dialog->escapeButton()->text() ==
+        Fixture::language_runtime->text(target, "language.restart.cancel"));
+    return dialog;
+  };
+  open(true)->reject();
+  HDRSHOT_CHECK(requested == 0);
+  flush();
+  HDRSHOT_CHECK(hint->isEnabled() && requested == 0);
+  auto* dialog = open();
+  dialog->defaultButton()->click();
+  flush();
+  HDRSHOT_CHECK(hint->isEnabled() && requested == 0);
+  dialog = open();
+  dialog->findChild<QPushButton*>("settingsRestartConfirmButton")->click();
+  HDRSHOT_CHECK(requested == 0); // finished must not reenter native shutdown.
+  flush();
+  HDRSHOT_CHECK(requested == 1 && hint->isEnabled());
+  HDRSHOT_CHECK(f.window.findChild<QLabel*>("settingsStatusLabel")->text() ==
+      Fixture::language_runtime->text(target, "language.restart.busy"));
+  outcome = UiRestartOutcome::cancelled;
+  open()->findChild<QPushButton*>("settingsRestartConfirmButton")->click();
+  flush();
+  HDRSHOT_CHECK(requested == 2 && hint->isEnabled());
+  dialog = open();
+  current_button->click(); // Preference changed before the queued confirmation runs.
+  dialog->findChild<QPushButton*>("settingsRestartConfirmButton")->click();
+  flush();
+  HDRSHOT_CHECK(requested == 2 && hint->isHidden());
+  target_button->click();
+  outcome = UiRestartOutcome::accepted;
+  open()->findChild<QPushButton*>("settingsRestartConfirmButton")->click();
+  flush();
+  HDRSHOT_CHECK(requested == 3 && !hint->isEnabled());
+  hint->click();
+  flush();
+  HDRSHOT_CHECK(requested == 3);
+}
+
+void incomplete_restart_catalog_disables_action_and_explains_resource_error() {
+  const auto active = Fixture::language_runtime->active_language();
+  const auto target = active == UiLanguage::english ? UiLanguage::simplified_chinese : UiLanguage::english;
+  UiLanguageCatalogPaths paths;
+  QString& target_path = target == UiLanguage::english ? paths.english : paths.simplified_chinese;
+  QFile original(target_path);
+  HDRSHOT_CHECK(original.open(QIODevice::ReadOnly));
+  auto data = original.readAll();
+  HDRSHOT_CHECK(data.contains("language.restart.title"));
+  // Same-width key replacement leaves the QM structure and all other messages intact.
+  data.replace("language.restart.title", "language.restart.xttle");
+  QTemporaryDir temporary;
+  HDRSHOT_CHECK(temporary.isValid());
+  target_path = temporary.filePath("partial.qm");
+  QFile partial(target_path);
+  HDRSHOT_CHECK(partial.open(QIODevice::WriteOnly));
+  HDRSHOT_CHECK(partial.write(data) == data.size());
+  partial.close();
+  QtUiLanguageRuntime runtime(paths);
+  HDRSHOT_CHECK(static_cast<bool>(runtime.initialize(*QCoreApplication::instance(), active, [=] { return active; })));
+  HDRSHOT_CHECK(!runtime.restart_available(target));
+  HDRSHOT_CHECK(runtime.text(target, "language.restart.action").size() > 0);
+  Fixture f;
+  f.window.set_language_runtime(runtime);
+  f.window.reload_and_show();
+  int requested = 0;
+  f.window.set_restart_requester([&](UiLanguage) { ++requested; return UiRestartOutcome::accepted; });
+  f.window.findChild<QPushButton*>(target == UiLanguage::english
+      ? "settingsLanguageEnglishButton" : "settingsLanguageChineseButton")->click();
+  auto* hint = f.window.findChild<QPushButton*>("settingsLanguageRestartHint");
+  HDRSHOT_CHECK(hint->isVisible() && !hint->isEnabled());
+  HDRSHOT_CHECK(hint->text() == "Language resources unavailable.");
+  hint->click();
+  QApplication::processEvents();
+  HDRSHOT_CHECK(requested == 0);
+  HDRSHOT_CHECK(!f.window.findChild<QMessageBox*>("settingsLanguageRestartConfirmation"));
+}
+
+void login_dialog_localizes_known_message_and_retains_original_system_details() {
+  Fixture f;
+  MemoryLoginStartup port;
+  port.snapshot.state = LoginStartupState::invalid_target;
+  port.snapshot.can_enable = false;
+  port.snapshot.diagnostic = "应用签名验证失败，请重新安装完整应用后重试（-42）。";
+  port.snapshot.diagnostic_text = {"settings.login.macos.signature_invalid", "-42"};
+  f.window.set_login_startup_port(&port);
+  f.window.reload_and_show();
+  auto* checkbox = f.window.findChild<QCheckBox*>("loginStartupCheckBox");
+  HDRSHOT_CHECK(checkbox && checkbox->isVisible());
+  checkbox->click();
+  QApplication::processEvents();
+
+  auto* dialog = login_dialog(f);
+  HDRSHOT_CHECK(dialog);
+  const auto chinese = Fixture::language_runtime->active_language() == UiLanguage::simplified_chinese;
+  HDRSHOT_CHECK(dialog->text() == (chinese
+      ? QStringLiteral("应用签名验证失败，请重新安装完整应用后重试（-42）。\n当前应用：/stable/SeriousShot.app")
+      : QStringLiteral("Signature verification failed. Reinstall the complete app and try again (-42).\nCurrent app: /stable/SeriousShot.app")));
+  HDRSHOT_CHECK(port.writes == 0);
+  dialog->reject();
+  QApplication::processEvents();
+
+  port.fail_query = true;
+  checkbox->click();
+  QApplication::processEvents();
+  dialog = login_dialog(f);
+  HDRSHOT_CHECK(dialog);
+  HDRSHOT_CHECK(dialog->text().contains(chinese
+      ? QStringLiteral("原始查询错误\nFixtureDomain（42）")
+      : QStringLiteral("原始查询错误\nFixtureDomain (42)")));
+  dialog->reject();
+  QApplication::processEvents();
 }
 
 }  // namespace
@@ -1198,6 +1501,21 @@ int main(int argc, char** argv) {
 #endif
   qputenv("QT_QPA_PLATFORM",qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_NATIVE")?native_platform:"offscreen");
   QApplication application(argc, argv);
+  const bool english_regression = argc >= 2 && std::string_view(argv[1]) == "--english-language-regression";
+  const auto expected_language = english_regression ? UiLanguage::english : UiLanguage::simplified_chinese;
+  QtUiLanguageRuntime language_runtime;
+  const auto initialization = language_runtime.initialize(application, expected_language, [=] { return expected_language; });
+  HDRSHOT_CHECK(initialization && initialization.value().active_language == expected_language);
+  Fixture::language_runtime = &language_runtime;
+  if (english_regression) {
+    return hdrshot::test::run({
+        {"language buttons keep complete labels and stable state geometry", language_buttons_keep_complete_labels_and_stable_insets_across_states},
+        {"restart confirmation uses target language and safe queued callback", language_restart_confirmation_is_queued_targeted_and_recoverable},
+        {"partial restart catalog disables action with resource error", incomplete_restart_catalog_disables_action_and_explains_resource_error},
+        {"English settings retain startup language while saving a preference", language_selection_saves_without_switching_the_running_language},
+        {"English login dialog preserves native diagnostic fields", login_dialog_localizes_known_message_and_retains_original_system_details},
+    });
+  }
   if(qEnvironmentVariableIsSet("HDRSHOT_SETTINGS_LIGHT")) {
     application.styleHints()->setColorScheme(Qt::ColorScheme::Light);
     QApplication::processEvents();
@@ -1344,6 +1662,11 @@ int main(int argc, char** argv) {
     });timer->start(2500);QTimer::singleShot(15500,&application,&QCoreApplication::quit);return application.exec();
   }
   return hdrshot::test::run({
+      {"language buttons keep complete labels and stable state geometry", language_buttons_keep_complete_labels_and_stable_insets_across_states},
+        {"restart confirmation uses target language and safe queued callback", language_restart_confirmation_is_queued_targeted_and_recoverable},
+      {"partial restart catalog disables action with resource error", incomplete_restart_catalog_disables_action_and_explains_resource_error},
+      {"Chinese settings retain startup language while saving a preference", language_selection_saves_without_switching_the_running_language},
+      {"Chinese login dialog preserves native diagnostic fields", login_dialog_localizes_known_message_and_retains_original_system_details},
       {"Windows missing override enables directly through native adapter and UI",windows_fresh_missing_startup_succeeds_without_dialog},
       {"login startup success uses system state without local bool",login_startup_success_and_signal_blocking},
       {"login permission return follows platform refresh policy with zero registration",login_startup_permission_roundtrip_requires_explicit_retry},

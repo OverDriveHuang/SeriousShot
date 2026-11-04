@@ -32,6 +32,52 @@ Result<bool, Error> check_status(const QSettings& settings, const std::string& p
       {{"path", path}, {"qtStatus", std::to_string(static_cast<int>(settings.status()))}}));
 }
 
+const auto ui_language_key = QStringLiteral("uiLanguage");
+const auto revision_key = QStringLiteral("revision");
+
+std::optional<UiLanguage> parse_ui_language(const QString& value) {
+  if (value == QStringLiteral("zh-CN")) return UiLanguage::simplified_chinese;
+  if (value == QStringLiteral("en")) return UiLanguage::english;
+  return std::nullopt;
+}
+
+bool has_non_language_changes(const SettingsPatch& patch) {
+  return patch.analysis_defaults || patch.pinned_screenshot_defaults ||
+      patch.global_capture_hotkey || patch.default_save_folder || patch.save_format ||
+      patch.pq_diffuse_white || patch.hdr_pq_precision || patch.ultra_hdr_jpeg_quality ||
+      patch.enter_completion_action || patch.double_click_completion_action ||
+      patch.initial_settings_presented || patch.detailed_logging ||
+      patch.analyzer_preferences_json || patch.windows_scrgb_gain ||
+      patch.windows_capture_gain_enabled || patch.windows_capture_bypass_sdr_white_enabled;
+}
+
+Result<SettingsReceipt, Error> save_ui_language(
+    QSettings& settings, const std::string& path, const UiLanguage language,
+    const std::uint64_t revision) {
+  const bool had_language = settings.contains(ui_language_key);
+  const QVariant previous_language = settings.value(ui_language_key);
+  const bool had_revision = settings.contains(revision_key);
+  const QVariant previous_revision = settings.value(revision_key);
+  const auto read_status = check_status(settings, path);
+  if (!read_status) return Result<SettingsReceipt, Error>::failure(read_status.error());
+
+  settings.setValue(ui_language_key, language == UiLanguage::simplified_chinese
+      ? QStringLiteral("zh-CN") : QStringLiteral("en"));
+  settings.setValue(revision_key, static_cast<qulonglong>(revision));
+  settings.sync();
+  const auto write_status = check_status(settings, path);
+  if (!write_status) {
+    // QSettings shares pending INI changes across instances. Restore both keys in
+    // this instance so a later, unrelated sync cannot persist a rejected choice.
+    if (had_language) settings.setValue(ui_language_key, previous_language);
+    else settings.remove(ui_language_key);
+    if (had_revision) settings.setValue(revision_key, previous_revision);
+    else settings.remove(revision_key);
+    return Result<SettingsReceipt, Error>::failure(write_status.error());
+  }
+  return Result<SettingsReceipt, Error>::success({revision});
+}
+
 QString save_format_key(const SaveFormat value) {
   switch (value) {
     case SaveFormat::png_display_p3_dual_range:
@@ -318,10 +364,16 @@ Result<SettingsSnapshot, Error> QtSettingsStorePort::load() {
       windows_bypass_sdr_white_enabled,
       analysis_defaults_from_json(settings.value("analysisDefaults").toString(),analyzer_text),
       pinned_defaults_from_settings(settings),
+      parse_ui_language(settings.value(ui_language_key).toString()),
   });
 }
 
 Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& patch) {
+  if (patch.ui_language && (!valid_ui_language(*patch.ui_language) ||
+                            has_non_language_changes(patch))) {
+    return Result<SettingsReceipt, Error>::failure(settings_error(
+        ErrorCode::invalid_input, Retryability::never, {{"field", "uiLanguage"}}));
+  }
   if (patch.pinned_screenshot_defaults &&
       !valid_pinned_screenshot_defaults(*patch.pinned_screenshot_defaults)) {
     return Result<SettingsReceipt, Error>::failure(settings_error(
@@ -348,6 +400,9 @@ Result<SettingsReceipt, Error> QtSettingsStorePort::save(const SettingsPatch& pa
         {{"path", exact_path_}, {"reason", "parent_directory_unavailable"}}));
   }
   QSettings settings(QString::fromStdString(exact_path_), QSettings::IniFormat);
+  if (patch.ui_language) {
+    return save_ui_language(settings, exact_path_, *patch.ui_language, current.value().revision + 1U);
+  }
   settings.setValue(QStringLiteral("schemaVersion"), 5);
   settings.setValue(
       QStringLiteral("revision"),

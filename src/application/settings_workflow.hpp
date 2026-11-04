@@ -16,6 +16,8 @@ struct SettingsUpdateReceipt {
 
 class SettingsWorkflow {
  public:
+  [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_ui_language(
+      UiLanguage language, SettingsStorePort& settings_store);
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_detailed_logging(
       bool enabled, SettingsStorePort& settings_store);
   [[nodiscard]] static Result<SettingsUpdateReceipt, Error> change_pinned_screenshot_defaults(

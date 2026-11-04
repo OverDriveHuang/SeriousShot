@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "platform/qt/update/qt_update_runtime.hpp"
 #include "test_support.hpp"
 #include "ui/qt/update_window.hpp"
@@ -83,6 +84,7 @@ struct Wire {
   bool rate_limit_header{}, abort_redirect{}, abort_catalog{};
   int redirects{}, reply_delay_ms{}, catalog_delay_ms{}, release_delay_ms{};
   std::atomic_bool *catalog_gate{};
+  std::function<void()> before_download;
 };
 struct Manager final : QNetworkAccessManager {
   Wire &wire;
@@ -102,6 +104,7 @@ struct Manager final : QNetworkAccessManager {
       return new Reply(req, wire.release, wire.release_status, nullptr, this,
                        wire.release_delay_ms);
     }
+    if (wire.before_download) wire.before_download();
     ++wire.downloads;
     if (wire.downloads <= wire.redirects) {
       auto *r = new Reply(req, {}, 302, nullptr, this, wire.reply_delay_ms);
@@ -124,9 +127,37 @@ struct Installer : NativeInstaller {
   }
   Result<bool, Error> cancel_manual(Slot &) override { return Result<bool, Error>::success(true); }
 };
+// Mirrors the native cancel_manual contract; success must persist ready before reserve.
+struct ResourceInstaller final : Installer {
+  std::atomic<int> &cancels;
+  bool refuse;
+  ResourceInstaller(std::atomic<int> &n, bool fail) : cancels(n), refuse(fail) {}
+  Result<bool, Error> cancel_manual(Slot &slot) override {
+    ++cancels;
+    HDRSHOT_CHECK(slot.lock && slot.record["phase"] == "manual_pending");
+    if (refuse) return Result<bool,Error>::failure(failure("fixture detach refused", ErrorCode::state_inconsistent));
+    slot.record["phase"] = "ready";
+    slot.record.remove("mount");
+    return slot.save();
+  }
+};
+struct OpenGateInstaller final : Installer {
+  std::atomic_bool &entered, &gate;
+  bool fail;
+  OpenGateInstaller(std::atomic_bool &e, std::atomic_bool &g, bool f) : entered(e), gate(g), fail(f) {}
+  Result<bool, Error> open_manual(Slot &slot) override {
+    entered = true;
+    QElapsedTimer timer; timer.start();
+    while (!gate.load() && timer.elapsed() < 2000) QThread::msleep(1);
+    if (fail) return Result<bool,Error>::failure(failure("fixture open result preserved"));
+    slot.record["phase"] = "manual_pending";
+    auto saved=slot.save(); return saved;
+  }
+};
 namespace hdrshot::update {
 class RuntimeTestAccess {
 public:
+  static std::uint64_t confirmation_generation(const Runtime &r) { return r.confirmation_generation_; }
   static bool has_window(const Runtime &r) { return bool(r.update_window_); }
   static bool has_confirmation(const Runtime &r) { return bool(r.confirmation_); }
   static void quit_callback(Runtime &r, std::function<bool()> quit) { r.quit_ = std::move(quit); }
@@ -330,6 +361,64 @@ int main(int argc, char **argv) {
   if (!qEnvironmentVariableIsSet("HDRSHOT_UPDATE_NATIVE"))
     qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication app(argc, argv);
+  const bool english = app.arguments().contains("--english") ||
+                       qEnvironmentVariableIntValue("SERIOUSSHOT_TEST_ENGLISH") == 1;
+  hdrshot::QtUiLanguageRuntime language;
+  const auto locale = english ? hdrshot::UiLanguage::english
+                              : hdrshot::UiLanguage::simplified_chinese;
+  const auto initialized = language.initialize(app, locale, {});
+  if (!initialized || initialized.value().active_language != locale)
+    qFatal("Unable to initialize the requested test translations");
+  const auto rollback_details = [english] {
+    Candidate candidate;
+    candidate.version = {0, 1, 5};
+    const auto error = install_result_error(
+        {{"owner", "fixture"}, {"channel", "stable"}, {"candidate", QString::fromStdString(candidate.key())},
+         {"phase", "rolled_back"}, {"restored_version", "0.1.4"}, {"reason", "replace_move"},
+         {"native_error", "32"}, {"qt_file_error", "17"}},
+        "fixture", "stable", candidate);
+    HDRSHOT_CHECK(error.has_value());
+    HDRSHOT_CHECK(error->safe_context.at("reason") ==
+                  "更新失败，已恢复 0.1.4。无法替换应用文件，请关闭同目录程序并检查写入权限（Windows 错误 32）");
+    HDRSHOT_CHECK(error->safe_context.at("native_error") == "32");
+    HDRSHOT_CHECK(error->safe_context.at("qt_file_error") == "17");
+    View view;
+    view.phase = Phase::deferred;
+    view.error = error;
+    view.detail_error = error;
+    view.detail = error->safe_context.at("reason");
+    UpdateWindow window;
+    window.set_view(view);
+    const auto *label = window.findChild<QLabel *>("updateWindowDetail");
+    HDRSHOT_CHECK(label);
+    if (english)
+      HDRSHOT_CHECK(label->text() ==
+                    "Update failed. Restored 0.1.4. Could not replace application files. "
+                    "Close other apps in this folder and check write permissions. (Windows error 32)");
+    else
+      HDRSHOT_CHECK(label->text() == QString::fromStdString(view.detail));
+  };
+  if (app.arguments().contains("--english"))
+    return hdrshot::test::run({
+        {"English rollback keeps version, distinct reason and native error", rollback_details},
+        {"English check shows rate limit separately from denied access", [] {
+          for (const bool limited : {false, true}) {
+            Fixture f;
+            f.wire.catalog_status = 403;
+            f.wire.rate_limit_header = limited;
+            f.start();
+            f.await([&] { return f.runtime->coordinator().view().phase == Phase::check_failed; });
+            const auto *label = f.runtime->update_window().findChild<QLabel *>("updateWindowStatus");
+            HDRSHOT_CHECK(label);
+            HDRSHOT_CHECK(label->text() ==
+                          (limited ? "Update check failed: Update server rate limit reached. Try again later."
+                                   : "Update check failed: Update server denied access. Try again later."));
+            HDRSHOT_CHECK(f.runtime->coordinator().view().detail ==
+                          (limited ? "更新源限流，请稍后重试" : "更新源拒绝访问，请稍后重试"));
+          }
+        }},
+    });
+
   if (argc >= 3 && (std::string_view(argv[1]) == "--ui-probe" || std::string_view(argv[1]) == "--manual-ui-probe")) {
     const QString out = QString::fromUtf8(argv[2]);
     QDir().mkpath(out);
@@ -398,6 +487,17 @@ int main(int argc, char **argv) {
     return app.exec();
   }
   return hdrshot::test::run({
+      {"Chinese rollback keeps version, distinct reason and native error", rollback_details},
+      {"one settings details click immediately checks and repeated click shares task", [] {
+         Fixture f; f.wire.catalog_delay_ms = 50;
+         f.runtime->show_details();
+         HDRSHOT_CHECK(f.runtime->update_window().isVisible());
+         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::checking);
+         f.runtime->show_details();
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
+         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.downloads == 1);
+       }},
+
       {"manual fallback opens package with selectable concrete instructions",[] {
         UpdateWindow w;View v;v.phase=Phase::deferred;Candidate c;c.version={0,1,5};v.candidate=c;
         v.error=failure("安装文件清单与当前程序不一致，当前版本仍可使用。");
@@ -564,46 +664,91 @@ int main(int argc, char **argv) {
            f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
          HDRSHOT_CHECK(!w.isVisible());
        }},
-      {"persisted manual transaction restores install actions and Later "
-       "protects its slot",
-       [] {
-         Fixture f;
-         RuntimeTestAccess::idle(*f.runtime);
-         f.start();
-         f.await([&] { return f.runtime->update_window().isVisible(); });
-         f.runtime->update_window().close();
+      {"persisted manual transaction checks remotely then reuses mounted package", [] {
+         Fixture f; f.start();
+         f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready;});
          f.runtime.reset();
-         auto record = read_json(f.dir.path() + "/slot.json").value();
-         record["phase"] = "manual_pending";
-         record["generation"] = "3";
-         record["mount"] = "/Volumes/old-ejected-update";
-         HDRSHOT_CHECK(save_json(f.dir.path() + "/slot.json", record));
-         f.runtime = std::make_unique<Runtime>(
-             f.identity, std::make_unique<Installer>(), [] { return false; }, [] { return false; });
-         RuntimeTestAccess::configure(*f.runtime, f.trust, f.dir.path(), f.wire);
-         f.start();
-         f.await([&] { return f.runtime->coordinator().view().phase == Phase::manual_pending; });
-         auto &w = f.runtime->update_window();
-         HDRSHOT_CHECK(w.isVisible() && f.runtime->coordinator().view().prompted);
-         f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
-         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.downloads == 1);
-         f.runtime->show_details();
-         auto *button = w.findChild<QPushButton *>("updateWindowPrimary");
-         HDRSHOT_CHECK(button->text() == QStringLiteral("安装") && button->isEnabled());
-         HDRSHOT_CHECK(w.findChild<QPushButton *>("updateWindowSecondary")->text() ==
-                       QStringLiteral("稍后"));
-         w.close();
-         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::manual_pending);
-         f.runtime->coordinator().trigger(QDateTime::currentSecsSinceEpoch(), false, true);
-         HDRSHOT_CHECK(f.wire.checks == 1 && f.wire.downloads == 1);
-         f.runtime->show_details();
-         f.wire.release_delay_ms = 50;
-         button->click();
-         HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::preparing);
-         f.await([&] { return f.runtime->coordinator().view().phase == Phase::manual_pending; });
-         HDRSHOT_CHECK(f.wire.downloads == 1 &&
-                       read_json(f.dir.path() + "/slot.json").value()["generation"] ==
-                           record["generation"]);
+         auto record=read_json(f.dir.path()+"/slot.json").value();
+         record["phase"]="manual_pending"; record["mount"]="fixture-mounted";
+         HDRSHOT_CHECK(save_json(f.dir.path()+"/slot.json",record));
+         std::atomic<int> cancels{};
+         f.runtime=std::make_unique<Runtime>(f.identity,std::make_unique<ResourceInstaller>(cancels,false),
+             []{return false;},[]{return false;});
+         RuntimeTestAccess::configure(*f.runtime,f.trust,f.dir.path(),f.wire);
+         f.wire.catalog_delay_ms=50; f.start();
+         f.await([&]{return f.runtime->coordinator().view().phase==Phase::checking;});
+         HDRSHOT_CHECK(!RuntimeTestAccess::has_confirmation(*f.runtime));
+         f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready;});
+         HDRSHOT_CHECK(f.wire.checks==2 && f.wire.downloads==1 && cancels==0);
+         HDRSHOT_CHECK(RuntimeTestAccess::has_confirmation(*f.runtime));
+         HDRSHOT_CHECK(read_json(f.dir.path()+"/slot.json").value()==record);
+       }},
+      {"manual resource replacement releases owned mount and protects refused or foreign mount", [] {
+         // 0 missing, 1 damaged, 2 new candidate, 3 release failure, 4 foreign mount, 5 foreign ready.
+         for(int mode=0;mode<6;++mode) {
+           Fixture f; f.start();
+           f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready;});
+           f.runtime.reset();
+           auto record=read_json(f.dir.path()+"/slot.json").value();
+           record["phase"]=mode==5?"ready":"manual_pending"; record["mount"]="fixture-mounted";
+           if(mode>=4)record["owner"]="foreign-owner";
+           HDRSHOT_CHECK(save_json(f.dir.path()+"/slot.json",record));
+           if(mode==0)HDRSHOT_CHECK(QFile::remove(f.dir.path()+"/payload.dmg"));
+           if(mode==1) { QFile payload(f.dir.path()+"/payload.dmg"); HDRSHOT_CHECK(payload.open(QIODevice::WriteOnly)); payload.write("damaged"); }
+           if(mode==2 || mode==3)f.wire.catalog=catalog_revision(f,2,false,[](QJsonObject &p){
+             auto ts=p["targets"].toArray();auto t=ts[0].toObject();t["version"]="0.1.6";t["release_tag"]="v0.1.6";
+             t["asset_url"]="https://github.com/OverDriveHuang/SeriousShot/releases/download/v0.1.6/fixture.dmg";
+             ts[0]=t;p["targets"]=ts;
+           });
+           std::atomic<int> cancels{};
+           f.runtime=std::make_unique<Runtime>(f.identity,std::make_unique<ResourceInstaller>(cancels,mode==3),
+               []{return true;},[]{return false;});
+           RuntimeTestAccess::configure(*f.runtime,f.trust,f.dir.path(),f.wire);
+           f.wire.before_download=[&] {
+             const auto saved=read_json(f.dir.path()+"/slot.json").value();
+             HDRSHOT_CHECK(saved["phase"]=="downloading" && !saved.contains("mount"));
+             HDRSHOT_CHECK(!QFileInfo::exists(f.dir.path()+"/payload.dmg"));
+             HDRSHOT_CHECK(cancels==(mode==5?0:1));
+           };
+           f.start(); const bool blocked=mode==3 || mode==4;
+           f.await([&]{return f.runtime->coordinator().view().phase==(blocked?Phase::cleanup_blocked:Phase::ready);});
+           const auto after=read_json(f.dir.path()+"/slot.json").value();
+           HDRSHOT_CHECK(f.wire.checks==2 && f.wire.downloads==(blocked?1:2));
+           HDRSHOT_CHECK(cancels==(mode==4 || mode==5?0:1));
+           if(blocked) {
+             HDRSHOT_CHECK(after==record && QFileInfo(f.dir.path()+"/payload.dmg").size()==qint64(f.c.asset_size));
+             HDRSHOT_CHECK(!RuntimeTestAccess::has_confirmation(*f.runtime));
+             if(mode==3)HDRSHOT_CHECK(f.runtime->coordinator().view().detail=="fixture detach refused");
+           } else {
+             HDRSHOT_CHECK(after["phase"]=="ready" && !after.contains("mount"));
+             HDRSHOT_CHECK(after["generation"].toString().toULongLong()==record["generation"].toString().toULongLong()+1);
+             HDRSHOT_CHECK(hash_file(f.dir.path()+"/payload.dmg").value().toStdString()==f.c.sha256);
+           }
+         }
+       }},
+      {"close during manual open preserves token and hidden completion result", [] {
+         for(bool fail:{false,true}) {
+           Fixture f; f.start();
+           f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready;});
+           RuntimeTestAccess::idle(*f.runtime);
+           std::atomic_bool entered{}, gate{};
+           struct Release { std::atomic_bool &g; ~Release(){g=true;} } release{gate};
+           RuntimeTestAccess::replace_native(*f.runtime,std::make_unique<OpenGateInstaller>(entered,gate,fail));
+           f.runtime->coordinator().manual_open_result(Result<bool,Error>::failure(failure("manual fallback")));
+           auto &w=f.runtime->update_window(); w.show();
+           const auto token=f.runtime->coordinator().view().generation;
+           w.open_manual(); f.await([&]{return entered.load();});
+           HDRSHOT_CHECK(f.runtime->update_operation_active()); w.close();
+           HDRSHOT_CHECK(f.runtime->coordinator().view().generation==token && !w.isVisible());
+           const auto checks=f.wire.checks.load();
+           f.runtime->show_details(); HDRSHOT_CHECK(w.isVisible() && f.wire.checks==checks);
+           w.close(); gate=true;
+           f.await([&]{return !f.runtime->update_operation_active();});
+           HDRSHOT_CHECK(!w.isVisible() && f.runtime->coordinator().view().generation==token);
+           const auto &v=f.runtime->coordinator().view();
+           HDRSHOT_CHECK(v.phase==(fail?Phase::deferred:Phase::manual_pending));
+           HDRSHOT_CHECK(v.detail.find(fail?"fixture open result preserved":"安装包已打开")!=std::string::npos);
+         }
        }},
       {"Later is reloaded across runtime restart and active install remains "
        "available",
@@ -626,7 +771,7 @@ int main(int argc, char **argv) {
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::manual_pending; });
          HDRSHOT_CHECK(f.wire.downloads == 1);
        }},
-      {"single owned window close persists Later and stale confirmation is "
+      {"single owned window close consumes Later for one round and stale confirmation is "
        "cleared",
        [] {
          Fixture f;
@@ -643,7 +788,8 @@ int main(int argc, char **argv) {
          HDRSHOT_CHECK(f.runtime->coordinator().view().phase == Phase::deferred &&
                        !window.isVisible());
          f.runtime->coordinator().trigger(100, false, true);
-         f.await([&] { return f.runtime->coordinator().view().phase == Phase::deferred; });
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready &&
+                             RuntimeTestAccess::has_confirmation(*f.runtime); });
          window.findChild<QPushButton *>("updateWindowPrimary")->click();
          f.await([&] {
            auto v = f.runtime->coordinator().view();
@@ -826,7 +972,7 @@ int main(int argc, char **argv) {
          f.wire.catalog_status = 304;
          f.wire.catalog.clear();
          f.runtime->coordinator().trigger(200, false, true);
-         f.await([&] { return f.runtime->coordinator().view().phase == Phase::deferred; });
+         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
          HDRSHOT_CHECK(f.wire.checks == 2 && f.wire.downloads == 1);
          auto state = read_json(f.dir.path() + "/state.json");
          HDRSHOT_CHECK(state && state.value().contains("last_check") &&
@@ -898,7 +1044,7 @@ int main(int argc, char **argv) {
          f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready &&
                              RuntimeTestAccess::has_confirmation(*f.runtime); });
          for (int tick = 0; tick < 20; ++tick) {
-           f.runtime->coordinator().tick(1000 + tick);
+           f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch() + tick);
            QApplication::processEvents();
            HDRSHOT_CHECK(!RuntimeTestAccess::has_window(*f.runtime));
            HDRSHOT_CHECK(RuntimeTestAccess::has_confirmation(*f.runtime));
@@ -916,7 +1062,7 @@ int main(int argc, char **argv) {
          f.runtime->update_window().later();
          HDRSHOT_CHECK(!RuntimeTestAccess::has_confirmation(*f.runtime));
        }},
-      {"login startup restores ready and manual pending without presentation on later ticks", [] {
+      {"login startup checks ready and manual pending without presentation on later ticks", [] {
          for (bool pending : {false, true}) {
            Fixture f;
            f.runtime->set_interactive_presentation_enabled(false);
@@ -935,8 +1081,7 @@ int main(int argc, char **argv) {
            f.runtime->set_interactive_presentation_enabled(false);
            RuntimeTestAccess::configure(*f.runtime, f.trust, f.dir.path(), f.wire);
            f.start();
-           f.await([&] { return f.runtime->coordinator().view().phase ==
-               (pending ? Phase::manual_pending : Phase::ready); });
+           f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
            for(int tick=0;tick<20;++tick) {
              f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch()+tick);
              QApplication::processEvents();
@@ -1009,16 +1154,21 @@ int main(int argc, char **argv) {
            HDRSHOT_CHECK(calls == 0);
          }
        }},
-      {"missing Ready package repaired on next normal trigger without reprompt",
-       [] {
-         Fixture f;
-         f.start();
-         f.await([&] { return f.runtime->coordinator().view().phase == Phase::ready; });
-         f.runtime->coordinator().later();
-         HDRSHOT_CHECK(QFile::remove(f.dir.path() + "/payload.dmg"));
-         f.runtime->coordinator().trigger(100, false, true);
-         f.await([&] { return f.runtime->coordinator().view().phase == Phase::deferred; });
-         HDRSHOT_CHECK(f.wire.downloads == 2 && f.runtime->coordinator().view().prompted);
+      {"missing Ready package repairs after fresh check and asks once in the new round", [] {
+         Fixture f; RuntimeTestAccess::idle(*f.runtime); f.start();
+         f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready &&
+                            RuntimeTestAccess::has_confirmation(*f.runtime);});
+         const auto first=RuntimeTestAccess::confirmation_generation(*f.runtime);
+         f.runtime->update_window().close();
+         HDRSHOT_CHECK(!RuntimeTestAccess::has_confirmation(*f.runtime));
+         HDRSHOT_CHECK(QFile::remove(f.dir.path()+"/payload.dmg"));
+         f.runtime->show_details();
+         f.await([&]{return f.runtime->coordinator().view().phase==Phase::ready &&
+                            RuntimeTestAccess::has_confirmation(*f.runtime);});
+         const auto second=RuntimeTestAccess::confirmation_generation(*f.runtime);
+         HDRSHOT_CHECK(f.wire.checks==2 && f.wire.downloads==2 && second>first);
+         for(int n=0;n<10;++n)f.runtime->coordinator().tick(QDateTime::currentSecsSinceEpoch());
+         HDRSHOT_CHECK(RuntimeTestAccess::confirmation_generation(*f.runtime)==second && f.wire.checks==2);
        }},
   });
 }

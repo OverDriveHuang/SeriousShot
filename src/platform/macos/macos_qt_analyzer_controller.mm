@@ -1,3 +1,4 @@
+#include <QScopeGuard>
 #include "platform/macos/macos_qt_analyzer_controller.hpp"
 #include "application/analysis_session.hpp"
 #include "application/analysis_workflow.hpp"
@@ -19,7 +20,7 @@ Error adapter_error(const char *reason) {
           {{"reason", reason}}};
 }
 QString readable_error(const Error &error) {
-  return QStringLiteral("%1：%2").arg(
+  return /*% "%1: %2" */ qtTrId("analyzer.error.module_code").arg(
       QString::fromStdString(error.module),
       QString::fromStdString(to_string(error.code)));
 }
@@ -59,6 +60,7 @@ void MacQtAnalyzerController::open(ExportSnapshot snapshot,
   record_diagnostic_stage(diagnostics.get(), snapshot.session_id,
                           snapshot.operation_id, "analysis", "prepare",
                           "begin");
+  ++pending_preparations_;
   prepare_executor_.background([guard, dispatch, diagnostics,
                                 snapshot = std::move(snapshot),
                                 completed = std::move(completed)]() mutable {
@@ -112,6 +114,9 @@ void MacQtAnalyzerController::open(ExportSnapshot snapshot,
         dispatch,
         [guard, result = std::move(result),
          completed = std::move(completed)]() mutable {
+          const auto finish_preparation = qScopeGuard([guard] {
+            if (guard) --guard->pending_preparations_;
+          });
           if (!guard || guard->shutting_down_ || guard->closing_windows_) {
             completed(
                 Result<bool, Error>::failure(adapter_error("shutting_down")));
@@ -303,7 +308,7 @@ void MacQtAnalyzerController::export_from(
   if (!queued) {
     runtime->widget->set_export_busy(false);
     runtime->widget->show_error(
-        QStringLiteral("分析图任务未能加入队列，请重试。"));
+        /*% "Could not queue the analysis image. Try again." */ qtTrId("analyzer.error.queue_analysis"));
   }
 }
 

@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "platform/cpu/cpu_analysis_port.hpp"
 #include "platform/macos/macos_analysis_backend.hpp"
 #include "test_support.hpp"
@@ -423,6 +424,10 @@ void native_single_surface_and_float_source() {
 int main(int argc, char **argv) {
   qputenv("QT_QPA_PLATFORM", "cocoa");
   QApplication app(argc, argv);
+  hdrshot::QtUiLanguageRuntime language;
+  const auto initialized = language.initialize(app, hdrshot::UiLanguage::simplified_chinese, {});
+  if (!initialized || initialized.value().active_language != hdrshot::UiLanguage::simplified_chinese)
+    qFatal("Unable to initialize the Chinese test translations");
   if (!MTLCreateSystemDefaultDevice() || ![NSScreen screens].count) {
     std::cerr
         << "[ENVIRONMENT NOT VERIFIED] Native Metal/WindowServer unavailable\n";

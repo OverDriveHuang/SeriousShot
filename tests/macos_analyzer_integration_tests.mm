@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "adapters/shared/libultrahdr_encoder.hpp"
 #include "application/analysis_workflow.hpp"
 #include "domain/analysis/math.hpp"
@@ -239,6 +240,38 @@ void report_and_original_use_real_codecs() {
       }
   }
 }
+void analyzer_preparation_remains_pending_until_queued_delivery() {
+  class PreparationDiagnostics final : public DiagnosticsPort {
+   public:
+    Result<DiagnosticReceipt, Error> record(const DiagnosticEvent&) override {
+      return Result<DiagnosticReceipt, Error>::success({1});
+    }
+  };
+  QObject context;
+  auto diagnostics = std::make_shared<PreparationDiagnostics>();
+  MacQtAnalyzerController controller(context,
+      [](UiCommand, ExportSnapshot, auto, QWidget*) { return false; },
+      [] { return SettingsSnapshot{}; }, [](std::string) {}, diagnostics);
+  bool completed = false;
+  controller.open({}, [&](auto result) {
+    HDRSHOT_CHECK(!result);
+    HDRSHOT_CHECK(controller.has_pending_work()); // Held through delivery, including reentry.
+    completed = true;
+  });
+  HDRSHOT_CHECK(controller.has_pending_work() && !controller.has_windows());
+  // The worker retains diagnostics until after posting the GUI completion.
+  // Do not run the GUI queue: the ownership barrier proves the worker ended,
+  // so this checks the otherwise missed worker-idle / delivery-pending gap.
+  QElapsedTimer wait;
+  wait.start();
+  while (diagnostics.use_count() != 2 && wait.elapsed() < 12000) QThread::msleep(2);
+  HDRSHOT_CHECK(diagnostics.use_count() == 2 && !completed);
+  HDRSHOT_CHECK(controller.has_pending_work() && !controller.has_windows());
+  QCoreApplication::sendPostedEvents(&context, QEvent::MetaCall);
+  HDRSHOT_CHECK(completed && !controller.has_pending_work() && !controller.has_windows());
+  controller.shutdown();
+}
+
 void production_controller_window_export_and_close() {
   SettingsSnapshot settings;
   settings.default_save_folder = "/fixture-not-written";
@@ -454,10 +487,16 @@ int main(int argc, char **argv) {
   @autoreleasepool {
     qputenv("QT_QPA_PLATFORM", "cocoa");
     QApplication app(argc, argv);
+    hdrshot::QtUiLanguageRuntime language;
+    const auto initialized = language.initialize(app, hdrshot::UiLanguage::simplified_chinese, {});
+    if (!initialized || initialized.value().active_language != hdrshot::UiLanguage::simplified_chinese)
+      qFatal("Unable to initialize the Chinese test translations");
     app.setQuitOnLastWindowClosed(false);
     if (!MTLCreateSystemDefaultDevice() || !NSScreen.screens.count)
       return 77;
-    return test::run({{"actual PNG/JPEG report and original output",
+    return test::run({{"Analyzer preparation stays pending until queued GUI delivery",
+                       analyzer_preparation_remains_pending_until_queued_delivery},
+                      {"actual PNG/JPEG report and original output",
                        report_and_original_use_real_codecs},
                       {"GPU recovery is current, acknowledged and error-only",
                        gpu_completion_recovery_is_current_and_acknowledged},

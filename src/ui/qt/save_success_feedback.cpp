@@ -91,12 +91,14 @@ void SaveSuccessFeedback::show_next() {
     label_->setAlignment(Qt::AlignCenter);
     label_->setWordWrap(true);
     label_->installEventFilter(this);
-    label_->setToolTip(QStringLiteral("右键复制完整保存路径"));
+    //% "Right-click to copy the full save path"
+    label_->setToolTip(qtTrId("capture.saved.path_tooltip"));
   }
   label_->setPalette(current_.anchor.palette);
   label_->setFont(current_.anchor.font);
   label_->setStyleSheet(status_message_style(current_.anchor.palette, false));
-  label_->setText(QStringLiteral("成功保存到：\n%1").arg(current_.path));
+  //% "Saved to:\n%1"
+  label_->setText(qtTrId("capture.saved.path").arg(current_.path));
   place_current();
   if (configure_window_) configure_window_(*label_->window());
   label_->window()->show();
@@ -149,7 +151,8 @@ bool SaveSuccessFeedback::eventFilter(QObject *object, QEvent *event) {
     timer_.stop();
     const auto path = current_.path;
     QMenu menu;
-    auto *copy = menu.addAction(QStringLiteral("复制完整保存路径"));
+    //% "Copy full save path"
+    auto *copy = menu.addAction(qtTrId("capture.saved.copy_path"));
     auto *context = static_cast<QContextMenuEvent *>(event);
     if (menu.exec(context->globalPos()) == copy)
       QApplication::clipboard()->setText(path);

@@ -303,11 +303,13 @@ void AnalyzerScopePlot::paintEvent(QPaintEvent *) {
   if (!result_->valid_count) {
     p.setPen(ink);
     p.drawText(plot_rect().adjusted(8, 6, 0, 0), Qt::AlignTop | Qt::AlignLeft,
-               "无有效样本");
+               /*% "No valid samples" */ qtTrId("analyzer.no_valid_samples"));
   } else if (kind_ == Kind::histogram &&
              options_.histogram_mode == analysis::HistogramMode::hue &&
              !result_->hue_count)
-    p.drawText(plot_rect(), Qt::AlignCenter, "无有效色相样本");
+    p.drawText(
+        plot_rect(), Qt::AlignCenter,
+        /*% "No valid hue samples" */ qtTrId("analyzer.scope.no_valid_hue"));
   if (!pending_)
     draw_markers(p);
 }
@@ -412,8 +414,10 @@ void AnalyzerScopePlot::draw_wave(QPainter &p) {
     p.setPen(ink);
     p.drawText(QPointF(r.left(), height() - 7),
                options_.wave_mode == analysis::WaveMode::intensity
-                   ? (hdr(result_->settings.working_space) ? "I · nit（等效）"
-                                                           : "Y′ · %")
+                   ? (hdr(result_->settings.working_space)
+                          ? /*% "I · nit (equiv.)" */ qtTrId(
+                                "analyzer.scope.equivalent_intensity")
+                          : "Y′ · %")
                    : (hdr(result_->settings.working_space)
                           ? "R′G′B′ · PQ · nit"
                           : "R′G′B′ · sRGB · %"));
@@ -549,13 +553,13 @@ void AnalyzerScopePlot::draw_histogram(QPainter &p) {
   const bool adobe = mode == analysis::HistogramMode::rgb_adobe ||
                      mode == analysis::HistogramMode::parade_adobe;
   if (!adobe && !hue)
-    p.drawText(
-        QPointF(r.left(), height() - 5),
-        (mode == analysis::HistogramMode::intensity
-                   ? (hdr(result_->settings.working_space) ? "I · nit（等效）"
-                                                           : "Y′ · %")
-                   : (hdr(result_->settings.working_space) ? "PQ · nit"
-                                                           : "sRGB · %")));
+    p.drawText(QPointF(r.left(), height() - 5),
+               (mode == analysis::HistogramMode::intensity
+                    ? (hdr(result_->settings.working_space)
+                           ? qtTrId("analyzer.scope.equivalent_intensity")
+                           : "Y′ · %")
+                    : (hdr(result_->settings.working_space) ? "PQ · nit"
+                                                            : "sRGB · %")));
 }
 analysis::VectorCalibration AnalyzerScopePlot::view_calibration() const {
   const auto r = plot_rect();

@@ -69,7 +69,8 @@ PinnedScreenshotWindow::PinnedScreenshotWindow(analysis::Input input,
     PinnedScreenshotDefaults defaults, QWidget *parent)
     : QWidget(parent, Qt::Window | Qt::FramelessWindowHint), input_(std::move(input)) {
   setObjectName("pinnedScreenshotWindow");
-  setWindowTitle(QStringLiteral("贴图 — SeriousShot"));
+  //% "Pinned Screenshot — SeriousShot"
+  setWindowTitle(qtTrId("pinned.title"));
   setAttribute(Qt::WA_ShowWithoutActivating);
   setFocusPolicy(Qt::NoFocus);
   setMinimumSize(minimum_window_width, 100);
@@ -99,10 +100,15 @@ PinnedScreenshotWindow::PinnedScreenshotWindow(analysis::Input input,
     b->setFixedSize(toolbar_style::button_size,toolbar_style::button_size); b->setFocusPolicy(Qt::NoFocus); row->addWidget(b);
     return b;
   };
-  auto *fit = plain("pinFit", QStringLiteral("适应"), QStringLiteral("适应窗口"));
+  auto *fit = plain("pinFit",
+      //% "Fit"
+      qtTrId("pinned.fit"),
+      //% "Fit to window"
+      qtTrId("pinned.fit_hint"));
   fit->setCheckable(true); fit->setChecked(true);
   connect(fit, &QToolButton::clicked, this, [this] { source_->fit(); });
-  auto *one = plain("pinOneToOne", "1:1", QStringLiteral("原始倍率"));
+  //% "Actual size"
+  auto *one = plain("pinOneToOne", "1:1", qtTrId("pinned.actual_size"));
   one->setCheckable(true);
   connect(one, &QToolButton::clicked, this, [this] {
     source_->zoom_at(QPointF(source_->width()/2., source_->height()/2.), 1./source_->effective_scale());
@@ -114,7 +120,9 @@ PinnedScreenshotWindow::PinnedScreenshotWindow(analysis::Input input,
   };
   separator();
   grip_ = new WindowGrip(toolbar_);
-  grip_->setObjectName("pinWindowGrip"); grip_->setToolTip(QStringLiteral("拖动贴图窗口"));
+  grip_->setObjectName("pinWindowGrip");
+  //% "Drag to move pinned window"
+  grip_->setToolTip(qtTrId("pinned.move_hint"));
   grip_->setCursor(Qt::SizeAllCursor); grip_->setMinimumWidth(0);
   row->addWidget(grip_, 1);
   separator();
@@ -129,12 +137,15 @@ PinnedScreenshotWindow::PinnedScreenshotWindow(analysis::Input input,
     });
     b->setProperty("pinOperation", true);
   };
-  auto *analyze = symbol("pinAnalyze", ToolbarSymbol::analyze, QStringLiteral("在分析器中打开"));
+  //% "Open in Analyzer"
+  auto *analyze = symbol("pinAnalyze", ToolbarSymbol::analyze, qtTrId("pinned.analyze"));
   analyze->setProperty("analysisAction", true); action(analyze, UiCommand::analyze);
   separator();
-  auto *save = symbol("pinSave", ToolbarSymbol::save, QStringLiteral("保存；右键另存为"));
+  //% "Save. Right-click for Save As."
+  auto *save = symbol("pinSave", ToolbarSymbol::save, qtTrId("pinned.save_hint"));
   action(save, UiCommand::save_default);
-  auto *arrow = plain("pinSaveMenu", {}, QStringLiteral("保存选项"));
+  //% "Save options"
+  auto *arrow = plain("pinSaveMenu", QString(), qtTrId("pinned.save_options"));
   arrow->setArrowType(Qt::DownArrow); // Native glyph, independent of font coverage.
   arrow->setFixedWidth(16); arrow->setProperty("pinOperation", true);
   // Save and its dropdown form one control; outer spacing matches capture.
@@ -149,8 +160,10 @@ PinnedScreenshotWindow::PinnedScreenshotWindow(analysis::Input input,
     menu_open_ = true; reveal_toolbar();
     const QPointer<PinnedScreenshotWindow> guard(this);
     QMenu popup;
-    auto *save_default = popup.addAction(QStringLiteral("保存"));
-    auto *save_as = popup.addAction(QStringLiteral("另存为…"));
+    //% "Save"
+    auto *save_default = popup.addAction(qtTrId("pinned.save"));
+    //% "Save As…"
+    auto *save_as = popup.addAction(qtTrId("pinned.save_as"));
     auto *chosen = popup.exec(save->mapToGlobal(QPoint(0,save->height())));
     if (!guard || closed_) return;
     menu_open_ = false;
@@ -162,20 +175,24 @@ PinnedScreenshotWindow::PinnedScreenshotWindow(analysis::Input input,
   connect(arrow, &QToolButton::clicked, this, menu);
   save->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(save, &QWidget::customContextMenuRequested, this, [menu](QPoint) { menu(); });
-  auto *copy = symbol("pinCopy", ToolbarSymbol::copy, QStringLiteral("复制"));
+  //% "Copy"
+  auto *copy = symbol("pinCopy", ToolbarSymbol::copy, qtTrId("pinned.copy"));
   copy->setProperty("primary", true); action(copy, UiCommand::copy_and_close);
   separator();
-  topmost_ = symbol("pinTopmost", ToolbarSymbol::pin, QStringLiteral("窗口置顶"));
+  //% "Always on top"
+  topmost_ = symbol("pinTopmost", ToolbarSymbol::pin, qtTrId("pinned.topmost"));
   topmost_->setCheckable(true); topmost_->setChecked(defaults.always_on_top);
   connect(topmost_, &QToolButton::toggled, this, [this](bool checked) {
     if (topmost_changed) topmost_changed(checked);
   });
   separator();
-  collapse_ = symbol("pinCollapse", ToolbarSymbol::panel_top_close, QStringLiteral("收起贴图"));
+  //% "Collapse pinned window"
+  collapse_ = symbol("pinCollapse", ToolbarSymbol::panel_top_close, qtTrId("pinned.collapse"));
   collapse_->setAccessibleName(collapse_->toolTip());
   preview_ = new PinnedScreenshotPreview(*this,*collapse_,input_);
   connect(collapse_, &QToolButton::clicked, this, [this] { set_collapsed(!collapsed_); });
-  auto *close = symbol("pinClose", ToolbarSymbol::cancel, QStringLiteral("关闭贴图"));
+  //% "Close pinned window"
+  auto *close = symbol("pinClose", ToolbarSymbol::cancel, qtTrId("pinned.close"));
   close->setProperty("cancelAction", true);
   connect(close, &QToolButton::clicked, this, &QWidget::close);
   status_ = new QLabel(this); status_->setObjectName("pinStatus");
@@ -285,8 +302,13 @@ void PinnedScreenshotWindow::set_collapsed(bool collapsed) {
   for (const auto *name : {"pinFit", "pinOneToOne"})
     toolbar_->findChild<QToolButton *>(name)->setEnabled(!collapsed_);
   collapse_->set_symbol(collapsed_ ? ToolbarSymbol::panel_top_open : ToolbarSymbol::panel_top_close);
-  collapse_->setToolTip(collapsed_ ? QString{} : QStringLiteral("收起贴图"));
-  collapse_->setAccessibleName(collapsed_ ? QStringLiteral("展开贴图") : QStringLiteral("收起贴图"));
+  //% "Collapse pinned window"
+  collapse_->setToolTip(collapsed_ ? QString() : qtTrId("pinned.collapse"));
+  collapse_->setAccessibleName(collapsed_ ?
+      //% "Expand pinned window"
+      qtTrId("pinned.expand") :
+      //% "Collapse pinned window"
+      qtTrId("pinned.collapse"));
   collapse_->setProperty("thumbnailMode",collapsed_);
   preview_->set_collapsed(collapsed_);
   update_theme();

@@ -50,8 +50,11 @@ static Result<QByteArray, Error> run(const QString &program, const QStringList &
   p.start();
   if (!p.waitForStarted(10000) || !p.waitForFinished(120000) ||
       p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0)
-    return Result<QByteArray, Error>::failure(
-        failure("系统无法打开或卸载安装包", ErrorCode::permission_denied));
+    return Result<QByteArray, Error>::failure(translated_failure(
+        "系统无法打开或卸载安装包",
+        /*% "macOS could not open or unmount the installer" */
+        QT_TRID_NOOP("update.detail.mac.disk_image_failed"),
+        ErrorCode::permission_denied));
   return Result<QByteArray, Error>::success(p.readAllStandardOutput());
 }
 static QString mount_from_plist(const QByteArray &bytes) {
@@ -310,7 +313,10 @@ public:
     }
     const auto mount = mount_from_plist(mounted.value());
     if (mount.isEmpty())
-      return Result<bool, Error>::failure(failure("已挂载但无法确认卷路径，需要恢复"));
+      return Result<bool, Error>::failure(translated_failure(
+          "已挂载但无法确认卷路径，需要恢复",
+          //% "Installer mounted, but the volume path could not be confirmed. Recovery is required."
+          QT_TRID_NOOP("update.detail.mac.mount_path_missing")));
     slot.record["mount"] = mount;
     saved = slot.save();
     if (!saved)
@@ -327,9 +333,11 @@ public:
   }
   static Result<bool, Error> request_exit(const std::function<bool()> &quit) {
     if (!quit || !quit())
-      return Result<bool, Error>::failure(
-          failure("安装包已打开，但退出已取消。请结束当前工作后再次安装。",
-                  ErrorCode::operation_cancelled));
+      return Result<bool, Error>::failure(translated_failure(
+          "安装包已打开，但退出已取消。请结束当前工作后再次安装。",
+          //% "Installer opened, but quitting was canceled. Finish your work and try again."
+          QT_TRID_NOOP("update.detail.mac.quit_canceled"),
+          ErrorCode::operation_cancelled));
     return Result<bool, Error>::success(true);
   }
   Result<bool, Error> cancel_manual(Slot &slot) override {
@@ -345,7 +353,10 @@ public:
     const auto detached = run("/usr/bin/hdiutil", {"detach", mount});
     if (!detached)
       return Result<bool, Error>::failure(
-          failure("安装卷仍在使用，暂时无法清理", ErrorCode::path_not_writable));
+          translated_failure("安装卷仍在使用，暂时无法清理",
+                             /*% "The installer volume is still in use" */
+                             QT_TRID_NOOP("update.detail.mac.volume_in_use"),
+                             ErrorCode::path_not_writable));
     slot.record["phase"] = "ready";
     slot.record.remove("mount");
     return slot.save();

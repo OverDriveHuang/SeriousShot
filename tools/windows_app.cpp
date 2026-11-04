@@ -1,3 +1,6 @@
+#include "platform/qt/qt_application_restart.hpp"
+#include "platform/ui_language.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 #include "platform/qt/update/qt_update_runtime.hpp"
 #include "platform/windows/windows_login_startup_port.hpp"
 #include "platform/windows/windows_launch_options.hpp"
@@ -61,7 +64,11 @@ using namespace hdrshot;
 constexpr const char* default_hotkey="Control+Shift+2";
 void print_error(const Error& error) {
   std::cerr<<error.module<<' '<<to_string(error.code);
-  for(const auto& [k,v]:error.safe_context) std::cerr<<' '<<k<<'='<<v;
+  for (const auto &[key, value] : error.safe_context) {
+    // Update presentation metadata is internal to the GUI.
+    if (key == "update_ui_id" || key.starts_with("update_rollback_")) continue;
+    std::cerr << ' ' << key << '=' << value;
+  }
   std::cerr<<'\n';
 }
 struct Overlay {
@@ -73,19 +80,22 @@ struct Overlay {
 // policies are the existing shared objects. Only native effects are wired here.
 class WindowsApplicationShell {
  public:
-  WindowsApplicationShell(QApplication& app,QString smoke_folder,bool smoke_copy=false,bool smoke_sequence=false,WindowsLaunchOrigin origin=WindowsLaunchOrigin::manual)
-      :app_(app),origin_(origin),smoke_folder_(std::move(smoke_folder)),smoke_copy_(smoke_copy),
+  WindowsApplicationShell(QApplication& app,std::optional<QtApplicationRestartRequest>& restart_request,QString smoke_folder,bool smoke_copy=false,bool smoke_sequence=false,WindowsLaunchOrigin origin=WindowsLaunchOrigin::manual)
+      :app_(app),restart_request_(restart_request),origin_(origin),smoke_folder_(std::move(smoke_folder)),smoke_copy_(smoke_copy),
        smoke_sequence_(smoke_sequence),
        exit_([this]{return !analyzer_ || analyzer_->close_windows();},
              [this](int code){finalize_exit(code);}),
-       clipboard_(smoke_folder_.isEmpty()?std::string{}:(smoke_folder_+QStringLiteral("/clipboard")).toStdString()),dialog_(&exit_),executor_(app){}
+       clipboard_(smoke_folder_.isEmpty()?std::string{}:(smoke_folder_+QStringLiteral("/clipboard")).toStdString()),dialog_(&exit_),executor_(dispatch_context_){}
   ~WindowsApplicationShell() {
     exit_.finish_after_event_loop();
     capture_delivery_->shell=nullptr;
     if(capture_runtime_)capture_runtime_->shutdown();
     if(preparation_)preparation_->shutdown();
     if(capture_)capture_->shutdown();
+    updater_.reset();
     delete settings_window_;
+    if (tray_) tray_->setContextMenu(nullptr);
+    delete tray_;
     delete tray_menu_;
     rasterizer_.reset();
     if(font_id_>=0)(void)QFontDatabase::removeApplicationFont(font_id_);
@@ -115,6 +125,7 @@ class WindowsApplicationShell {
     settings_=loaded.value();
     capture_->set_capture_options(windows_capture_options_from_settings(settings_));
     diagnostics_->set_detailed_logging(settings_.detailed_logging);
+    if (!initialize_language()) return false;
     const auto capability=windows_check_capture_runtime_capabilities(diagnostics_.get());
     if(!capability) {
       record_diagnostic_failure(diagnostics_.get(),"startup",capability.error());
@@ -123,11 +134,16 @@ class WindowsApplicationShell {
         const auto reason=capability.error().safe_context.find("reason");
         const QString detail=reason==capability.error().safe_context.end()?QString{}:
             QString::fromStdString(reason->second);
-        QString message=QStringLiteral("当前 Windows 会话未提供所需的截图能力。");
-        if(detail==QStringLiteral("cursor_exclusion_unavailable"))
-          message=QStringLiteral("当前系统不支持排除光标的截图，无法启动截图功能。");
-        QMessageBox::critical(nullptr,QStringLiteral("SeriousShot 无法截图"),
-            message+QStringLiteral("\n\n详细原因：")+detail);
+        //% "This Windows session lacks the required capture capabilities."
+        auto message = qtTrId("tray.windows.no_capture_capability");
+        if (detail == QStringLiteral("cursor_exclusion_unavailable")) {
+          //% "This system cannot capture without the cursor. Screen capture is unavailable."
+          message = qtTrId("tray.windows.no_cursor_exclusion");
+        }
+        //% "\n\nDetails: %1"
+        message += qtTrId("tray.capability_details").arg(detail);
+        //% "SeriousShot capture unavailable"
+        QMessageBox::critical(nullptr, qtTrId("tray.capture_unavailable"), message);
       }
       return false;
     }
@@ -154,7 +170,7 @@ class WindowsApplicationShell {
         [this](bool active,DisplayId owner) {
           for(auto& overlay:overlays_) if(overlay.host) overlay.host->set_system_dialog_active(active,!active && overlay.display==owner);
         },ExportCompletionCoordinator::Event{},diagnostics_.get());
-    analyzer_=std::make_unique<WindowsQtAnalyzerController>(app_,
+    analyzer_=std::make_unique<WindowsQtAnalyzerController>(dispatch_context_,
         [this](auto command,auto snapshot,auto completed,QWidget *source) {
           return submit_export(command,std::move(snapshot),std::move(completed),source);
         },[this] {return settings_;},[this](std::string preferences) {
@@ -164,7 +180,7 @@ class WindowsApplicationShell {
           if(saved) {const auto current=store_->load();if(current) settings_=current.value();}
           else record_diagnostic_failure(diagnostics_.get(),"analysis.preferences",saved.error());
         },diagnostics_,displays_);
-    pinned_=std::make_unique<QtPinnedScreenshotController>(app_,
+    pinned_=std::make_unique<QtPinnedScreenshotController>(dispatch_context_,
         [this](const ExportSnapshot &snapshot) {
           return prepare_windows_pinned_screenshot(snapshot,diagnostics_,displays_);
         },make_windows_pinned_window_port(diagnostics_),
@@ -180,29 +196,36 @@ class WindowsApplicationShell {
         },[this](auto snapshot,auto completed) {
           open_analysis(std::move(snapshot),std::move(completed));
         },[this]{return settings_;},diagnostics_);
-    tray_=new QSystemTrayIcon(app_.windowIcon(),&app_);
+    tray_=new QSystemTrayIcon(app_.windowIcon(),&dispatch_context_);
     tray_->setToolTip(QStringLiteral("SeriousShot"));
     tray_menu_=new QMenu;
     capture_action_=tray_menu_->addAction(QString());
     update_capture_action_text();
-    QObject::connect(capture_action_,&QAction::triggered,&app_,[this] {start_capture();});
-    auto* settings_action=tray_menu_->addAction(QStringLiteral("设置…"));
-    QObject::connect(settings_action,&QAction::triggered,&app_,[this] {show_settings();});
+    QObject::connect(capture_action_,&QAction::triggered,&dispatch_context_,[this] {start_capture();});
+    auto* settings_action=tray_menu_->addAction(qtTrId("tray.settings"));
+    QObject::connect(settings_action,&QAction::triggered,&dispatch_context_,[this] {show_settings();});
     tray_menu_->addSeparator();
-    auto* quit=tray_menu_->addAction(QStringLiteral("退出 SeriousShot"));
-    QObject::connect(quit,&QAction::triggered,&app_,[this] {shutdown();});
+    auto* quit=tray_menu_->addAction(qtTrId("tray.quit"));
+    QObject::connect(quit,&QAction::triggered,&dispatch_context_,[this] {shutdown();});
     tray_->setContextMenu(tray_menu_);
-    QObject::connect(tray_,&QSystemTrayIcon::activated,&app_,[this](auto reason) {
+    QObject::connect(tray_,&QSystemTrayIcon::activated,&dispatch_context_,[this](auto reason) {
       if(reason==QSystemTrayIcon::DoubleClick) show_settings();
     });
     tray_->show();
-    hotkey_.set_trigger_handler([this] {QTimer::singleShot(0,&app_,[this]{start_capture();});});
+    hotkey_.set_trigger_handler([this] {QTimer::singleShot(0,&dispatch_context_,[this]{start_capture();});});
     const auto registered=hotkey_.register_hotkey(settings_.global_capture_hotkey);
-    if(!registered) {record_diagnostic_failure(diagnostics_.get(),"hotkey",registered.error());print_error(registered.error());tray_->showMessage(QStringLiteral("快捷键不可用"),QStringLiteral("请打开设置更换截图快捷键。"));}
+    if (!registered) {
+      record_diagnostic_failure(diagnostics_.get(), "hotkey", registered.error());
+      print_error(registered.error());
+      //% "Shortcut unavailable"
+      const auto title = qtTrId("tray.windows.shortcut_unavailable");
+      //% "Open Settings and change the capture shortcut."
+      tray_->showMessage(title, qtTrId("tray.windows.change_shortcut"));
+    }
     if(!smoke_folder_.isEmpty()) {
       if(smoke_pin()) show_settings();
-      QTimer::singleShot(100,&app_,[this] {start_capture();});
-      QTimer::singleShot(smoke_sequence_?45000:15000,&app_,[this] {if(!smoke_exported_) {std::cerr<<"smoke timeout\n";shutdown(1);}});
+      QTimer::singleShot(100,&dispatch_context_,[this] {start_capture();});
+      QTimer::singleShot(smoke_sequence_?45000:15000,&dispatch_context_,[this] {if(!smoke_exported_) {std::cerr<<"smoke timeout\n";shutdown(1);}});
     } else if(origin_==WindowsLaunchOrigin::manual) show_settings();
     std::cout<<"appShellReady=1 windowsBuild="<<windows_build_number()<<" hotkey="<<settings_.global_capture_hotkey<<'\n';
     if(smoke_folder_.isEmpty()){
@@ -219,6 +242,48 @@ class WindowsApplicationShell {
   }
   void shutdown(int code=0) { exit_.request_exit(code); }
  private:
+  UiRestartOutcome restart_application(UiLanguage language) {
+    if (restart_request_ || !exit_.accepting_work() || exit_.synchronous_call_active() ||
+        lifecycle_.active() || session_ || !overlays_.empty() ||
+        (capture_ && capture_->busy()) || (preparation_ && preparation_->busy()) ||
+        executor_.pending() ||
+        (analyzer_ && (analyzer_->has_windows() || analyzer_->has_pending_work())) ||
+        (pinned_ && pinned_->has_windows()) ||
+        (updater_ && (updater_->barrier_active() || updater_->update_operation_active())))
+      return UiRestartOutcome::busy;
+    auto request = make_application_restart_request(language, language_runtime_);
+    if (!exit_.shutdown_synchronously()) return UiRestartOutcome::cancelled;
+    restart_request_ = std::move(request);
+    return UiRestartOutcome::accepted;
+  }
+
+  bool initialize_language() {
+    const auto loaded = language_runtime_.initialize(
+        app_, settings_.ui_language, detect_system_ui_language);
+    if (!loaded) {
+      record_diagnostic_failure(diagnostics_.get(), "ui_language", loaded.error());
+      std::cerr << "SeriousShot could not load its English interface resources.\n";
+      print_error(loaded.error());
+      if (smoke_folder_.isEmpty() && origin_ == WindowsLaunchOrigin::manual)
+        QMessageBox::critical(nullptr, QStringLiteral("SeriousShot"),
+                              QStringLiteral("SeriousShot could not load its English interface resources."));
+      return false;
+    }
+    const auto &receipt = loaded.value();
+    const auto name = [](UiLanguage language) {
+      return language == UiLanguage::simplified_chinese ? "zh-CN" : "en";
+    };
+    const auto *catalog_error = receipt.catalog_error ? &*receipt.catalog_error : nullptr;
+    record_diagnostic_stage(diagnostics_.get(), {}, {}, "ui_language",
+        std::string("requested_") + name(receipt.requested_language),
+        std::string("active_") + name(receipt.active_language), {}, catalog_error);
+    if (catalog_error) {
+      record_diagnostic_failure(diagnostics_.get(), "ui_language", *catalog_error);
+      print_error(*catalog_error);
+    }
+    return true;
+  }
+
   bool accepts_new_work() const {
     return exit_.accepting_work() && !(updater_ && updater_->barrier_active());
   }
@@ -264,7 +329,7 @@ class WindowsApplicationShell {
   }
   void update_capture_action_text() {
     if(capture_action_) {
-      capture_action_->setText(QStringLiteral("截图（%1）")
+      capture_action_->setText(qtTrId("tray.capture_with_shortcut")
           .arg(QString::fromStdString(settings_.global_capture_hotkey)));
     }
   }
@@ -274,7 +339,7 @@ class WindowsApplicationShell {
     // All entry points, including tray double-click, must finish menu/input
     // dispatch before restoring the window. Match the Mac shell's ordering.
     if(tray_menu_) tray_menu_->hide();
-    QTimer::singleShot(0,&app_,[this] {
+    QTimer::singleShot(0,&dispatch_context_,[this] {
       settings_open_queued_=false;
       show_settings_after_menu();
     });
@@ -285,6 +350,9 @@ class WindowsApplicationShell {
     if(!settings_window_) {
       settings_window_=new SettingsWindow(*store_,hotkey_,folders_,input_,default_hotkey,diagnostics_folder_);
       settings_window_->set_window_activation_port(&activation_);
+      settings_window_->set_language_runtime(language_runtime_);
+      if (smoke_folder_.isEmpty()) settings_window_->set_restart_requester(
+          [this](UiLanguage language) { return restart_application(language); });
       settings_window_->set_login_startup_port(&login_startup_);
       settings_window_->set_applied([this](const SettingsSnapshot& settings){
         const bool enable_detail=!settings_.detailed_logging && settings.detailed_logging;
@@ -301,10 +369,15 @@ class WindowsApplicationShell {
   void report(const Error& error, bool log = true, bool capture_failure = false) {
     print_error(error);
     if(log) record_diagnostic_failure(diagnostics_.get(),"capture",error);
-    tray_->showMessage(capture_failure ? QStringLiteral("SeriousShot 截图失败") : QStringLiteral("SeriousShot 操作失败"),capture_failure ? capture_error_message(error,
-        QStringLiteral("请在 Windows 设置中允许屏幕截图后重试。"),QString::fromStdString(settings_.global_capture_hotkey)) :
-        QString::fromStdString(to_string(error.code)),QSystemTrayIcon::Critical);
-    if(!smoke_folder_.isEmpty()) QTimer::singleShot(0,&app_,[this]{shutdown(1);});
+    const auto title = capture_failure ? qtTrId("tray.capture_failed")
+        : /*% "SeriousShot operation failed" */ qtTrId("tray.operation_failed");
+    //% "Allow screen capture in Windows Settings and try again."
+    const auto guidance = qtTrId("tray.windows.capture_permission");
+    const auto message = capture_failure
+        ? capture_error_message(error, guidance, QString::fromStdString(settings_.global_capture_hotkey))
+        : QString::fromStdString(to_string(error.code));
+    tray_->showMessage(title, message, QSystemTrayIcon::Critical);
+    if(!smoke_folder_.isEmpty()) QTimer::singleShot(0,&dispatch_context_,[this]{shutdown(1);});
   }
   void start_capture() {
     if(!accepts_new_work())return;
@@ -383,7 +456,7 @@ class WindowsApplicationShell {
         pinned_->open(std::move(snapshot),[this,completed=std::move(completed)](auto result) mutable {
           const bool ready=result.has_value();
           completed(std::move(result));
-          if(ready && smoke_pin()) QTimer::singleShot(500,&app_,[this]{smoke_save_pin();});
+          if(ready && smoke_pin()) QTimer::singleShot(500,&dispatch_context_,[this]{smoke_save_pin();});
         });
       });
       auto presenter=WindowsD3DPreviewPresenter::create(host->native_surface(),display,diagnostics_,host->native_magnifier_surface());
@@ -405,7 +478,7 @@ class WindowsApplicationShell {
         auto sequence=std::make_shared<std::atomic_uint64_t>(result.value().present_receipt.operation_id.value+1U);
         for(auto& overlay:overlays_) if(overlay.host) overlay.host->activate_capture(result.value(),overlay.presenter,sequence);
         std::cout<<"captureReady=1 displays="<<overlays_.size()<<'\n';
-        if(!smoke_folder_.isEmpty()) QTimer::singleShot(150,&app_,[this]{smoke_check_magnifier();});
+        if(!smoke_folder_.isEmpty()) QTimer::singleShot(150,&dispatch_context_,[this]{smoke_check_magnifier();});
       });
     });
   }
@@ -414,7 +487,7 @@ class WindowsApplicationShell {
   // isolated directory. Normal startup and production logging are unchanged.
   void smoke_completed() {
     if(smoke_sequence_ && ++smoke_step_<3) {
-      QTimer::singleShot(150,&app_,[this] {
+      QTimer::singleShot(150,&dispatch_context_,[this] {
         const auto format=smoke_step_==1?SaveFormat::ultra_hdr_jpeg:SaveFormat::png_display_p3_dual_range;
         const auto changed=SettingsWorkflow::change_save_format(format,*store_);
         if(!changed) {report(changed.error());return;}
@@ -424,7 +497,7 @@ class WindowsApplicationShell {
         start_capture();
       });
     } else {
-      smoke_exported_=true;QTimer::singleShot(50,&app_,[this]{shutdown();});
+      smoke_exported_=true;QTimer::singleShot(50,&dispatch_context_,[this]{shutdown();});
     }
   }
   void smoke_check_magnifier(int attempt=0) {
@@ -455,7 +528,7 @@ class WindowsApplicationShell {
       SetWindowDisplayAffinity(static_cast<HWND>(host->native_surface()),WDA_NONE);
       SetWindowDisplayAffinity(reinterpret_cast<HWND>(host->winId()),WDA_NONE);
       SetWindowDisplayAffinity(static_cast<HWND>(host->native_magnifier_surface()),WDA_NONE);
-      QTimer::singleShot(300,&app_,[this,guard=QPointer<QtOverlayHost>(host)] {
+      QTimer::singleShot(300,&dispatch_context_,[this,guard=QPointer<QtOverlayHost>(host)] {
         if(!guard) {shutdown(1);return;}
         auto* panel=guard->findChild<QWidget*>("captureMagnifierPanel");
         if(!panel) {shutdown(1);return;}
@@ -479,7 +552,7 @@ class WindowsApplicationShell {
         <<" visible="<<host->magnifier_preview().visible<<" labels="<<values.size()<<'\n';
       shutdown(1);return;
     }
-    QTimer::singleShot(50,&app_,[this,attempt]{smoke_check_magnifier(attempt+1);});
+    QTimer::singleShot(50,&dispatch_context_,[this,attempt]{smoke_check_magnifier(attempt+1);});
   }
   void smoke_select_and_save() {
     if(overlays_.empty() || !overlays_.front().host) {shutdown(1);return;}
@@ -533,6 +606,9 @@ class WindowsApplicationShell {
     std::cout<<"captureSessionReturnedToResident=1\n";
   }
   QApplication& app_;
+  QObject dispatch_context_;
+  std::optional<QtApplicationRestartRequest>& restart_request_;
+  QtUiLanguageRuntime language_runtime_;
   WindowsLaunchOrigin origin_;
   WindowsLoginStartupPort login_startup_{[] {
     WindowsLoginStartupContext context;
@@ -596,6 +672,9 @@ int main(int argc,char** argv) {
   std::cout<<std::unitbuf;std::cerr<<std::unitbuf;
   std::vector<std::string_view> raw_arguments;
   for(int i=1;i<argc;++i)raw_arguments.emplace_back(argv[i]);
+  const auto restart_launch=parse_application_restart_arguments(raw_arguments);
+  if(!restart_launch){print_error(restart_launch.error());return 2;}
+  if(restart_launch.value())raw_arguments.clear();
   const auto launch=parse_windows_launch_options(raw_arguments);
   if(!launch){print_error(launch.error());return 2;}
   const bool smoke_argument=argc>=2 &&
@@ -624,19 +703,35 @@ int main(int argc,char** argv) {
   const auto instance_name=update::isolated_testing(update::compiled_trust())?
       QStringLiteral("Local\\Overdrive.SeriousShot.Desktop.Testing"):
       QStringLiteral("Local\\Overdrive.SeriousShot.Desktop");
+  WindowsQtWindowActivation restart_activation;
   const HANDLE instance=smoke?nullptr:CreateMutexW(nullptr,FALSE,reinterpret_cast<LPCWSTR>(instance_name.utf16()));
-  if(!smoke && (!instance || GetLastError()==ERROR_ALREADY_EXISTS)) {if(instance) CloseHandle(instance);return 0;}
+  if(!smoke && (!instance || GetLastError()==ERROR_ALREADY_EXISTS)) {
+    const bool already_running=instance!=nullptr;
+    if(instance) CloseHandle(instance);
+    if(restart_launch.value()) {
+      show_application_restart_failure(*restart_launch.value(),already_running,restart_activation);
+      return 1;
+    }
+    return 0;
+  }
   if(!smoke) {
     const auto recovery=update::windows_begin_startup_recovery({},launch.value().origin==WindowsLaunchOrigin::login);
     if(!recovery || recovery.value()) {
       if(!recovery)print_error(recovery.error());
       if(instance)CloseHandle(instance);
+      if(!recovery && restart_launch.value())
+        show_application_restart_failure(*restart_launch.value(),false,restart_activation);
       return recovery?0:1;
     }
   }
+  std::optional<QtApplicationRestartRequest> restart_request;
   int result=1;
-  { WindowsApplicationShell shell(app,smoke_folder,smoke_copy,smoke_sequence,launch.value().origin);
-    if(shell.initialize()) result=app.exec(); }
+  bool startup_ready=false;
+  { WindowsApplicationShell shell(app,restart_request,smoke_folder,smoke_copy,smoke_sequence,launch.value().origin);
+    if(shell.initialize()) {startup_ready=true;result=app.exec();} }
   if(instance) CloseHandle(instance);
+  if(restart_request) return relaunch_application(*restart_request,restart_activation);
+  if(restart_launch.value() && !startup_ready)
+    show_application_restart_failure(*restart_launch.value(),false,restart_activation);
   return result;
 }

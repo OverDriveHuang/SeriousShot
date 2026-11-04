@@ -21,27 +21,35 @@ inline MagnifierReadings magnifier_readings_from_menu(
   return readings;
 }
 inline const QStringList &magnifier_reading_names() {
-  static const QStringList n{"源线性 RGB / EDR · P3",
-                             "Y′R′G′B′ / P3-sRGB（SDR）",
-                             "Y′R′G′B′ / sRGB-sRGB（SDR）",
-                             "Y′R′G′B′ / P3-PQ",
-                             "Y′R′G′B′ / BT.2020-PQ",
-                             "线性 YRGB / nit · P3",
-                             "线性 YRGB / nit · sRGB",
-                             "线性 YRGB / nit · BT.2020",
-                             "L*a*b* · D65（SDR）",
-                             "ITP",
-                             "ICtCp",
-                             "Hue / Chroma · a*b*（SDR）",
-                             "Hue / Chroma · TP"};
-  return n;
+  static const QStringList names{
+      /*% "Source Linear RGB / EDR · P3" */ qtTrId(
+          "readings.source_linear_name"),
+      /*% "Y′R′G′B′ / P3-sRGB (SDR)" */ qtTrId("readings.magnifier.p3_sdr"),
+      /*% "Y′R′G′B′ / sRGB-sRGB (SDR)" */ qtTrId("readings.magnifier.srgb_sdr"),
+      "Y′R′G′B′ / P3-PQ",
+      "Y′R′G′B′ / BT.2020-PQ",
+      /*% "Linear YRGB / nit · P3" */ qtTrId("readings.magnifier.p3_nits"),
+      /*% "Linear YRGB / nit · sRGB" */ qtTrId("readings.magnifier.srgb_nits"),
+      /*% "Linear YRGB / nit · BT.2020" */
+      qtTrId("readings.magnifier.bt2020_nits"),
+      /*% "L*a*b* · D65 (SDR)" */ qtTrId("readings.magnifier.lab"),
+      "ITP",
+      "ICtCp",
+      /*% "Hue / Chroma · a*b* (SDR)" */
+      qtTrId("readings.magnifier.sdr_hue_chroma"),
+      "Hue / Chroma · TP"};
+  return names;
 }
 inline const QStringList &analyzer_reading_names() {
-  static const QStringList n{"源线性 RGB / EDR · P3",   "工作 R′G′B′ / code",
-                             "线性 YRGB / nit",         "Y′",
-                             "L*a*b* · D65 / ITP",      "L*a*b* · D65 / ICtCp",
-                             "Hue / Chroma · a*b* / TP"};
-  return n;
+  static const QStringList names{
+      qtTrId("readings.source_linear_name"),
+      /*% "Working R′G′B′ / code" */ qtTrId("readings.analyzer.working_code"),
+      /*% "Linear YRGB / nit" */ qtTrId("readings.analyzer.linear_nits"),
+      "Y′",
+      "L*a*b* · D65 / ITP",
+      "L*a*b* · D65 / ICtCp",
+      "Hue / Chroma · a*b* / TP"};
+  return names;
 }
 inline QString reading_number(double value, int precision = 4,
                               bool valid = true) {
@@ -141,15 +149,20 @@ inline QStringList analyzer_reading_rows(const analysis::Readout &r,
     return num(v[0], precision) + " / " + num(v[1], precision) + " / " +
            num(v[2], precision);
   };
-  if (f[0])
-    rows << "源线性 RGB / EDR · P3   " + triple(r.source_rgb_edr);
-  if (f[1])
-    rows << QString("工作 R′G′B′ · %1   ")
-                    .arg(analysis_math_double::working_transfer(
-                             unsigned(space)) == 1
-                             ? "PQ"
-                             : "sRGB") +
-                triple(r.signal_rgb);
+  if (f[0]) {
+    //% "Source Linear RGB / EDR · P3   %1"
+    rows << qtTrId("readings.analyzer.source_linear")
+                .arg(triple(r.source_rgb_edr));
+  }
+  if (f[1]) {
+    const QString transfer =
+        analysis_math_double::working_transfer(unsigned(space)) == 1
+            ? QStringLiteral("PQ")
+            : QStringLiteral("sRGB");
+    //% "Working R′G′B′ · %1   %2"
+    rows << qtTrId("readings.analyzer.working_rgb")
+                .arg(transfer, triple(r.signal_rgb));
+  }
   if (f[2] || (fallback &&
                std::none_of(f.begin(), f.end(), [](bool b) { return b; }))) {
     rows << "Y · nit   " + num(r.y_nits, 2);

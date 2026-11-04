@@ -1,3 +1,4 @@
+#include "ui/qt/ui_language_runtime.hpp"
 #include "ui/qt/save_success_feedback.hpp"
 #include "ui/qt/status_message_style.hpp"
 #include "application/export_completion_coordinator.hpp"
@@ -116,7 +117,7 @@ void pipeline_and_lifecycle() {
   f.executor.finish(); wait(30);
   HDRSHOT_CHECK(!QImage(f.dialog.path).isNull());
   auto *label=feedback(); HDRSHOT_CHECK(label && label->isVisible());
-  HDRSHOT_CHECK(label->text().contains(f.dialog.path));
+  HDRSHOT_CHECK(label->text() == QStringLiteral("成功保存到：\n%1").arg(f.dialog.path));
   HDRSHOT_CHECK(label->window()->windowFlags().testFlag(Qt::WindowDoesNotAcceptFocus));
   HDRSHOT_CHECK(label->window()->testAttribute(Qt::WA_ShowWithoutActivating));
   HDRSHOT_CHECK(label->styleSheet()==status_message_style(anchor.palette,false));
@@ -329,6 +330,10 @@ int native_demo(const QString &folder) {
 }
 int main(int argc,char **argv) {
   QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
+  hdrshot::QtUiLanguageRuntime language_runtime;
+  constexpr auto chinese = hdrshot::UiLanguage::simplified_chinese;
+  const auto initialization = language_runtime.initialize(app, chinese, [=] { return chinese; });
+  HDRSHOT_CHECK(initialization && initialization.value().active_language == chinese);
 #ifdef __APPLE__
   if(argc==2 && QString::fromLocal8Bit(argv[1])=="--native-window-contract") {
     try { return native_window_contract(); }

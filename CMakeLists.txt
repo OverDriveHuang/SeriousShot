@@ -5,7 +5,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum supported macOS version")
 endif()
 
-project(HDRShot VERSION 0.2.1 LANGUAGES CXX)
+project(HDRShot VERSION 0.2.2 LANGUAGES CXX)
 set(HDRSHOT_UPDATE_TEST_VERSION "" CACHE STRING "Isolated update POC version; requires testing build")
 if(HDRSHOT_UPDATE_TEST_VERSION)
   if(NOT HDRSHOT_UPDATE_TESTING OR NOT HDRSHOT_UPDATE_TEST_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
@@ -393,11 +393,24 @@ target_link_libraries(hdrshot_ports INTERFACE hdrshot_core)
 target_include_directories(hdrshot_ports INTERFACE src)
 
 if(HDRSHOT_ENABLE_QT_HOST)
-  find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Network LinguistTools)
   include(cmake/update_dependencies.cmake)
   include(cmake/update_targets.cmake)
   find_package(Qt6FreetypePrivate REQUIRED)
   find_package(Qt6BundledFreetype REQUIRED)
+
+  add_library(hdrshot_qt_ui_language STATIC src/ui/qt/ui_language_runtime.cpp)
+  target_link_libraries(hdrshot_qt_ui_language PUBLIC hdrshot_ports Qt6::Core)
+  target_include_directories(hdrshot_qt_ui_language PUBLIC src)
+  if(APPLE)
+    target_sources(hdrshot_qt_ui_language PRIVATE src/platform/macos/macos_ui_language.mm)
+    target_link_libraries(hdrshot_qt_ui_language PRIVATE "-framework Foundation")
+    set_target_properties(hdrshot_qt_ui_language PROPERTIES
+      OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
+  elseif(WIN32)
+    target_sources(hdrshot_qt_ui_language PRIVATE src/platform/windows/windows_ui_language.cpp)
+  endif()
+  hdrshot_enable_warnings(hdrshot_qt_ui_language)
 
   add_library(hdrshot_qt_analyzer_ui STATIC
     src/ui/qt/analyzer_layout.cpp src/ui/qt/analyzer_source_view.cpp
@@ -467,13 +480,14 @@ if(HDRSHOT_ENABLE_QT_HOST)
   hdrshot_enable_warnings(hdrshot_qt_overlay_ui)
 
   add_library(hdrshot_qt_settings STATIC
+    src/platform/qt/qt_application_restart.cpp
     src/platform/qt/qt_gui_instance_guard.cpp
     src/platform/qt/qt_folder_opener_port.cpp
     src/platform/qt/qt_settings_store_port.cpp
     src/ui/qt/settings_window.cpp
   )
   target_link_libraries(hdrshot_qt_settings
-    PUBLIC hdrshot_settings_workflow hdrshot_ports hdrshot_build_metadata hdrshot_update_policy Qt6::Widgets
+    PUBLIC hdrshot_settings_workflow hdrshot_ports hdrshot_build_metadata hdrshot_update_policy hdrshot_qt_ui_language Qt6::Widgets
   )
   target_include_directories(hdrshot_qt_settings PUBLIC src)
   hdrshot_enable_warnings(hdrshot_qt_settings)
@@ -533,6 +547,12 @@ if(HDRSHOT_ENABLE_QT_HOST)
     hdrshot_enable_warnings(hdrshot_qt_settings_store_tests)
     add_test(NAME hdrshot_qt_settings_store_tests COMMAND hdrshot_qt_settings_store_tests)
 
+    add_executable(hdrshot_ui_language_tests tests/ui_language_tests.cpp)
+    target_link_libraries(hdrshot_ui_language_tests PRIVATE hdrshot_qt_ui_language)
+    target_include_directories(hdrshot_ui_language_tests PRIVATE tests)
+    hdrshot_enable_warnings(hdrshot_ui_language_tests)
+    add_test(NAME hdrshot_ui_language_tests COMMAND hdrshot_ui_language_tests)
+
     add_executable(hdrshot_qt_diagnostics_tests
       tests/qt_json_lines_diagnostics_port_tests.cpp
     )
@@ -569,6 +589,13 @@ if(HDRSHOT_ENABLE_QT_HOST)
     add_test(NAME hdrshot_qt_export_task_executor_tests COMMAND hdrshot_qt_export_task_executor_tests)
     set_tests_properties(hdrshot_qt_export_task_executor_tests PROPERTIES TIMEOUT 10)
 
+    add_executable(hdrshot_application_restart_tests tests/application_restart_tests.cpp)
+    target_link_libraries(hdrshot_application_restart_tests PRIVATE hdrshot_qt_settings)
+    target_include_directories(hdrshot_application_restart_tests PRIVATE tests)
+    hdrshot_enable_warnings(hdrshot_application_restart_tests)
+    add_test(NAME hdrshot_application_restart_tests COMMAND hdrshot_application_restart_tests)
+    set_tests_properties(hdrshot_application_restart_tests PROPERTIES TIMEOUT 20)
+
     add_executable(hdrshot_settings_window_tests
       tests/settings_window_tests.cpp
     )
@@ -579,6 +606,8 @@ if(HDRSHOT_ENABLE_QT_HOST)
     target_include_directories(hdrshot_settings_window_tests PRIVATE tests)
     hdrshot_enable_warnings(hdrshot_settings_window_tests)
     add_test(NAME hdrshot_settings_window_tests COMMAND hdrshot_settings_window_tests)
+    add_test(NAME hdrshot_settings_window_english_tests
+      COMMAND hdrshot_settings_window_tests --english-language-regression)
 
     add_executable(hdrshot_overlay_editor_widget_tests
       tests/overlay_editor_widget_tests.cpp
@@ -1006,6 +1035,9 @@ if(APPLE)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
         "$<TARGET_BUNDLE_DIR:hdrshot_macos_qt_overlay_poc>/Contents/Resources/THIRD_PARTY_NOTICES.md"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/licenses/Qt-Translations-BSD-3-Clause.txt"
+        "$<TARGET_BUNDLE_DIR:hdrshot_macos_qt_overlay_poc>/Contents/Resources/licenses/Qt-Translations-BSD-3-Clause.txt"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${ultrahdr_SOURCE_DIR}/LICENSE"
         "$<TARGET_BUNDLE_DIR:hdrshot_macos_qt_overlay_poc>/Contents/Resources/licenses/libultrahdr-LICENSE.txt"
@@ -1605,6 +1637,10 @@ if(BUILD_TESTING)
         ENVIRONMENT "QT_QPA_PLATFORM=cocoa" SKIP_RETURN_CODE 77 TIMEOUT 30 RUN_SERIAL TRUE)
     endif()
   endif()
+endif()
+
+if(HDRSHOT_ENABLE_QT_HOST)
+  include(cmake/ui_language.cmake)
 endif()
 
 if(WIN32 AND BUILD_TESTING AND HDRSHOT_ENABLE_QT_HOST)

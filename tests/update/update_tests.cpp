@@ -47,10 +47,10 @@ struct Fake final : Effects {
   std::vector<std::function<void()>> delays;
   std::function<void(Result<Receipt, Error>)> downloaded;
   std::function<void(bool)> question;
-  Done installed, pending_prompt;
-  bool hold_prompt{};
-  std::string prompted;
-  bool busy_flag{}, fail_prompt{};
+  Done installed, cancelled;
+  std::function<void(std::uint64_t, std::uint64_t)> progress;
+  bool hold_cancel{};
+  bool busy_flag{}, operation_active{};
   std::optional<Error> prior_install;
   std::optional<Error> previous_install_error(const Candidate &) const override {return prior_install;}
   int downloads{}, questions{}, installs{};
@@ -58,25 +58,17 @@ struct Fake final : Effects {
     checks.push_back(d);
   }
   void delay(unsigned, std::function<void()> d) override { delays.push_back(d); }
-  void acquire_and_download(const Candidate &, std::function<void(std::uint64_t, std::uint64_t)>,
+  void acquire_and_download(const Candidate &, std::function<void(std::uint64_t, std::uint64_t)> p,
                             std::function<void(Result<Receipt, Error>)> d) override {
     ++downloads;
+    progress = std::move(p);
     downloaded = d;
   }
-  void cancel_download(Done d) override { d(Result<bool, Error>::success(true)); }
-  void persist_prompt(const std::string &k, Done done) override {
-    if (fail_prompt) {
-      done(Result<bool, Error>::failure(failure("disk_full")));
-      return;
-    }
-    prompted = k;
-    if (hold_prompt) {
-      pending_prompt = std::move(done);
-      return;
-    }
-    done(Result<bool, Error>::success(true));
+  void cancel_download(Done d) override {
+    if (hold_cancel) cancelled=std::move(d);
+    else d(Result<bool, Error>::success(true));
   }
-  bool was_prompted(const std::string &k) const override { return prompted == k; }
+  bool update_operation_active() const override { return operation_active; }
   bool busy() const override { return busy_flag; }
   void ask_install(const Candidate &, std::function<void(bool)> d) override {
     ++questions;
@@ -152,6 +144,29 @@ int main(int argc, char **argv) {
   HDRSHOT_CHECK(sodium_init() >= 0);
   using hdrshot::test::run;
   return run({
+      {"new successful round reprompts same package after Later", [] {
+         Fake f; Coordinator c(identity(), f);
+         c.trigger(100, true); f.checked(); f.ready(); f.question(false);
+         c.trigger(101, false, true); f.checked(); f.ready();
+         HDRSHOT_CHECK(f.questions == 2 && f.checks.size() == 2);
+       }},
+      {"unanswered question cannot block seven-day remote check", [] {
+         Fake f; Coordinator c(identity(), f);
+         c.trigger(100, true); f.checked(); f.ready();
+         auto stale = f.question;
+         c.tick(100 + 604800);
+         HDRSHOT_CHECK(f.checks.size() == 2 && c.view().phase == Phase::checking);
+         stale(true); HDRSHOT_CHECK(f.installs == 0);
+       }},
+      {"failed round cannot turn old package into an install prompt", [] {
+         Fake f; Coordinator c(identity(), f);
+         c.trigger(100, true); f.checked(); f.ready(); f.question(false);
+         c.trigger(101, false, true);
+         f.checks.back()(Result<Checked, Error>::failure(failure("offline")));
+         c.tick(100 + 604800);
+         HDRSHOT_CHECK(f.questions == 1 && c.view().phase == Phase::check_failed);
+         c.install(); HDRSHOT_CHECK(f.installs == 0);
+       }},
       {"schema one clients at 0.1.5 and 0.1.6 accept future and skipped versions", [] {
          QByteArray pk(32, 0), sk(64, 0);
          crypto_sign_keypair(reinterpret_cast<unsigned char *>(pk.data()), reinterpret_cast<unsigned char *>(sk.data()));
@@ -195,18 +210,13 @@ int main(int argc, char **argv) {
          j["candidate"]=QString::fromStdString(c.key());
          HDRSHOT_CHECK(slot.finish_install_result(j) && !QFileInfo::exists(install_result_path(tmp.path(),slot.owner,slot.channel)));
        }},
-      {"rollback explanation persists through restart and seven-day reminders",
-       [] {
-         Fake f;f.prior_install=failure("更新失败，已恢复 0.1.4。无法替换应用文件");
-         Coordinator c(identity(),f);c.restore(candidate(),{candidate().key(),1},false);
-         HDRSHOT_CHECK(c.view().error && c.view().detail.find("已恢复 0.1.4")!=std::string::npos);
-         c.trigger(100,true);HDRSHOT_CHECK(f.questions==1 && c.view().error);
-         f.question(false);c.tick(100+604799);HDRSHOT_CHECK(f.questions==1);
-         // Complete the ordinary scheduled metadata check before the due tick.
-         if(!f.checks.empty()){f.checked();f.ready();}
-         c.tick(100+604800);HDRSHOT_CHECK(f.questions==2 && c.view().error);
-         f.question(false);c.trigger(100+604801,false,true);f.checked();f.ready();
-         HDRSHOT_CHECK(c.view().error && c.view().detail.find("已恢复 0.1.4")!=std::string::npos);
+      {"rollback explanation survives fresh remote checks", [] {
+         Fake f; f.prior_install=failure("更新失败，已恢复 0.1.4。无法替换应用文件");
+         Coordinator c(identity(),f); c.trigger(100,true); f.checked(); f.ready();
+         HDRSHOT_CHECK(f.questions==1 && c.view().error);
+         f.question(false); c.tick(100+604799); HDRSHOT_CHECK(f.checks.size()==1);
+         c.tick(100+604800); HDRSHOT_CHECK(f.checks.size()==2 && f.questions==1);
+         f.checked(); f.ready(); HDRSHOT_CHECK(f.questions==2 && c.view().error);
        }},
       {"testing paths isolate daily settings and remain stable across versions",
        [] {
@@ -277,7 +287,7 @@ int main(int argc, char **argv) {
          f.ready();
          HDRSHOT_CHECK(f.checks.size() == 2 && f.downloads == 1 && f.questions == 1);
        }},
-      {"busy, new-process reminder, missing install package auto-redownload",
+      {"busy and restart check remotely while missing install package requires recheck",
        [] {
          Fake f;
          f.busy_flag = true;
@@ -299,10 +309,11 @@ int main(int argc, char **argv) {
          restarted.install();
          HDRSHOT_CHECK(f.installs == 1);
          f.installed(Result<bool, Error>::failure(failure("missing", ErrorCode::object_not_found)));
-         HDRSHOT_CHECK(f.downloads == 3);
-         f.ready();
-         HDRSHOT_CHECK(f.installs == 1 && f.questions == 2 &&
-                       restarted.view().phase == Phase::deferred);
+         HDRSHOT_CHECK(f.downloads == 2 && restarted.view().phase == Phase::check_failed);
+         restarted.install(); HDRSHOT_CHECK(f.installs == 1);
+         restarted.trigger(201, false, true); f.checked(); f.ready();
+         HDRSHOT_CHECK(f.downloads == 3 && f.questions == 3 &&
+                       restarted.view().phase == Phase::ready);
        }},
       {"cancellation rejects stale metadata and lifetime callbacks",
        [] {
@@ -316,6 +327,29 @@ int main(int argc, char **argv) {
          }
          f.checked();
          HDRSHOT_CHECK(f.downloads == 0);
+       }},
+      {"cancel drains before a new round and rejects late retry progress and completion", [] {
+         Fake f; f.hold_cancel=true; Coordinator c(identity(),f);
+         c.trigger(100,true);
+         auto stale_check=f.checks.back();
+         stale_check(Result<Checked,Error>::failure(
+           failure("retry",ErrorCode::precondition_failed,Retryability::same_input)));
+         auto stale_delay=f.delays.back();
+         c.trigger(101,false,true); HDRSHOT_CHECK(f.checks.size()==1);
+         c.cancel(); stale_delay(); stale_check(Result<Checked,Error>::success({candidate()}));
+         HDRSHOT_CHECK(f.checks.size()==1 && f.downloads==0);
+         f.cancelled(Result<bool,Error>::success(true));
+         c.trigger(102,false,true); f.checked();
+         auto old_progress=f.progress; auto old_done=f.downloaded;
+         f.ready(); HDRSHOT_CHECK(f.questions==1);
+         c.cancel(); c.trigger(103,false,true);
+         HDRSHOT_CHECK(f.checks.size()==2); // Cancellation still owns the operation.
+         f.cancelled(Result<bool,Error>::success(true));
+         c.tick(104); HDRSHOT_CHECK(c.view().phase==Phase::idle && f.checks.size()==2);
+         c.trigger(105,false,true);
+         old_progress(99,100); old_done(Result<Receipt,Error>::success({candidate().key(),1}));
+         HDRSHOT_CHECK(c.view().phase==Phase::checking && c.view().received==0 && f.questions==1);
+         f.checked(); f.ready(); HDRSHOT_CHECK(f.questions==2 && f.checks.size()==3);
        }},
       {"higher incompatible version never shows current or install",
        [] {
@@ -362,10 +396,9 @@ int main(int argc, char **argv) {
                        !QFileInfo::exists(stage));
          HDRSHOT_CHECK(QDir(root + "/cleanup").entryList({"*.json"}, QDir::Files).isEmpty());
        }},
-      {"legacy prompt storage failure cannot suppress a process reminder",
+      {"fresh successful check asks without prompt persistence",
        [] {
          Fake f;
-         f.fail_prompt = true;
          Coordinator c(identity(), f);
          c.trigger(1, true);
          f.checked();
@@ -603,82 +636,46 @@ int main(int argc, char **argv) {
          c.tick(103);
          HDRSHOT_CHECK(!c.view().busy && f.questions == 1);
        }},
-      {"legacy manual pending asks at cold-start clock without check or download",
-       [] {
-         Fake f;
-         f.prompted = candidate().key();
-         Coordinator c(identity(), f);
-         c.restore(candidate(), {candidate().key(), 3}, true);
-         HDRSHOT_CHECK(f.questions == 0);
-         c.trigger(1791821000, true);
-         HDRSHOT_CHECK(f.questions == 1 && f.checks.empty() && f.downloads == 0);
-         c.tick(1791821001);
-         HDRSHOT_CHECK(f.questions == 1 && c.view().phase == Phase::manual_pending);
-         f.question(false);
-         for (int i = 0; i < 10; ++i)
-           c.tick(1791821002 + i);
-         c.trigger(1791822000, false, true);
-         HDRSHOT_CHECK(f.questions == 1 && f.checks.empty());
+      {"successful manual pending round cold-start checks again before asking", [] {
+         Fake f; Coordinator c(identity(), f);
+         c.trigger(100,true); f.checked(); f.ready(); c.install();
+         f.installed(Result<bool,Error>::success(true));
+         HDRSHOT_CHECK(c.view().phase==Phase::manual_pending);
+         c.trigger(101,true); HDRSHOT_CHECK(f.checks.size()==2 && f.questions==1);
+         f.checked(); f.ready(); HDRSHOT_CHECK(f.questions==2 && f.downloads==2);
        }},
-      {"restored package reminder defers one startup round and failed ticks never add HTTP",
-       [] {
-         Fake f;
-         Coordinator c(identity(), f);
-         c.restore(candidate(), {candidate().key(), 3}, false);
-         c.trigger(100, true);
-         HDRSHOT_CHECK(f.questions == 1 && f.checks.empty());
-         f.question(false);
-         c.tick(101);
-         HDRSHOT_CHECK(f.checks.size() == 1);
-         for (int i = 0; i < 20; ++i)
-           c.tick(102 + i);
-         HDRSHOT_CHECK(f.checks.size() == 1);
-         for (int n = 0; n < 3; ++n) {
-           f.checks.back()(Result<Checked, Error>::failure(
-               failure("offline", ErrorCode::precondition_failed, Retryability::same_input)));
-           if (n < 2)
-             f.delays.back()();
+      {"cold-start failure never asks for an older verified package", [] {
+         Fake f; Coordinator c(identity(), f);
+         c.trigger(100,true); f.checked(); f.ready(); f.question(false);
+         c.trigger(101,true);
+         for(int n=0;n<3;++n) {
+           f.checks.back()(Result<Checked,Error>::failure(
+             failure("offline",ErrorCode::precondition_failed,Retryability::same_input)));
+           if(n<2)f.delays.back()();
          }
-         for (int i = 0; i < 20; ++i)
-           c.tick(200 + i);
-         HDRSHOT_CHECK(f.checks.size() == 3 && f.questions == 1);
+         for(int n=0;n<20;++n)c.tick(102+n);
+         HDRSHOT_CHECK(f.checks.size()==4 && f.questions==1 && c.view().phase==Phase::check_failed);
        }},
-      {"seven-day reminder clock survives manual checks and resets from actual question",
-       [] {
-         Fake f;
-         Coordinator c(identity(), f);
-         c.trigger(100, true);
-         f.checked();
-         f.ready();
-         f.question(false);
-         c.trigger(100 + 3 * 86400, false, true);
-         f.checked();
-         f.ready();
-         HDRSHOT_CHECK(f.questions == 1);
-         c.tick(100 + 604799);
-         HDRSHOT_CHECK(f.questions == 1);
-         c.tick(100 + 604800);
-         HDRSHOT_CHECK(f.questions == 2 && f.checks.size() == 2);
-         // An already-open question never opens again, even after another week.
-         c.tick(100 + 2 * 604800);
-         HDRSHOT_CHECK(f.questions == 2);
-         f.question(false);
-         c.tick(100 + 2 * 604800 + 1);
-         HDRSHOT_CHECK(f.questions == 2);
+      {"manual check resets the single seven-day schedule and each success asks", [] {
+         Fake f; Coordinator c(identity(),f);
+         c.trigger(100,true); f.checked(); f.ready(); f.question(false);
+         const auto manual=100+3*86400;
+         c.trigger(manual,false,true); f.checked(); f.ready();
+         HDRSHOT_CHECK(f.questions==2); f.question(false);
+         c.tick(manual+604799); HDRSHOT_CHECK(f.checks.size()==2 && f.questions==2);
+         c.tick(manual+604800); HDRSHOT_CHECK(f.checks.size()==3 && f.questions==2);
+         f.checked(); f.ready(); HDRSHOT_CHECK(f.questions==3);
+         c.tick(manual+604801); HDRSHOT_CHECK(f.questions==3);
        }},
-      {"failed manual metadata check cannot postpone a verified package reminder",
-       [] {
-         Fake f;
-         Coordinator c(identity(), f);
-         c.trigger(100, true);
-         f.checked();
-         f.ready();
-         f.question(false);
-         c.trigger(100 + 3 * 86400, false, true);
-         f.checks.back()(Result<Checked, Error>::failure(failure("metadata unavailable")));
-         HDRSHOT_CHECK(c.view().phase == Phase::check_failed);
-         c.tick(100 + 604800);
-         HDRSHOT_CHECK(f.questions == 2 && c.view().phase == Phase::ready && f.downloads == 1);
+      {"failed manual check owns its next schedule and cannot prompt old package", [] {
+         Fake f; Coordinator c(identity(),f);
+         c.trigger(100,true); f.checked(); f.ready(); f.question(false);
+         c.trigger(200,false,true);
+         f.checks.back()(Result<Checked,Error>::failure(failure("offline")));
+         c.tick(100+604800); c.install();
+         HDRSHOT_CHECK(f.questions==1 && f.checks.size()==2 && f.installs==0 &&
+                       c.view().phase==Phase::check_failed);
+         c.tick(200+604800); HDRSHOT_CHECK(f.checks.size()==3 && f.questions==1);
        }},
       {"incompatible candidate cannot borrow a prior verified package reminder or install",
        [] {
@@ -702,25 +699,25 @@ int main(int argc, char **argv) {
          c.trigger(100 + 604801, true);
          HDRSHOT_CHECK(f.questions == 1 && f.downloads == 1 && f.installs == 0);
        }},
-      {"overdue busy reminder asks once when idle without catch-up or network dependency",
-       [] {
-         Fake f;
-         Coordinator c(identity(), f);
-         c.restore(candidate(), {candidate().key(), 3}, true);
-         c.trigger(100, true);
-         f.question(false);
-         f.busy_flag = true;
-         c.tick(100 + 604800);
-         c.tick(100 + 3 * 604800);
-         HDRSHOT_CHECK(f.questions == 1);
-         f.busy_flag = false;
-         c.tick(100 + 3 * 604800 + 5);
-         HDRSHOT_CHECK(f.questions == 2 && f.checks.empty() && f.downloads == 0);
-         f.question(false);
-         c.tick(100 + 4 * 604800 + 4);
-         HDRSHOT_CHECK(f.questions == 2);
-         c.tick(100 + 4 * 604800 + 5);
-         HDRSHOT_CHECK(f.questions == 3);
+      {"busy checks when due and only prompts after successful check and idle", [] {
+         Fake f; Coordinator c(identity(),f);
+         c.trigger(100,true); f.checked(); f.ready(); f.question(false);
+         f.busy_flag=true; c.tick(100+604800);
+         HDRSHOT_CHECK(f.checks.size()==2 && f.questions==1);
+         f.checked(); f.ready(); c.tick(100+604801); HDRSHOT_CHECK(f.questions==1);
+         f.busy_flag=false; c.tick(100+604802); HDRSHOT_CHECK(f.questions==2);
+         f.question(false); c.tick(100+604803); HDRSHOT_CHECK(f.questions==2);
+       }},
+      {"update operation preserves open callback token while Later closes question", [] {
+         Fake f; Coordinator c(identity(),f);
+         c.trigger(100,true); f.checked(); f.ready();
+         const auto token=c.view().generation;
+         f.operation_active=true; c.later(); c.trigger(101,false,true); c.install(); c.cancel();
+         HDRSHOT_CHECK(c.view().generation==token && c.view().phase==Phase::ready &&
+                       f.checks.size()==1 && f.installs==0);
+         f.operation_active=false;
+         c.manual_open_result(Result<bool,Error>::failure(failure("open gate failure")));
+         HDRSHOT_CHECK(c.view().detail=="open gate failure" && c.view().phase==Phase::deferred);
        }},
       {"a new candidate has an immediate reminder despite Later for the old one",
        [] {

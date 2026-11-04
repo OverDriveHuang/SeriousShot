@@ -50,7 +50,8 @@ private:
       const auto error=native_error("SetWindowPos",GetLastError());
       record_diagnostic_failure(diagnostics_.get(),"pin.window_order",error);
       if (auto *pin=dynamic_cast<PinnedScreenshotWindow *>(&widget))
-        pin->show_error(QStringLiteral("无法调整贴图窗口层级，请重试。"));
+        //% "Could not change the pinned window’s stacking order. Try again."
+        pin->show_error(qtTrId("pinned.error.topmost_failed"));
     }
   }
   std::shared_ptr<DiagnosticsPort> diagnostics_;
@@ -77,7 +78,8 @@ Result<bool,Error> attach(PinnedScreenshotWindow &window,
       [guard] { if (guard && !guard->is_closed()) guard->refresh_presentation(); },
       [guard,diagnostics](Error error) {
         record_diagnostic_failure(diagnostics.get(),"pin.display_state",error);
-        if (guard && !guard->is_closed()) guard->show_display_error(QStringLiteral("无法更新显示器颜色状态。"));
+        //% "Could not update the display color state."
+        if (guard && !guard->is_closed()) guard->show_display_error(qtTrId("pinned.error.display_color_failed"));
       }, [guard] { if (guard) guard->clear_display_error(); });
 }
 } // namespace

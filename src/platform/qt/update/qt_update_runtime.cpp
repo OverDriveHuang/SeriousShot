@@ -122,29 +122,8 @@ void Runtime::start() {
         }
       }
     }
-    std::optional<Candidate> recovered_candidate;
-    std::optional<Receipt> recovered_receipt;
-    const bool pending = slot_.record["phase"] == "manual_pending";
-    if (acquired) {
-      auto catalog = verify_catalog(envelope_, trust_);
-      if (catalog) {
-        for (const auto &c : catalog.value().targets) {
-          if (c.key() == slot_.record["key"].toString().toStdString() &&
-              c.version > identity_.version) {
-            auto verified = slot_.verified(c);
-            if (verified) {
-              recovered_candidate = c;
-              recovered_receipt = verified.value();
-            }
-            break;
-          }
-        }
-      }
-    }
     slot_.release();
-    ui([this, recovered_candidate, recovered_receipt, pending] {
-      if (recovered_candidate && recovered_receipt)
-        coordinator_.restore(*recovered_candidate, *recovered_receipt, pending);
+    ui([this] {
       timer_.start();
       coordinator_.trigger(QDateTime::currentSecsSinceEpoch(), true);
     });
@@ -165,16 +144,8 @@ bool Runtime::manual_install() const { return native_->manual(); }
 std::optional<Error> Runtime::previous_install_error(const Candidate &c) const {
   return install_result_error(install_result_,slot_.owner,slot_.channel,c);
 }
-void Runtime::persist_prompt(const std::string &key, Done done) {
-  state_["prompted"] = QString::fromStdString(key);
-  const auto state = state_;
-  work([this, state, done = std::move(done)] {
-    auto saved = save_json(state_path_, state);
-    ui([done, saved = std::move(saved)]() mutable { done(std::move(saved)); });
-  });
-}
-bool Runtime::was_prompted(const std::string &key) const {
-  return state_["prompted"].toString().toStdString() == key;
+bool Runtime::update_operation_active() const {
+  return manual_opening_ || barrier_;
 }
 UpdateWindow &Runtime::update_window() {
   if (!update_window_) {
@@ -208,8 +179,12 @@ UpdateWindow &Runtime::update_window() {
           else {
             if(slot_.record["owner"]==slot_.owner && slot_.record["key"].toString().toStdString()==c.key() &&
                slot_.record["phase"]=="manual_pending")result=native_->cancel_manual(slot_);
-            if(result)result=Result<bool,Error>::failure(
-              failure("安装包已缺失或损坏，请点击重试重新下载。",ErrorCode::object_not_found));
+            if(result)
+              result = Result<bool, Error>::failure(translated_failure(
+                  "安装包已缺失或损坏，请点击重试重新下载。",
+                  //% "Installer missing or damaged. Click Retry to download again."
+                  QT_TRID_NOOP("update.detail.package_missing_retry"),
+                  ErrorCode::object_not_found));
           }
         }
         slot_.release();
@@ -222,9 +197,7 @@ UpdateWindow &Runtime::update_window() {
         });
       });
     };
-    update_window_->retry = [this] {
-      coordinator_.trigger(QDateTime::currentSecsSinceEpoch(), false, true);
-    };
+    update_window_->retry = [this] { show_details(); };
     update_window_->set_view(coordinator_.view());
   }
   return *update_window_;
@@ -239,6 +212,7 @@ void Runtime::allow_interactive_presentation() {
 }
 void Runtime::show_details() {
   interactive_presentation_enabled_ = true;
+  coordinator_.trigger(QDateTime::currentSecsSinceEpoch(), false, true);
   present_details_if_allowed();
 }
 void Runtime::present_details_if_allowed() {
@@ -312,14 +286,36 @@ void Runtime::get(const QUrl &url, const QByteArray &etag,
           // Rate limits end this round; the normal schedule/manual action can
           // start a later round.
           const bool transient = status == 0 || status >= 500;
-          done(Result<QByteArray, Error>::failure(
-                   failure(status == 404                    ? "更新清单不存在"
-                           : rate_limited ? "更新源限流，请稍后重试"
-                           : status == 403 ? "更新源拒绝访问，请稍后重试"
-                                                            : "更新网络请求失败",
-                           ErrorCode::precondition_failed,
-                           transient ? Retryability::same_input : Retryability::never)),
-               {});
+          const auto retry =
+              transient ? Retryability::same_input : Retryability::never;
+          const auto request_error = [&](const char *reason,
+                                         const char *message_id) {
+            return Result<QByteArray, Error>::failure(translated_failure(
+                reason, message_id, ErrorCode::precondition_failed, retry));
+          };
+          if (status == 404) {
+            done(request_error("更新清单不存在",
+                               /*% "Update manifest not found" */ QT_TRID_NOOP(
+                                   "update.detail.manifest_missing")),
+                 {});
+          } else if (rate_limited) {
+            done(request_error(
+                     "更新源限流，请稍后重试",
+                     /*% "Update server rate limit reached. Try again later." */
+                     QT_TRID_NOOP("update.detail.rate_limited")),
+                 {});
+          } else if (status == 403) {
+            done(request_error(
+                     "更新源拒绝访问，请稍后重试",
+                     /*% "Update server denied access. Try again later." */
+                     QT_TRID_NOOP("update.detail.source_denied")),
+                 {});
+          } else {
+            done(request_error("更新网络请求失败",
+                               /*% "Update request failed" */ QT_TRID_NOOP(
+                                   "update.detail.network_request")),
+                 {});
+          }
           return;
         }
         done(Result<QByteArray, Error>::success(bytes), response_etag);
@@ -353,7 +349,10 @@ void Runtime::fetch_catalog(const Identity &identity,
                            std::function<void(Result<FetchedCatalog, Error>)> done) {
   metadata_deadline_ = QDeadlineTimer(metadata_timeout_ms_);
   if (!trust_.configured()) {
-    done(Result<FetchedCatalog, Error>::failure(failure("正式更新签名源尚未配置")));
+    done(Result<FetchedCatalog, Error>::failure(translated_failure(
+        "正式更新签名源尚未配置",
+        /*% "The signed update source is not configured" */ QT_TRID_NOOP(
+            "update.detail.signed_source_missing"))));
     return;
   }
   // Catalog acceptance is shared across installations, not a per-Runtime
@@ -456,6 +455,23 @@ void Runtime::acquire_and_download(const Candidate &candidate,
       ui([done, r = std::move(existing)]() mutable { done(std::move(r)); });
       return;
     }
+    if (slot_.record["phase"] == "manual_pending") {
+      auto released =
+          slot_.record["owner"] == slot_.owner &&
+                  slot_.record["channel"] == slot_.channel
+              ? native_->cancel_manual(slot_)
+              : Result<bool, Error>::failure(translated_failure(
+                    "其他安装的安装包仍在使用",
+                    /*% "Another installation is using its installer" */
+                    QT_TRID_NOOP("update.detail.foreign_package_in_use")));
+      if (!released) {
+        auto error = released.error();
+        error.safe_context["update_stage"] = "cleanup";
+        slot_.release();
+        ui([done, error] { done(Result<Receipt, Error>::failure(error)); });
+        return;
+      }
+    }
     auto reserved = slot_.reserve(candidate);
     if (!reserved) {
       slot_.release();
@@ -535,7 +551,12 @@ void Runtime::download_worker(Candidate c,
         const auto chunk = r->read(1024 * 1024);
         received_ += static_cast<std::uint64_t>(chunk.size());
         if (received_ > c.asset_size || writer_->write(chunk) != chunk.size()) {
-          download_error_ = failure("下载写入失败或大小超限", ErrorCode::storage_full);
+          download_error_ = translated_failure(
+              "下载写入失败或大小超限",
+              /*% "Could not write the download, or it exceeded the size limit"
+               */
+              QT_TRID_NOOP("update.detail.download_write_or_size"),
+              ErrorCode::storage_full);
           r->abort();
           return;
         }
@@ -571,8 +592,14 @@ void Runtime::download_worker(Candidate c,
             slot_.record["phase"] = cleanup ? "empty" : "cleanup_blocked";
             (void)slot_.save();
             (*finish)(Result<Receipt, Error>::failure(
-                cleanup ? (download_error_ ? *download_error_ : failure("下载失败"))
-                        : cleanup.error()));
+                cleanup
+                    ? (download_error_
+                           ? *download_error_
+                           : translated_failure(
+                                 "下载失败",
+                                 /*% "Download failed" */ QT_TRID_NOOP(
+                                     "update.detail.download_failed_generic")))
+                    : cleanup.error()));
             *start = {};
             return;
           }
@@ -582,8 +609,13 @@ void Runtime::download_worker(Candidate c,
             auto removed = slot_.remove_payload();
             slot_.record["phase"] = removed ? "empty" : "cleanup_blocked";
             (void)slot_.save();
-            (*finish)(Result<Receipt, Error>::failure(removed ? failure("安装包校验失败")
-                                                              : removed.error()));
+            (*finish)(Result<Receipt, Error>::failure(
+                removed
+                    ? translated_failure(
+                          "安装包校验失败",
+                          /*% "Installer verification failed" */ QT_TRID_NOOP(
+                              "update.detail.package_verification"))
+                    : removed.error()));
             *start = {};
             return;
           }
@@ -643,7 +675,10 @@ void Runtime::install(const Candidate &c, const Receipt &receipt, Done done) {
           if (result && (!checked.value().checked.candidate ||
                          checked.value().checked.candidate->version <= identity_.version ||
                          *checked.value().checked.candidate != c))
-            result = Result<bool, Error>::failure(failure("更新清单已变化，请重新检查更新"));
+            result = Result<bool, Error>::failure(translated_failure(
+                "更新清单已变化，请重新检查更新",
+                /*% "The update manifest changed. Check for updates again." */
+                QT_TRID_NOOP("update.detail.catalog_changed")));
           if (!result) {
             auto error = result.error();
             error.safe_context["recheck_required"] = "true";
@@ -654,8 +689,11 @@ void Runtime::install(const Candidate &c, const Receipt &receipt, Done done) {
             if (result) {
               auto package = slot_.verified(c);
               if (!slot_.matches(receipt) || !package)
-                result = Result<bool, Error>::failure(failure(
-                    "安装包已缺失或损坏，请检查更新以自动补下载", ErrorCode::object_not_found));
+                result = Result<bool, Error>::failure(translated_failure(
+                    "安装包已缺失或损坏，请检查更新以自动补下载",
+                    //% "Installer missing or damaged. Check for updates to download it again."
+                    QT_TRID_NOOP("update.detail.package_missing_recheck"),
+                    ErrorCode::object_not_found));
               else
                 result = native_->install(slot_, c, checked.value().envelope, [this] {
                   struct Decision {

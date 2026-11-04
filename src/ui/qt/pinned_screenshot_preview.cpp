@@ -66,7 +66,11 @@ PinnedScreenshotPreview::PinnedScreenshotPreview(QWidget &owner,QToolButton &but
     auto *view=sources_[std::size_t(i)];
     view->set_source_size(image_);view->set_tools(false,false,false);
     view->setFocusPolicy(Qt::NoFocus);view->setAttribute(Qt::WA_TransparentForMouseEvents);
-    view->setAccessibleName(i==0?QStringLiteral("截图缩略图"):QStringLiteral("截图临时预览"));
+    view->setAccessibleName(i==0?
+        //% "Screenshot thumbnail"
+        qtTrId("pinned.preview.thumbnail_accessible"):
+        //% "Temporary screenshot preview"
+        qtTrId("pinned.preview.temporary_accessible"));
     view->setCursor(Qt::ArrowCursor);
     // The opaque native child must also be passive on both OS backends.
     view->presentation_widget()->setAttribute(Qt::WA_TransparentForMouseEvents);

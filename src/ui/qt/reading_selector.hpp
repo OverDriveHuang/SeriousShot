@@ -1,4 +1,6 @@
 #pragma once
+
+#include <QCoreApplication>
 #include <QApplication>
 #include <QCheckBox>
 #include <QEvent>
@@ -135,7 +137,8 @@ public:
     button->setAutoRaise(true);
     button->setPopupMode(QToolButton::InstantPopup);
     button->setObjectName(name + "Button");
-    button->setAccessibleName("选择默认读数");
+    //% "Choose default readings"
+    button->setAccessibleName(qtTrId("reading_selector.accessible_name"));
     root->addWidget(button, 0, Qt::AlignTop);
     menu_ = new QMenu(button);
     button->setMenu(menu_);
@@ -213,7 +216,7 @@ private:
         auto *h = new QHBoxLayout(w);
         h->setContentsMargins(8, 4, 4, 4);
         auto *label = new QLabel(names_[i], w);
-        label->setWordWrap(true);
+        label->setWordWrap(false);
         h->addWidget(label);
         auto *x = new QToolButton(w);
         x->setText("×");
@@ -224,7 +227,8 @@ private:
         flow_->addWidget(w);
       }
     if (std::none_of(flags_.begin(), flags_.end(), [](bool b) { return b; })) {
-      auto *empty = new QLabel("选择读数", chips_);
+      //% "Choose readings"
+      auto *empty = new QLabel(qtTrId("reading_selector.placeholder"), chips_);
       empty->setObjectName(objectName() + "EmptyHint");
       empty->setContentsMargins(4, 4, 4, 4);
       flow_->addWidget(empty);

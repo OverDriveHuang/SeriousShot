@@ -16,6 +16,18 @@ Error invalid_field(std::string field) {
 
 }  // namespace
 
+Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_ui_language(
+    const UiLanguage language, SettingsStorePort& settings_store) {
+  if (!valid_ui_language(language)) {
+    return Result<SettingsUpdateReceipt, Error>::failure(invalid_field("ui_language"));
+  }
+  SettingsPatch patch;
+  patch.ui_language = language;
+  const auto saved = settings_store.save(patch);
+  if (!saved) return Result<SettingsUpdateReceipt, Error>::failure(saved.error());
+  return Result<SettingsUpdateReceipt, Error>::success({saved.value().revision});
+}
+
 Result<SettingsUpdateReceipt, Error> SettingsWorkflow::change_detailed_logging(
     bool enabled, SettingsStorePort& settings_store) {
   SettingsPatch patch;

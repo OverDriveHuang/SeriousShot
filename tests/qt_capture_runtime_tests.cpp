@@ -1,5 +1,6 @@
 #include "platform/qt/qt_capture_runtime.hpp"
 #include "ui/qt/capture_error_message.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 #include "test_support.hpp"
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -21,7 +22,12 @@ int main(int argc, char** argv) {
     runtime->arm(1, runtime->now(), [&] { ++calls; }); runtime->disarm(1);
     runtime->arm(2, runtime->now(), [&] { ++calls; loop.quit(); });
     QTimer::singleShot(500, &loop, &QEventLoop::quit); loop.exec(); HDRSHOT_CHECK(calls == 1);
-  }}, {"recovery wording", [] {
+  }}, {"recovery wording", [&app] {
+    QtUiLanguageRuntime language;
+    const auto initialized = language.initialize(app, UiLanguage::simplified_chinese,
+        [] { return UiLanguage::english; });
+    HDRSHOT_CHECK(initialized && !initialized.value().catalog_error &&
+        initialized.value().active_language == UiLanguage::simplified_chinese);
     Error timeout{ErrorCode::capture_failed,"test",Retryability::after_user_action,{{"reason","capture_progress_timeout"}}};
     const auto message = capture_error_message(timeout, "permission", "Ctrl+F9");
     HDRSHOT_CHECK(message.contains("Ctrl+F9")); HDRSHOT_CHECK(message.contains(QStringLiteral("全部")));

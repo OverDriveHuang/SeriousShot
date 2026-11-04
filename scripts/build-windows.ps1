@@ -54,6 +54,7 @@ try {
         # Keep the codec notices and local assets with the development build.
         $licenses = New-Item -ItemType Directory -Path "$destination/licenses"
         Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.md' -Destination $licenses.FullName
+        Copy-Item -LiteralPath 'assets/licenses/Qt-Translations-BSD-3-Clause.txt' -Destination $licenses.FullName
         Copy-Item -LiteralPath 'assets/licenses/libsodium-LICENSE.txt' -Destination $licenses.FullName
         Copy-Item -LiteralPath 'assets/licenses/libarchive-COPYING.txt' -Destination $licenses.FullName
         Copy-Item -LiteralPath 'assets/fonts/OFL.txt' -Destination $licenses.FullName

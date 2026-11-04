@@ -47,6 +47,14 @@
 
 namespace hdrshot {
 namespace {
+QString invalid_sample_text(std::uint64_t count) {
+  return (count == 1 ? /*% "Non-finite sample excluded: %1" */ qtTrId(
+                           "analyzer.invalid_sample.one")
+                     : /*% "Non-finite samples excluded: %1" */ qtTrId(
+                           "analyzer.invalid_sample.many"))
+      .arg(count);
+}
+
 using AnalyzerToolButton = analyzer_control_style::PressToolButton;
 class AnalyzerComboBox final : public QComboBox {
 public:
@@ -219,7 +227,8 @@ AnalyzerWindow::AnalyzerWindow(analysis::Input input, std::string preferences,
                                QWidget *parent, const AnalysisDefaults* defaults)
     : QWidget(parent), input_(std::move(input)) {
   setObjectName("analyzerWindow");
-  setWindowTitle("SeriousShot · 图像分析");
+  setWindowTitle(
+      /*% "SeriousShot · Image Analysis" */ qtTrId("analyzer.title"));
   setAttribute(Qt::WA_QuitOnClose, false);
   setMinimumSize(920, 640);
   resize(1280, 720);
@@ -382,21 +391,28 @@ void AnalyzerWindow::build_ui() {
   root->setSpacing(7);
   auto *top = header(this);
   auto *brand = new QLabel(
-      "<b>SeriousShot</b> <span style='color:#abb1bb'>· 图像分析</span>", top);
+      QStringLiteral("<b>SeriousShot</b> <span style='color:#abb1bb'>%1</span>")
+          .arg(/*% "· Image Analysis" */ qtTrId("analyzer.brand_analysis")
+                   .toHtmlEscaped()),
+      top);
   add(top, brand);
   space_ = combo("analyzerWorkingSpace", top,
                  {"sRGB / sRGB · SDR", "Display P3 / sRGB · SDR",
                   "Display P3 / PQ · HDR", "BT.2020 / PQ · HDR"});
   add(top, labeled("Working Space", space_));
   white_ = combo("analyzerReferenceWhite", top, {"203 nit", "100 nit"});
-  add(top, labeled("分析参考白", white_));
+  add(top, labeled(/*% "Ref. White" */ qtTrId("analyzer.ref_white"), white_));
   blur_ = combo("analyzerBlur", top,
-                {"关闭", "0.5 px", "1 px", "2 px", "4 px", "8 px"});
+                {/*% "Off" */ qtTrId("analyzer.blur_off"), "0.5 px", "1 px",
+                 "2 px", "4 px", "8 px"});
   add(top, labeled("Blur", blur_));
   gain_ = new QLineEdit(QString::number(scope_gain_, 'g', 8), top);
   gain_->setObjectName("analyzerVectorGain");
-  gain_->setAccessibleName("Scope 轨迹显示增益");
-  gain_->setToolTip("Waveform / Parade / Vectorscope 轨迹显示增益 0.1–3；按回车应用；不影响 Histogram");
+  gain_->setAccessibleName(
+      /*% "Scope trace gain" */ qtTrId("analyzer.scope.gain_accessibility"));
+  gain_->setToolTip(
+  //% "Waveform / Parade / Vectorscope trace gain, 0.1–3. Press Enter to apply. Histogram is unaffected."
+  qtTrId("analyzer.scope.gain_hint"));
   gain_->setFixedWidth(54);
   add(top, labeled("Gain", gain_));
   connect(gain_, &QLineEdit::returnPressed, this, [this] {
@@ -405,38 +421,47 @@ void AnalyzerWindow::build_ui() {
     ok = ok && std::isfinite(value) && value >= .1 && value <= 3.;
     gain_->setStyleSheet(ok ? QString() : "QLineEdit{border-color:#ff7580;}");
     if (!ok) {
-      gain_->setToolTip("请输入 0.1–3 的数值；当前生效值 " + QString::number(scope_gain_));
+      gain_->setToolTip(
+          /*% "Enter a value from 0.1 to 3. Current value: %1" */ qtTrId(
+              "analyzer.scope.invalid_gain")
+              .arg(QString::number(scope_gain_)));
       return;
     }
     scope_gain_ = value;
     wave_->set_display_gain(value);
     vector_->set_display_gain(value);
-    gain_->setToolTip("Waveform / Parade / Vectorscope 轨迹显示增益 0.1–3；按回车应用；不影响 Histogram");
+    gain_->setToolTip(qtTrId("analyzer.scope.gain_hint"));
     persist();
   });
   auto *exports = right_group(top);
   for (int i = 0; i < 2; ++i) {
-    auto *b = button(i ? "复制分析图" : "保存分析图",
-                     i ? "analyzerCopy" : "analyzerSave", exports, i ? 7 : 6);
+    auto *b =
+        button(i ? /*% "Copy Analysis" */ qtTrId("analyzer.copy_analysis")
+                 : /*% "Save Analysis" */ qtTrId("analyzer.save_analysis"),
+               i ? "analyzerCopy" : "analyzerSave", exports, i ? 7 : 6);
     export_buttons_[std::size_t(i)] = b;
     b->setPopupMode(QToolButton::MenuButtonPopup);
     auto *menu = new QMenu(b);
-    menu->addAction(i ? "复制分析图" : "保存分析图", this, [this, i] {
-      if (export_busy_) return;
-      export_original_[std::size_t(i)] = false;
-      update_export_buttons();
-      persist();
-      export_action(i ? analysis::ExportAction::copy_analysis
-                      : analysis::ExportAction::save_analysis);
-    });
-    menu->addAction(i ? "复制原截图" : "保存原截图", this, [this, i] {
-      if (export_busy_) return;
-      export_original_[std::size_t(i)] = true;
-      update_export_buttons();
-      persist();
-      export_action(i ? analysis::ExportAction::copy_original
-                      : analysis::ExportAction::save_original);
-    });
+    menu->addAction(i ? qtTrId("analyzer.copy_analysis")
+                      : qtTrId("analyzer.save_analysis"),
+                    this, [this, i] {
+                      if (export_busy_) return;
+                      export_original_[std::size_t(i)] = false;
+                      update_export_buttons();
+                      persist();
+                      export_action(i ? analysis::ExportAction::copy_analysis
+                                      : analysis::ExportAction::save_analysis);
+                    });
+    menu->addAction(i ? /*% "Copy Original" */ qtTrId("analyzer.copy_original")
+                      : /*% "Save Original" */ qtTrId("analyzer.save_original"),
+                    this, [this, i] {
+                      if (export_busy_) return;
+                      export_original_[std::size_t(i)] = true;
+                      update_export_buttons();
+                      persist();
+                      export_action(i ? analysis::ExportAction::copy_original
+                                      : analysis::ExportAction::save_original);
+                    });
     b->setMenu(menu);
     connect(b, &QToolButton::clicked, this, [this, i] {
       export_action(export_original_[std::size_t(i)]
@@ -494,8 +519,8 @@ void AnalyzerWindow::build_ui() {
   split_[0]->set_panes(split_[1], split_[2]);
   root->addWidget(split_[0], 1);
   split_[0]->set_minimum_spans(260, 130);
-  split_[1]->set_minimum_spans(340, 400);
-  split_[2]->set_minimum_spans(260, 280);
+  split_[1]->set_minimum_spans(350, 400);
+  split_[2]->set_minimum_spans(355, 280);
   split_[3]->set_minimum_spans(110, 110);
   for (int i = 0; i < 4; ++i) {
     split_[std::size_t(i)]->set_ratio(ratios_[std::size_t(i)]);
@@ -513,7 +538,11 @@ void AnalyzerWindow::build_ui() {
   add(right_group(source_head), source_mode_);
   add(source_panel_, source_head);
   auto *source_tools = header(source_panel_);
-  const QStringList tool_names{"指针／平移", "吸管", "分析 Mask", "清除 Mask"};
+  const QStringList tool_names{
+      /*% "Pan" */ qtTrId("analyzer.source.pan"),
+      /*% "Eyedropper" */ qtTrId("analyzer.source.eyedropper"),
+      /*% "Analysis Mask" */ qtTrId("analyzer.source.mask"),
+      /*% "Clear Mask" */ qtTrId("analyzer.source.clear_mask")};
   for (int i = 0; i < 4; ++i) {
     tools_[std::size_t(i)] =
         button("", "analyzerTool" + QString::number(i), source_tools, i);
@@ -543,7 +572,8 @@ void AnalyzerWindow::build_ui() {
   auto *sample_widget = new QWidget(picker_menu);
   auto *sample_layout = new QHBoxLayout(sample_widget);
   sample_layout->setContentsMargins(8, 6, 8, 6);
-  sample_layout->addWidget(new QLabel("采样范围"));
+  sample_layout->addWidget(
+      new QLabel(/*% "Sample area" */ qtTrId("analyzer.source.sample_area")));
   auto *sample = combo("analyzerSampleSize", sample_widget,
                        {"1×1", "3×3", "5×5", "11×11", "31×31", "101×101"});
   const std::array<int, 6> sizes{1, 3, 5, 11, 31, 101};
@@ -587,8 +617,11 @@ void AnalyzerWindow::build_ui() {
   auto *mask_menu = new QMenu(tools_[2]);
   tools_[2]->setPopupMode(QToolButton::MenuButtonPopup);
   tools_[2]->setMenu(mask_menu);
-  mask_menu->addAction("矩形", this, [this] { set_mask_shape(false); });
-  mask_menu->addAction("椭圆", this, [this] { set_mask_shape(true); });
+  mask_menu->addAction(
+      /*% "Rectangle" */ qtTrId("analyzer.source.mask_rectangle"), this,
+      [this] { set_mask_shape(false); });
+  mask_menu->addAction(/*% "Ellipse" */ qtTrId("analyzer.source.mask_ellipse"),
+                       this, [this] { set_mask_shape(true); });
   source_zoom_ = combo("analyzerSourceZoom", source_tools,
                        {"Fit", "25%", "50%", "66.7%", "100%", "200%", "400%"});
   // Fit→numeric text must not change this flow row's wrapping threshold while
@@ -703,8 +736,9 @@ void AnalyzerWindow::build_ui() {
     if (i < 2) {
       auto *ref =
           button("", "analyzerReferences" + QString::number(i), navigation, 4);
-      ref->setToolTip("参考线");
-      ref->setAccessibleName("参考线");
+      ref->setToolTip(
+          /*% "Reference Line" */ qtTrId("analyzer.scope.reference_line"));
+      ref->setAccessibleName(qtTrId("analyzer.scope.reference_line"));
       add(navigation, ref);
       connect(ref, &QToolButton::clicked, this,
               [this, i] { open_references(i == 1); });
@@ -728,11 +762,13 @@ void AnalyzerWindow::build_ui() {
     plot->surface_resized = [this] { schedule_refinement(); };
   }
   auto *swatch_head = header(swatch_panel_);
-  add(swatch_head, new QLabel("<b>Swatches</b>"));
+  add(swatch_head, new QLabel(QStringLiteral("<b>%1</b>").arg(
+      /*% "Swatches" */ qtTrId("analyzer.swatch.title").toHtmlEscaped())));
   auto *clear = button("", "analyzerClearSwatches", swatch_head, 8);
   clear->setIcon(analyzer_control_style::danger_glyph(true));
-  clear->setToolTip("清空 Swatches");
-  clear->setAccessibleName("清空 Swatches");
+  clear->setToolTip(
+      /*% "Clear Swatches" */ qtTrId("analyzer.swatch.clear_all"));
+  clear->setAccessibleName(qtTrId("analyzer.swatch.clear_all"));
   analyzer_control_style::set_icon_button(clear, true);
   add(right_group(swatch_head), clear);
   connect(clear, &QToolButton::clicked, this, [this] { clear_swatches(); });
@@ -772,7 +808,8 @@ void AnalyzerWindow::build_ui() {
     editor.title = new QLabel;
     heading->addWidget(editor.title, 1);
     auto *clear_refs =
-        button("清空", "analyzerClearRefs" + QString::number(i), editor.frame);
+        button(/*% "Clear" */ qtTrId("analyzer.scope.clear_refs"),
+               "analyzerClearRefs" + QString::number(i), editor.frame);
     heading->addWidget(clear_refs);
     l->addLayout(heading);
     editor.channel = combo("analyzerRefChannel" + QString::number(i),
@@ -786,8 +823,9 @@ void AnalyzerWindow::build_ui() {
     row->addWidget(editor.input, 1);
     editor.unit = new QLabel("nit");
     row->addWidget(editor.unit);
-    auto *add_ref = button("添加", "analyzerAddReference" + QString::number(i),
-                           editor.frame);
+    auto *add_ref =
+        button(/*% "Add" */ qtTrId("analyzer.scope.add_ref"),
+               "analyzerAddReference" + QString::number(i), editor.frame);
     row->addWidget(add_ref);
     l->addLayout(row);
     editor.list = new QWidget;
@@ -993,7 +1031,8 @@ void AnalyzerWindow::sync_controls() {
       QString::number(request_.scopes.vector_zoom, 'f', 1) + "×");
   false_legend_->setVisible(false_color_);
   QString legend =
-      QString("EV · 18%灰 = %1 nit　")
+      /*% "EV · 18% gray = %1 nit　" */ qtTrId(
+          "analyzer.exposure.reference_gray")
           .arg(request_.settings.reference_white_nits * .18, 0, 'f', 2);
   const std::array<double, 15> stops{-7, -5, -4, -3, -2, -1, -.5, 0,
                                      .5, 1,  2,  3,  4,  5,  6};
@@ -1236,8 +1275,7 @@ void AnalyzerWindow::accept_result(analysis::ResultRef result) {
   if (status_->property("error").toBool())
     return;
   if (result_->invalid_count) {
-    status_->setText(
-        QString("%1 个非有限样本未参与分析").arg(result_->invalid_count));
+    status_->setText(invalid_sample_text(result_->invalid_count));
     status_->show();
   } else
     status_->hide();
@@ -1260,7 +1298,7 @@ void AnalyzerWindow::clear_display_error() {
   status_->setProperty("error", false);
   status_->setStyleSheet("color:#abb1bb;");
   if (result_ && result_->invalid_count) {
-    status_->setText(QString("%1 个非有限样本未参与分析").arg(result_->invalid_count));
+    status_->setText(invalid_sample_text(result_->invalid_count));
     status_->show();
   } else status_->hide();
 }
@@ -1321,7 +1359,7 @@ QString AnalyzerWindow::reading_text(const analysis::Readout &r,
   if (!result_ || result_->settings != request_.settings)
     return "—";
   if (!r.valid_count)
-    return "无有效样本";
+    return qtTrId("analyzer.no_valid_samples");
   return analyzer_reading_rows(r,AnalyzerReadings{readings_},request_.settings.working_space,fallback).join('\n');
 }
 void AnalyzerWindow::refresh_readouts() {
@@ -1362,15 +1400,15 @@ void AnalyzerWindow::refresh_readouts() {
                                  .arg(size.height));
   if (!gesture_active_) {
     mask_readout_->setVisible(request_.mask.enabled);
-    mask_readout_->setText(request_.mask.enabled
-                               ? QString("Mask 平均 · %1 px\n%2")
-                                     .arg(result_ && mask_current
-                                              ? result_->mask_mean.valid_count
-                                              : 0)
-                                     .arg(result_ && mask_current
-                                              ? reading_text(result_->mask_mean)
-                                              : "—")
-                               : QString());
+    mask_readout_->setText(
+        request_.mask.enabled
+            ? /*% "Mask mean · %1 px\n%2" */ qtTrId("analyzer.mask.mean")
+                  .arg(result_ && mask_current ? result_->mask_mean.valid_count
+                                               : 0)
+                  .arg(result_ && mask_current
+                           ? reading_text(result_->mask_mean)
+                           : "—")
+            : QString());
   }
 }
 void AnalyzerWindow::add_swatch(QPointF point, int size) {
@@ -1464,11 +1502,12 @@ void AnalyzerWindow::refresh_references(bool hist) {
       refs.empty() ? 0 : (refs.size() - 1) / page_size;
   editor.page = std::min(editor.page, last_page);
   const QString unit = hue ? "°" : hdr ? "nit" : "%";
-  editor.title->setText(QString("参考线 · %1 · %2 条")
-                            .arg(hue         ? "Hue"
-                                 : intensity ? (hdr ? "I" : "Y′")
-                                             : "R′G′B′")
-                            .arg(refs.size()));
+  const QString channel = hue         ? "Hue"
+                          : intensity ? (hdr ? "I" : "Y′")
+                                      : "R′G′B′";
+  //% "Ref. Line · %1 · %2"
+  editor.title->setText(
+      qtTrId("analyzer.scope.reference_count").arg(channel).arg(refs.size()));
   editor.unit->setText(unit);
   editor.channel->setVisible(!hist &&
                              request_.scopes.wave_mode ==
@@ -1508,7 +1547,8 @@ void AnalyzerWindow::refresh_references(bool hist) {
     });
   }
   if (refs.empty())
-    editor.list_layout->addWidget(new QLabel("尚无参考线"));
+    editor.list_layout->addWidget(new QLabel(
+        /*% "No reference lines" */ qtTrId("analyzer.scope.no_references")));
   if (last_page) {
     auto *row = new QWidget;
     auto *layout = new QHBoxLayout(row);
@@ -1570,7 +1610,10 @@ void AnalyzerWindow::add_reference(bool hist) {
                              : 100;
   if (!valid || !std::isfinite(value) || value < 0 || value > maximum) {
     editor.error->setText(
-        QString("请输入 0–%1 %2").arg(maximum).arg(editor.unit->text()));
+        /*% "Enter a value from 0 to %1 %2" */ qtTrId(
+            "analyzer.scope.reference_value_range")
+            .arg(maximum)
+            .arg(editor.unit->text()));
     editor.frame->adjustSize();
     return;
   }
@@ -1714,14 +1757,20 @@ void AnalyzerWindow::closeEvent(QCloseEvent *e) {
   if (confirm_close_)
     confirmed = confirm_close_();
   else {
-    QMessageBox box(QMessageBox::Question, "关闭分析窗口",
-                    "确定结束这个分析窗口吗？", QMessageBox::NoButton, this);
+    QMessageBox box(
+        QMessageBox::Question,
+        /*% "Close Analysis" */ qtTrId("analyzer.close.title"),
+        /*% "Close this analysis window?" */ qtTrId("analyzer.close.question"),
+        QMessageBox::NoButton, this);
     // The analyzer is always dark, including its confirmation dialog. A native
     // dialog can otherwise mix the system light background with inherited QSS.
     box.setObjectName("analyzerCloseConfirmation");
     box.setOption(QMessageBox::Option::DontUseNativeDialog);
-    auto *keep = box.addButton("继续分析 · Esc", QMessageBox::RejectRole);
-    auto *leave = new QPushButton("结束分析 · Enter");
+    auto *keep = box.addButton(
+        /*% "Keep Analyzing · Esc" */ qtTrId("analyzer.close.keep"),
+        QMessageBox::RejectRole);
+    auto *leave = new QPushButton(
+        /*% "Close Analysis · Enter" */ qtTrId("analyzer.close.confirm"));
     leave->setObjectName("analyzerEndAnalysis");
     analyzer_control_style::set_danger(leave);
     box.addButton(leave, QMessageBox::DestructiveRole);
@@ -1901,7 +1950,8 @@ void AnalyzerWindow::export_action(analysis::ExportAction action) {
           std::abs(result_->vector_detail_y_extent - detail_extents[1]) < 1e-9));
   if (!original && (!result_ || !painted_request_ || !fixed_current || !detail_current ||
                     !analysis::same_statistics_request(*painted_request_, request_))) {
-    show_error("分析正在更新，请稍后重试。");
+    show_error(/*% "Analysis is updating. Try again in a moment." */ qtTrId(
+        "analyzer.updating"));
     status_->setProperty("analysisError", true);
     return;
   }
@@ -1915,8 +1965,10 @@ void AnalyzerWindow::update_export_buttons() {
   for (std::size_t i = 0; i < export_buttons_.size(); ++i)
     if (export_buttons_[i])
       export_buttons_[i]->setText(export_original_[i]
-          ? (i ? "复制原截图" : "保存原截图")
-          : (i ? "复制分析图" : "保存分析图"));
+                                      ? (i ? qtTrId("analyzer.copy_original")
+                                           : qtTrId("analyzer.save_original"))
+                                      : (i ? qtTrId("analyzer.copy_analysis")
+                                           : qtTrId("analyzer.save_analysis")));
 }
 
 std::string AnalyzerWindow::preferences_json() const {

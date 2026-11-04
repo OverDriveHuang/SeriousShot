@@ -10,7 +10,10 @@ public:
   virtual Result<bool, Error> cancel_manual(Slot &) = 0;
   virtual bool manual() const = 0;
   virtual Result<bool, Error> open_manual(Slot &) {
-    return Result<bool,Error>::failure(failure("无法打开安装包，请从发布页面下载安装。"));
+    return Result<bool, Error>::failure(
+        translated_failure("无法打开安装包，请从发布页面下载安装。",
+                           //% "Could not open the installer. Download it from the releases page."
+                           QT_TRID_NOOP("update.detail.cannot_open_package")));
   }
   virtual Result<bool, Error> recover(Slot &) {
     return Result<bool, Error>::success(true);

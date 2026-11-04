@@ -147,6 +147,12 @@ class FileDialogPort {
       const ChooseSavePathRequest& request) = 0;
 };
 
+enum class UiLanguage { simplified_chinese, english };
+
+[[nodiscard]] constexpr bool valid_ui_language(const UiLanguage value) noexcept {
+  return value == UiLanguage::simplified_chinese || value == UiLanguage::english;
+}
+
 struct SettingsSnapshot {
   std::uint32_t schema_version{5};
   std::uint64_t revision{};
@@ -167,6 +173,7 @@ struct SettingsSnapshot {
 
   AnalysisDefaults analysis_defaults{};
   PinnedScreenshotDefaults pinned_screenshot_defaults{};
+  std::optional<UiLanguage> ui_language{};
 
   friend bool operator==(const SettingsSnapshot&, const SettingsSnapshot&) = default;
 };
@@ -188,6 +195,7 @@ struct SettingsPatch {
   std::optional<double> windows_scrgb_gain;
   std::optional<bool> windows_capture_gain_enabled;
   std::optional<bool> windows_capture_bypass_sdr_white_enabled;
+  std::optional<UiLanguage> ui_language;
 };
 
 [[nodiscard]] inline bool valid_windows_scrgb_gain(const double gain) noexcept {
