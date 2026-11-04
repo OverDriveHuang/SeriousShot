@@ -7,6 +7,7 @@
 #include "platform/qt/qt_capture_runtime.hpp"
 #include "platform/qt/qt_session_diagnostics_port.hpp"
 #include "ui/qt/capture_error_message.hpp"
+#include "ui/qt/ui_language_runtime.hpp"
 #include "test_support.hpp"
 #include <QCoreApplication>
 #include <QDateTime>
@@ -183,7 +184,16 @@ void real_sink_hot_switch_native_errors_timeout_cleanup_and_privacy(){
   auto message=capture_error_message(error,QStringLiteral("允许屏幕截图"),"Ctrl+F9");HDRSHOT_CHECK(message.contains("Ctrl+F9") && message.contains(QStringLiteral("截图")));
 }
 }
-int main(int argc,char** argv){std::cout<<std::unitbuf;std::cerr<<std::unitbuf;QCoreApplication app(argc,argv);return test::run({
+int main(int argc, char** argv) {
+  std::cout << std::unitbuf;
+  std::cerr << std::unitbuf;
+  QCoreApplication app(argc, argv);
+  QtUiLanguageRuntime language;
+  constexpr auto locale = UiLanguage::simplified_chinese;
+  const auto initialized = language.initialize(app, locale, {});
+  if (!initialized || initialized.value().active_language != locale)
+    qFatal("Unable to initialize the requested test translations");
+  return test::run({
  {"A02 A03 A05 A06 production receive sliding and post-copy",sliding_windows_and_native_copy_boundary},
  {"A04 A08 A09 callback cancellation and physical tickets",callback_arbitration_cancel_and_tickets},
  {"A09 cancelled frame resource cannot outlive physical drain",cancelled_frame_cannot_outlive_physical_drain},
@@ -191,4 +201,5 @@ int main(int argc,char** argv){std::cout<<std::unitbuf;std::cerr<<std::unitbuf;Q
  {"A12 A15 preflight optional permission semantics",permission_wait_is_preflight_and_cancel_suppresses_delivery},
  {"A09 A15 default threadpool ten batches and recreated owner",default_threadpool_manual_batches_and_new_owner},
  {"A15 GUI no 5000 CLI finite mailbox UI final reference",gui_cli_wait_policy_and_shutdown_reference},
- {"A10 A11 A12 actual sink hot switch provenance and privacy",real_sink_hot_switch_native_errors_timeout_cleanup_and_privacy}});}
+ {"A10 A11 A12 actual sink hot switch provenance and privacy",real_sink_hot_switch_native_errors_timeout_cleanup_and_privacy}});
+}

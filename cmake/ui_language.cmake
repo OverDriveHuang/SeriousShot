@@ -21,6 +21,7 @@ foreach(_target IN ITEMS
     hdrshot_analyzer_ui_native_surface_tests
     hdrshot_macos_qt_overlay_window_tests
     hdrshot_macos_qt_input_platform_adapter_tests
+    hdrshot_windows_capture_acceptance_tests
     hdrshot_windows_pinned_screenshot_tests
     hdrshot_windows_overlay_session_tests
     hdrshot_windows_qt_ports_tests)

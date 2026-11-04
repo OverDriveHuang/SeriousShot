@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "timestamp": "2026-11-05T01:03:12+08:00",
+  "timestamp": "2026-11-05T01:24:39+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
@@ -19,11 +19,11 @@
       "mode": 420
     },
     "README.en.md": {
-      "sha256": "6cb52719bf5b939b4996678f3a51a515f5a42b133f3f4167c56f8ef0030e84ca",
+      "sha256": "65d76fc51a7670b6dccf4415d0661cd66f99bc06987d39645ea4499098067b12",
       "mode": 420
     },
     "README.md": {
-      "sha256": "028a447020b26bf0ddc0ce1e1bf191508e431a66f9610118f8a1b03879d67565",
+      "sha256": "6ca89b78e94a3782c36c382021d2b4d1088fff433fd74ea18846da76302b1032",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -107,7 +107,7 @@
       "mode": 420
     },
     "cmake/ui_language.cmake": {
-      "sha256": "e375cdf861ebcb6d46810ea53b44419cb28fb62c2968954adb92805ad9a0a070",
+      "sha256": "bbd23581c1487355bffeddcfdef779f2afd045e9ffdda9784b242e09d4b7cdb7",
       "mode": 420
     },
     "cmake/ui_language_sources.txt": {
@@ -1979,7 +1979,7 @@
       "mode": 420
     },
     "tests/windows_capture_acceptance_tests.cpp": {
-      "sha256": "0d95bed1ef9fef64dc341bf55713a12ff412f491ede9914ad9f3ba677d2e39fb",
+      "sha256": "e4a87cdbd3ebd0e2f2ed539f64a0b2b8bfe79edf774d089ba69370780c8abb1b",
       "mode": 420
     },
     "tests/windows_capture_lifecycle_tests.cpp": {

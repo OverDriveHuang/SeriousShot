@@ -1,6 +1,6 @@
 # SeriousShot
 
-最后更新：2026-11-05 00:53:09 CST
+最后更新：2026-11-05 01:18:02 CST
 
 [简体中文](README.md) · English
 
@@ -95,7 +95,7 @@ Download the [macOS arm64 DMG for 0.2.2](https://github.com/OverDriveHuang/Serio
 
 SeriousShot 0.1.5 and later can check for updates and download and verify the installer. Open the downloaded DMG, quit SeriousShot, then drag the new app into Applications and choose **Replace**. To upgrade from 0.1.4 or earlier, download the current installer manually. If you installed an old copy elsewhere, remove it before launching the replacement.
 
-The macOS 0.2.1 app and DMG are Apple Developer ID signed and notarized. If screen capture stops working after replacing the app and macOS still lists SeriousShot as allowed, renew the permission:
+The macOS 0.2.2 app and DMG are Apple Developer ID signed and notarized. If screen capture stops working after replacing the app and macOS still lists SeriousShot as allowed, renew the permission:
 
 1. Start the replacement app and press the capture shortcut to trigger the permission prompt.
 2. In the system screen recording settings, select SeriousShot and click **−** below the list to remove the old entry.

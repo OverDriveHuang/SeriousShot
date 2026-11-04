@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-11-05 00:53:09 CST
+最后更新：2026-11-05 01:18:02 CST
 
 [For the English README, please click here.](README.en.md)
 
@@ -115,7 +115,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 **先退出旧版，再把新版拖到 Applications 中，选择替换。** 如果旧版装在其他位置，请移除旧的 SeriousShot.app，只保留准备使用的新版，避免启动到旧副本；推荐 Applications 中直接替换即可，不保留旧版应用。
 
-Mac 0.2.1 使用 Apple Developer ID 签名，并完成 App 与 DMG 公证。从旧版升级后可能需要重新授权录屏；如果系统设置里已允许 SeriousShot，但新版仍无法截图：
+Mac 0.2.2 使用 Apple Developer ID 签名，并完成 App 与 DMG 公证。从旧版升级后可能需要重新授权录屏；如果系统设置里已允许 SeriousShot，但新版仍无法截图：
 
 1. 启动替换后的新版，按一次截图快捷键，触发权限提示。
 2. 进入上述录屏权限设置，**选中 SeriousShot 条目，点击列表下方的“−”删除这条旧授权记录**；不是只把开关关掉。
