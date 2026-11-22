@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <string_view>
+#include <optional>
 
 namespace hdrshot {
 enum class MacWindowRole { selectable, blocker, ignored };
@@ -20,7 +21,8 @@ struct MacWindowRecord {
   MacWindowRole role{MacWindowRole::selectable};
 };
 [[nodiscard]] WindowSnapshot map_mac_window_records(
-    const SnapshotWindowsRequest&, const std::vector<MacWindowRecord>&, std::int32_t own_pid);
+    const SnapshotWindowsRequest&, const std::vector<MacWindowRecord>&, std::int32_t own_pid,
+    std::optional<std::uint64_t> settings_token = {});
 
 class MacWindowCatalogPort final : public WindowCatalogPort {
  public:
@@ -28,6 +30,7 @@ class MacWindowCatalogPort final : public WindowCatalogPort {
   explicit MacWindowCatalogPort(
       Enumerate enumerate = {}, std::chrono::milliseconds timeout = std::chrono::milliseconds{250});
   ~MacWindowCatalogPort() override;
+  void set_session(SessionId, std::optional<std::uint64_t> settings_token);
   void snapshot_windows(const SnapshotWindowsRequest&, Completion) override;
   void cancel(SessionId, OperationId) override;
  private:

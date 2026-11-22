@@ -242,6 +242,8 @@ VectorCalibration vector_calibration(const Settings &s, VectorMode mode,
     c.reference_extent = {{.5, .5}};
   else if (is_hdr(s.working_space))
     c.reference_extent = {{.25, .5}};
+  else
+    c.reference_extent = {{1000., 1000.}};
   auto ticks = [&](double half_span, std::size_t axis) {
     std::vector<AxisTick> values;
     const double visible = half_span / zoom;
@@ -251,7 +253,8 @@ VectorCalibration vector_calibration(const Settings &s, VectorMode mode,
     const double high = std::min(limit, center[axis] + visible);
     if (low > high)
       return values;
-    const double span = std::min(visible, limit);
+    const double span = mode == VectorMode::perceptual && !is_hdr(s.working_space)
+                            ? visible : std::min(visible, limit);
     const double raw_step = span / 3;
     const double magnitude = std::pow(10., std::floor(std::log10(raw_step)));
     const double fraction = raw_step / magnitude;
@@ -279,9 +282,19 @@ VectorCalibration vector_calibration(const Settings &s, VectorMode mode,
         else
           values.push_back({value, .5 + (value - center[axis]) / (2 * visible), number(value), true, true});
       }
+    if (mode == VectorMode::perceptual && !is_hdr(s.working_space))
+      for (double value : {-128., 127.}) {
+        if (value < low || value > high) continue;
+        const auto existing = std::find_if(values.begin(), values.end(), [&](const auto &t) {
+          return std::abs(t.value - value) < 1e-12;
+        });
+        if (existing != values.end()) existing->reference = true;
+        else values.push_back({value, .5 + (value - center[axis]) / (2 * visible),
+                               number(value), true, false, true});
+      }
     // Endpoints remain readable before optional interior labels when zoomed out.
     std::stable_sort(values.begin(), values.end(), [](const auto &a, const auto &b) {
-      return a.boundary > b.boundary;
+      return a.reference != b.reference ? a.reference > b.reference : a.boundary > b.boundary;
     });
     return values;
   };

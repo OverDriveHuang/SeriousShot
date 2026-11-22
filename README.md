@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-11-05 01:18:02 CST
+最后更新：2026-11-22 23:01:32 CST
 
 [For the English README, please click here.](README.en.md)
 
@@ -27,11 +27,11 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接添加形状、直线、画笔笔迹、箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-当前版本 [0.2.2](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2) 提供 Windows x64 ZIP 和 macOS arm64 DMG。
+Windows x64 ZIP 见 [0.2.3 发布页](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3)，macOS arm64 DMG 见 [版本列表](https://github.com/OverDriveHuang/SeriousShot/releases)。
 
 ## 截图、标注、分享，一次完成
 
-启动截图后选择区域，在当前选区中添加矩形、椭圆、直线、箭头、文字或画笔笔迹。可移动、缩放标注，修改颜色和粗细，并撤销或重做编辑。最后选择复制、保存或另存为，也可以直接进入分析器。
+启动截图后可拖出选区，也可悬停预选窗口并单击确认，包括已打开的 SeriousShot 设置窗口。在选区中添加矩形、椭圆、直线、箭头、文字或画笔笔迹。可移动、缩放标注，修改颜色和粗细，并撤销或重做编辑。最后选择复制、保存或另存为，也可以直接进入分析器。
 
 <img src="docs/images/annotation-toolbar-20261029-150731.png" alt="SeriousShot 0.1.9 标注工具栏：直线、画笔、七色调色板与 DIP 粗细选择" width="700">
 
@@ -65,7 +65,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 - **Waveform／Parade**：观察亮度与各通道在画面中的分布，添加参考线，检查高光与暗部。
 - **Histogram**：查看亮度、RGB、色相分布，支持 Adobe Style 的 SDR／HDR 分段显示。
-- **Vectorscope**：查看 Y′CbCr、Lab 或 ITP 色平面中的分布及当前工作色域轮廓。
+- **Vectorscope**：查看 Y′CbCr、Lab 或 ITP 色平面中的分布及当前工作色域轮廓。SDR Lab 视图在 a*、b* 两轴标出 −128 和 +127 参考刻度。
 - **吸管与采样色块**：读取像素或区域平均值，保留采样色块，并在图表中定位均值与区域分布。
 - **Mask 与 False Color**：限定分析区域，或用伪色辅助观察亮度；切换伪色不会改变其他图表的分析数据。
 

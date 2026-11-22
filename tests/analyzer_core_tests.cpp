@@ -521,6 +521,26 @@ void full_domain_counts_survive_views_and_share_immutable_payload() {
   HDRSHOT_CHECK(masked.value()->vector_grid_y_extent ==
                 a.value()->vector_grid_y_extent);
 }
+void lab_reference_ticks_and_bounds() {
+  for (auto space : {WorkingSpace::srgb_sdr, WorkingSpace::display_p3_sdr}) {
+    const auto c = vector_calibration({space, 203, 0}, VectorMode::perceptual, 400, 400, 1.);
+    for (const auto *ticks : {&c.x_ticks, &c.y_ticks})
+      for (double value : {-128., 127.}) {
+        HDRSHOT_CHECK(std::count_if(ticks->begin(), ticks->end(), [=](const auto &t) {
+          return t.value == value && t.reference;
+        }) == 1);
+      }
+    const auto wide = vector_calibration({space, 203, 0}, VectorMode::perceptual, 1800, 300, .5);
+    HDRSHOT_CHECK(std::none_of(wide.x_ticks.begin(), wide.x_ticks.end(),
+                              [](const auto &t) { return t.value == 500.; }));
+    HDRSHOT_CHECK(std::any_of(wide.x_ticks.begin(), wide.x_ticks.end(),
+                             [](const auto &t) { return t.value == 1000.; }));
+    const auto outside = vector_calibration({space, 203, 0}, VectorMode::perceptual, 400, 400, 1., {1200., 1200.});
+    HDRSHOT_CHECK(outside.x_ticks.empty() && outside.y_ticks.empty());
+    const auto projected = project_vector({1100., 35.}, c, 1.);
+    HDRSHOT_CHECK_NEAR(projected[0], .5 + 1100. / (2 * c.x_extent), 1e-12);
+  }
+}
 void vector_ticks_follow_visible_numeric_domain() {
   for (auto space : {WorkingSpace::display_p3_pq, WorkingSpace::display_p3_sdr})
     for (double zoom : {.125, 1., 128.}) {
@@ -542,7 +562,12 @@ void vector_ticks_follow_visible_numeric_domain() {
           HDRSHOT_CHECK(std::count_if(c.x_ticks.begin(), c.x_ticks.end(),
               [](const auto &t) { return t.boundary && std::abs(t.value) == .25; }) == 2);
         }
-      } else HDRSHOT_CHECK(!c.reference_extent.has_value());
+      } else {
+        HDRSHOT_CHECK(c.reference_extent.has_value());
+        HDRSHOT_CHECK((*c.reference_extent)[0] == 1000. && (*c.reference_extent)[1] == 1000.);
+        for (const auto &t : c.x_ticks) HDRSHOT_CHECK(std::abs(t.value) <= 1000.);
+        for (const auto &t : c.y_ticks) HDRSHOT_CHECK(std::abs(t.value) <= 1000.);
+      }
       auto ncl = vector_calibration({space, 203, 0}, VectorMode::ycbcr, 1000, 200, zoom);
       HDRSHOT_CHECK(ncl.reference_extent.has_value());
       for (const auto &t : ncl.x_ticks) HDRSHOT_CHECK(std::abs(t.value) <= .5);
@@ -662,6 +687,7 @@ int main() {
         stable_histogram_and_cpu_adapter},
        {"full-domain view-independent counts and immutable sharing",
         full_domain_counts_survive_views_and_share_immutable_payload},
+       {"Lab fixed ticks and bounded domain", lab_reference_ticks_and_bounds},
        {"vector ticks cover visible numeric domain",
         vector_ticks_follow_visible_numeric_domain},
        {"detail color-plane domain is independent of capped texture dimensions",

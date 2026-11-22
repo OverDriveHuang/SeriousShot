@@ -176,6 +176,112 @@ void gain_only_changes_scope_presentation() {
   h.set_display_gain(3.);
   HDRSHOT_CHECK(render(h) == histogram);
 }
+void lab_fit_and_fixed_marks_are_visible() {
+  for (auto space : {analysis::WorkingSpace::srgb_sdr, analysis::WorkingSpace::display_p3_sdr}) {
+    auto r = std::make_shared<analysis::ResultData>();
+    r->settings.working_space = space;
+    r->scopes.vector_mode = analysis::VectorMode::perceptual;
+    r->valid_count = 1;
+    AnalyzerScopePlot p(AnalyzerScopePlot::Kind::vectorscope);
+    show(p, r);
+    const auto rect = p.plot_rect();
+    const auto c = analysis::vector_calibration(r->settings, r->scopes.vector_mode,
+        unsigned(rect.width()), unsigned(rect.height()), 1.);
+    HDRSHOT_CHECK_NEAR(c.y_extent, 150., 1e-12);
+    const auto image = render(p);
+    auto pixel = [&](std::array<double, 2> world, QPointF offset = {}) {
+      const auto pos = analysis::project_vector(world, c, 1.);
+      const QPointF point(rect.left() + pos[0] * rect.width(), rect.bottom() - pos[1] * rect.height());
+      return image.pixelColor(int((point.x() + offset.x()) * p.devicePixelRatioF()),
+                              int((point.y() + offset.y()) * p.devicePixelRatioF()));
+    };
+    for (double value : {-128., 127.}) {
+      HDRSHOT_CHECK(pixel({value, 0.}, {0., 2.}).red() > 100);
+      HDRSHOT_CHECK(pixel({0., value}, {2., 0.}).red() > 100);
+    }
+    const double norm = std::hypot(c.skin_direction[0], c.skin_direction[1]);
+    const double dx = c.skin_direction[0] / norm, dy = c.skin_direction[1] / norm;
+    const double extent = .96 * std::min(c.x_extent / std::abs(dx), c.y_extent / std::abs(dy));
+    const auto end = analysis::project_vector({dx * extent, dy * extent}, c, 1.);
+    HDRSHOT_CHECK(end[0] >= 0. && end[0] <= 1. && end[1] >= 0. && end[1] <= 1.);
+  }
+}
+void lab_reference_axes_end_and_leave_blank() {
+  for (auto space : {analysis::WorkingSpace::srgb_sdr, analysis::WorkingSpace::display_p3_sdr}) {
+    for (auto center : {std::array<double, 2>{1000., 0.}, {-1000., 0.},
+                        {0., 1000.}, {0., -1000.}}) {
+      auto r = std::make_shared<analysis::ResultData>();
+      r->settings.working_space = space;
+      r->scopes.vector_mode = analysis::VectorMode::perceptual;
+      r->scopes.vector_pan = center;
+      r->valid_count = 1;
+      AnalyzerScopePlot p(AnalyzerScopePlot::Kind::vectorscope);
+      show(p, r);
+      const auto image = render(p);
+      const auto rect = p.plot_rect();
+      const auto c = analysis::vector_calibration(r->settings, r->scopes.vector_mode,
+          unsigned(rect.width()), unsigned(rect.height()), 1., center);
+      auto pixel = [&](std::array<double, 2> world) {
+        const auto pos = analysis::project_vector(world, c, 1., center);
+        return image.pixelColor(int((rect.left() + pos[0] * rect.width()) * p.devicePixelRatioF()),
+                                int((rect.bottom() - pos[1] * rect.height()) * p.devicePixelRatioF()));
+      };
+      const bool horizontal = center[0] != 0.;
+      const double sign = horizontal ? std::copysign(1., center[0]) : std::copysign(1., center[1]);
+      const auto inside = horizontal ? std::array<double, 2>{sign * 950., 0.}
+                                     : std::array<double, 2>{0., sign * 950.};
+      const auto outside = horizontal ? std::array<double, 2>{sign * 1050., 0.}
+                                      : std::array<double, 2>{0., sign * 1050.};
+      HDRSHOT_CHECK(pixel(inside).red() > pixel(outside).red() + 10);
+      r->scopes.vector_pan = horizontal ? std::array<double, 2>{sign * 1500., 0.}
+                                        : std::array<double, 2>{0., sign * 1500.};
+      p.set_options(r->scopes);
+      const auto blank = render(p);
+      for (int y = int(rect.top() + 2); y < int(rect.bottom() - 2); y += 3)
+        for (int x = int(rect.left() + 2); x < int(rect.right() - 2); x += 3) {
+          const auto color = blank.pixelColor(int(x * p.devicePixelRatioF()), int(y * p.devicePixelRatioF()));
+          HDRSHOT_CHECK(color.red() <= 6 && color.green() <= 6 && color.blue() <= 6);
+        }
+    }
+  }
+}
+void lab_sample_guides_clip_each_arm() {
+  for (auto space : {analysis::WorkingSpace::srgb_sdr, analysis::WorkingSpace::display_p3_sdr}) {
+    for (auto point : {std::array<double,2>{1100.,35.}, {1000.,35.}, {35.,-1100.}}) {
+      auto r=std::make_shared<analysis::ResultData>();
+      r->settings.working_space=space; r->scopes.vector_mode=analysis::VectorMode::perceptual;
+      r->scopes.vector_pan=point; r->valid_count=1;
+      analysis::SampleResult sample; sample.request.id=0; sample.mean.valid_count=1;
+      sample.mean_position.vector=point; r->samples={sample};
+      AnalyzerScopePlot p(AnalyzerScopePlot::Kind::vectorscope); show(p,r);
+      const auto rect=p.plot_rect();
+      const auto c=analysis::vector_calibration(r->settings,r->scopes.vector_mode,
+          unsigned(rect.width()),unsigned(rect.height()),1.,point);
+      const auto visible=render(p); p.set_transient_hidden(true); const auto hidden=render(p);
+      auto changed_near = [&](std::array<double,2> world) {
+        const auto pos=analysis::project_vector(world,c,1.,point);
+        const int x=int((rect.left()+pos[0]*rect.width())*p.devicePixelRatioF());
+        const int y=int((rect.bottom()-pos[1]*rect.height())*p.devicePixelRatioF());
+        int changed=0;
+        for (int dy=-4;dy<=4;++dy) for (int dx=-4;dx<=4;++dx)
+          if (visible.rect().contains(x+dx,y+dy) && visible.pixel(x+dx,y+dy)!=hidden.pixel(x+dx,y+dy)) ++changed;
+        return changed>0;
+      };
+      HDRSHOT_CHECK(changed_near(point)); // marker keeps the true projection
+      if (point[0] == 1100.) {
+        HDRSHOT_CHECK(changed_near({950.,35.}));
+        HDRSHOT_CHECK(!changed_near({1100.,-20.}));
+        HDRSHOT_CHECK(!changed_near({1050.,35.}));
+      } else if (point[0] == 1000.) {
+        HDRSHOT_CHECK(changed_near({1000.,-20.}));
+      } else {
+        HDRSHOT_CHECK(changed_near({35.,-950.}));
+        HDRSHOT_CHECK(!changed_near({-20.,-1100.}));
+        HDRSHOT_CHECK(!changed_near({35.,-1050.}));
+      }
+    }
+  }
+}
 void vector_reference_lines_stop_at_nominal_domain() {
   const auto dir = qEnvironmentVariable("HDRSHOT_ANALYZER_SCOPE_ARTIFACTS");
   if (!dir.isEmpty()) HDRSHOT_CHECK(QDir().mkpath(dir));
@@ -686,6 +792,9 @@ int main(int argc, char **argv) {
 
   app.setFont(QFont("Arial", 10));
   return hdrshot::test::run({
+      {"Lab fit and fixed marks are visible", lab_fit_and_fixed_marks_are_visible},
+      {"Lab reference axes end and leave blank", lab_reference_axes_end_and_leave_blank},
+      {"Lab sample guides clip each arm", lab_sample_guides_clip_each_arm},
       {"major ticks suppress colliding subdivisions", tick_collision},
       {"pending keeps the existing trace", pending_keeps_trace},
       {"full domain texture pans and zooms without a new result", full_domain_pan_and_zoom},

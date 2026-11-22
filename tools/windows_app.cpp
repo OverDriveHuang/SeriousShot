@@ -61,6 +61,12 @@
 
 namespace {
 using namespace hdrshot;
+std::optional<std::uint64_t> settings_window_token(QWidget* window) {
+  if (!window || !window->isWindow() || !window->isVisible() || window->isMinimized() ||
+      QGuiApplication::platformName() != "windows" || !window->internalWinId()) return {};
+  return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
+      reinterpret_cast<HWND>(window->internalWinId())));
+}
 constexpr const char* default_hotkey="Control+Shift+2";
 void print_error(const Error& error) {
   std::cerr<<error.module<<' '<<to_string(error.code);
@@ -399,7 +405,7 @@ class WindowsApplicationShell {
   }
   void prepared_capture_ready(SessionId session,WindowsPreparedCapture prepared_capture) {
     auto displays=std::move(prepared_capture.displays);
-    window_catalog_->set_displays(displays);
+    window_catalog_->set_displays(displays,session,settings_window_token(settings_window_));
     capture_->set_displays(displays,std::move(prepared_capture.borderless));
     const SelectionSnapshot initial{1,{}};
     std::vector<DisplayId> targets;

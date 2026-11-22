@@ -75,6 +75,8 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <limits>
+#include <optional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -84,6 +86,17 @@
 namespace {
 
 constexpr const char* kDefaultGlobalHotkey = "Command+Shift+2";
+
+std::optional<std::uint64_t> settings_window_token(QWidget* window) {
+  if (!window || !window->isWindow() || !window->isVisible() || window->isMinimized() ||
+      QGuiApplication::platformName() != "cocoa" || !window->internalWinId()) return {};
+  NSView* view = (__bridge NSView*)(void*)window->internalWinId();
+  if (!view || ![view isKindOfClass:NSView.class] || !view.window) return {};
+  const auto number = view.window.windowNumber;
+  if (number <= 0 || static_cast<unsigned long long>(number) >
+      std::numeric_limits<CGWindowID>::max()) return {};
+  return static_cast<std::uint64_t>(number);
+}
 
 std::uint32_t display_id(NSScreen* screen) {
   const auto key = NSDeviceDescriptionKey(@"NSScreenNumber");
@@ -672,6 +685,7 @@ class MacApplicationShell final {
     catalog_ = std::make_shared<hdrshot::MacDisplayCatalogPort>(diagnostics_);
     capture_session_ = std::make_shared<hdrshot::CaptureSession>(
         catalog_, capture_, multi_preview_, window_catalog_, diagnostics_, capture_runtime_.handle());
+    window_catalog_->set_session(session_id, settings_window_token(settings_window_));
     capture_session_->begin(
         hdrshot::BeginCaptureRequest{
             session_id,

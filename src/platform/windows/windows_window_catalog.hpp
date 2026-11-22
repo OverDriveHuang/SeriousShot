@@ -3,6 +3,7 @@
 #include "ports/window_catalog_port.hpp"
 #include <chrono>
 #include <memory>
+#include <optional>
 
 namespace hdrshot {
 enum class WindowsWindowRole { selectable, blocker, ignored };
@@ -15,12 +16,14 @@ struct WindowsWindowRecord {
 };
 [[nodiscard]] WindowsWindowRole
 classify_windows_window(const WindowsWindowRecord &record,
-                        std::uint32_t own_process_id);
+                        std::uint32_t own_process_id,
+                        std::optional<std::uint64_t> settings_token = {});
 [[nodiscard]] WindowSnapshot
 map_windows_window_records(const SnapshotWindowsRequest &request,
                            const std::vector<WindowsWindowRecord> &records,
                            const std::vector<WindowsDisplayInfo> &displays,
-                           std::uint32_t own_process_id);
+                           std::uint32_t own_process_id,
+                           std::optional<std::uint64_t> settings_token = {});
 
 class WindowsWindowCatalogPort final : public WindowCatalogPort {
 public:
@@ -32,7 +35,8 @@ public:
       std::chrono::milliseconds timeout = std::chrono::milliseconds{250});
   ~WindowsWindowCatalogPort() override;
   void
-  set_displays(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays);
+  set_displays(std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
+               SessionId session = {}, std::optional<std::uint64_t> settings_token = {});
   void snapshot_windows(const SnapshotWindowsRequest &, Completion) override;
   void cancel(SessionId, OperationId) override;
 

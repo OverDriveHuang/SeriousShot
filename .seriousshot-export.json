@@ -1,13 +1,13 @@
 {
   "schema": 2,
-  "timestamp": "2026-11-05T01:24:39+08:00",
+  "timestamp": "2026-11-22T22:02:08+08:00",
   "files": {
     ".gitignore": {
       "sha256": "a597949325c45b4825a879e493f15b76ab5f4f3b8404d3fedde3c39c0c0f1d37",
       "mode": 420
     },
     "CMakeLists.txt": {
-      "sha256": "602d5824005af334ca67768db4ba1fbcb5109f4cdb4b8e36ec15c5d9e5235f09",
+      "sha256": "695e6e442301aff69dcc37c29714e28869b54e46784ff40887eacae8cac07fc2",
       "mode": 420
     },
     "CMakePresets.json": {
@@ -19,11 +19,11 @@
       "mode": 420
     },
     "README.en.md": {
-      "sha256": "65d76fc51a7670b6dccf4415d0661cd66f99bc06987d39645ea4499098067b12",
+      "sha256": "29a5b5a46839d29130ab2e6a8832e0b1888b9e0175a51cbc4790d1ac253f4545",
       "mode": 420
     },
     "README.md": {
-      "sha256": "6ca89b78e94a3782c36c382021d2b4d1088fff433fd74ea18846da76302b1032",
+      "sha256": "b8d2b49a5b19b82d44d99f73562cfc486e89f774ebd395dc3541e5b597893071",
       "mode": 420
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -499,7 +499,7 @@
       "mode": 420
     },
     "src/domain/analysis/math.cpp": {
-      "sha256": "0f245354246eed413134e9ae573f113b1f66d5e90e6cd9c6a084c95a36da962f",
+      "sha256": "1cdb485b587f867ad041893faccc9b1fee98570466c404929c76790b4ef8d221",
       "mode": 420
     },
     "src/domain/analysis/math.hpp": {
@@ -523,7 +523,7 @@
       "mode": 420
     },
     "src/domain/analysis/types.hpp": {
-      "sha256": "2bb6bf21ff9a5dc6a66d7d572ab168e4199bc0016ab0aad39997ae7dbe5a6ebd",
+      "sha256": "4568e8be74556228064f77a28722c5eb20a28df7a5ba35112e052a7377db51c3",
       "mode": 420
     },
     "src/domain/annotation/annotation_allocation_checkpoint.hpp": {
@@ -935,11 +935,11 @@
       "mode": 420
     },
     "src/platform/macos/macos_window_catalog.hpp": {
-      "sha256": "7622f66d757292c53315b2363df80124633b1fe96b4e7f92b4ef0998f1fc6184",
+      "sha256": "2d0597e4333502ca4f1b550bb8b38d97bf0075bdcc5dcc8045b24e84d2acb08b",
       "mode": 420
     },
     "src/platform/macos/macos_window_catalog.mm": {
-      "sha256": "53c52c8c434bf1e271401f9423e14882dbff6449c59027a72cd03dc4aef922f4",
+      "sha256": "35e98cf3100a56afc14584645057c163ff670133c2028d205d9ad86268cd6fb9",
       "mode": 420
     },
     "src/platform/macos/metal_edr_presenter.hpp": {
@@ -1287,11 +1287,11 @@
       "mode": 420
     },
     "src/platform/windows/windows_window_catalog.cpp": {
-      "sha256": "4cfcc63a9edcfd3f4e19301bcddb50adf9a56608767717356413d257d123223d",
+      "sha256": "b676767269e5d5dfd9766acd4195008bff54272fefb7bd7a43dbaab8b967ea18",
       "mode": 420
     },
     "src/platform/windows/windows_window_catalog.hpp": {
-      "sha256": "68a1f09be261273b9f839327294e05dc42291904656dff0f6b3af89ca5ce7e75",
+      "sha256": "1d520d8edbd14ec59c460eea57c23ef62a3684e9c483fadfb1834f65a9259639",
       "mode": 420
     },
     "src/ports/analysis_port.hpp": {
@@ -1387,7 +1387,7 @@
       "mode": 420
     },
     "src/ui/qt/analyzer_scope_plot.cpp": {
-      "sha256": "a40c80df36509302cdb29eea62667ef47fc7f9829eeb050bf184f51a19263baa",
+      "sha256": "7729d160a1d81a6ada7de614a5b9f9eea21a5c82f358c5e2a43d044ed93a209b",
       "mode": 420
     },
     "src/ui/qt/analyzer_scope_plot.hpp": {
@@ -1479,7 +1479,7 @@
       "mode": 420
     },
     "src/ui/qt/qt_overlay_host.hpp": {
-      "sha256": "0030345a57c3987596efd7fa28231eeb1e34d7d774ccf3eccddeae446ce3e402",
+      "sha256": "cd3d2301dd6f60914422711a37a704740b35228b8c2f27ae8dff0278d8d5ffce",
       "mode": 420
     },
     "src/ui/qt/qt_overlay_window_port.hpp": {
@@ -1551,7 +1551,7 @@
       "mode": 420
     },
     "tests/analyzer_core_tests.cpp": {
-      "sha256": "3471f667f00f2738f2d5af82ae96725bec27d85f614fbda80e1c6d19329c3834",
+      "sha256": "27ba8d918891127ab462a06b20233458620b943d0655f04e8791e850f9c31e8c",
       "mode": 420
     },
     "tests/analyzer_gamut_tests.cpp": {
@@ -1559,7 +1559,7 @@
       "mode": 420
     },
     "tests/analyzer_scope_regression_tests.cpp": {
-      "sha256": "74f173a7451d705de1dba1ca392682f241eafe7caf6112ce7cf12943bba6f411",
+      "sha256": "dcad5d366c875b5b3e0fb02aad940fff4e93cc001af6639f7b3ecd7e4a129d47",
       "mode": 420
     },
     "tests/analyzer_ui_native_surface_tests.mm": {
@@ -1791,7 +1791,7 @@
       "mode": 420
     },
     "tests/macos_window_catalog_tests.cpp": {
-      "sha256": "2394da6ec35b27deba0fa32b3d1dd0fde5d3cda19fe57b6c719eb2113cdcaba4",
+      "sha256": "e962e7f2da2502f42016eac88153f51ce55ea37132250845ace7167ae6398497",
       "mode": 420
     },
     "tests/multi_display_preview_presenter_tests.cpp": {
@@ -1843,7 +1843,7 @@
       "mode": 420
     },
     "tests/qt_overlay_host_tests.cpp": {
-      "sha256": "4bfa5720e7e820f5de7da1ac563e19d614d20ee738301ac404bb8e22b5df8832",
+      "sha256": "650b062f361812efa1b9d13c919e4f078eeb311098fcc991f786c892bc7346dc",
       "mode": 420
     },
     "tests/qt_session_diagnostics_port_tests.cpp": {
@@ -2063,7 +2063,7 @@
       "mode": 420
     },
     "tests/windows_window_catalog_tests.cpp": {
-      "sha256": "3b3d6016b80c073d71744204b83bc6c44159765e7c8d433c3770e86ae7c2c680",
+      "sha256": "0c2ff91601ba4f34f27362ee25eb90084c701cca1161b257bf502fb98655ed2c",
       "mode": 420
     },
     "tools/analyze_ultra_hdr_color_patches.py": {
@@ -2135,7 +2135,7 @@
       "mode": 420
     },
     "tools/macos_qt_overlay_poc.mm": {
-      "sha256": "d7bb4b5e645142ddea45b4c3ece2386022d88beecbd60ab4d8b3e74092dd20d3",
+      "sha256": "bf2c75fcd436835f2448837464dd9c8e9acf03720c79e05fb08c5bc52aac28a5",
       "mode": 420
     },
     "tools/macos_window_catalog_probe.mm": {
@@ -2187,7 +2187,7 @@
       "mode": 420
     },
     "tools/windows_app.cpp": {
-      "sha256": "cde83c19aa0bcd3ed5de172074c5fef5f440031070c6b18b4b3e93991d11b74b",
+      "sha256": "b39c122337d9b58536c4499dc75425485ad0728b9a9e577a123b6e8884bc3a17",
       "mode": 420
     },
     "tools/windows_capture_probe.cpp": {

@@ -200,6 +200,7 @@ struct AxisTick {
   std::string label;
   bool major{true};
   bool boundary{}; // Adobe 100% boundary
+  bool reference{}; // fixed Lab reference tick
 };
 struct ReferenceTarget {
   std::array<double, 2> position{}; // unprojected color-plane coordinate

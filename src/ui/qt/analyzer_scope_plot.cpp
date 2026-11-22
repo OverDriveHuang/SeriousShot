@@ -578,6 +578,8 @@ void AnalyzerScopePlot::draw_vector(QPainter &p) {
                    r.bottom() - pos[1] * r.height());
   };
   const auto center = at({0, 0});
+  const bool lab = options_.vector_mode == analysis::VectorMode::perceptual &&
+                   !analysis::is_hdr(result_->settings.working_space);
   p.save();
   p.setClipRect(r);
   p.setPen(QPen(QColor(233, 235, 239, 60), 1));
@@ -633,15 +635,17 @@ void AnalyzerScopePlot::draw_vector(QPainter &p) {
         target_labels.emplace_back(pt, QString::fromStdString(target.label));
       }
   }
+  std::optional<QRectF> lab_skin_label;
   const double norm = std::hypot(c.skin_direction[0], c.skin_direction[1]);
   if (norm > 0) {
     const double dx = c.skin_direction[0] / norm;
     const double dy = c.skin_direction[1] / norm;
-    const auto skin_bounds = c.reference_extent.value_or(
-        std::array<double, 2>{c.x_extent, c.y_extent});
-    const double extent =
-        .96 * std::min(skin_bounds[0] / std::max(1e-12, std::abs(dx)),
-                       skin_bounds[1] / std::max(1e-12, std::abs(dy)));
+    const auto skin_bounds = lab ? std::array<double, 2>{c.x_extent, c.y_extent}
+                                 : c.reference_extent.value_or(std::array<double, 2>{c.x_extent, c.y_extent});
+    double extent = .96 * std::min(skin_bounds[0] / std::max(1e-12, std::abs(dx)),
+                                    skin_bounds[1] / std::max(1e-12, std::abs(dy)));
+    if (lab) extent = std::min(extent, std::min(reference[0] / std::max(1e-12, std::abs(dx)),
+                                                reference[1] / std::max(1e-12, std::abs(dy))));
     auto endpoint = at({dx * extent, dy * extent});
     p.setPen(QPen(QColor(233, 235, 239, 150), 1, Qt::DashLine));
     p.drawLine(center, endpoint);
@@ -652,15 +656,88 @@ void AnalyzerScopePlot::draw_vector(QPainter &p) {
     const double label_x = endpoint.x() < center.x()
                                ? endpoint.x() - text_width - 7
                                : endpoint.x() + 7;
-    p.drawText(
-        QRectF(std::clamp(label_x, r.left() + 3,
-                          std::max(r.left() + 3, r.right() - text_width - 3)),
-               std::clamp(endpoint.y() + 4, r.top() + 2,
-                          std::max(r.top() + 2, r.bottom() - 16)),
-               text_width, 14),
-        Qt::AlignCenter, label);
+    const QRectF label_bounds(
+        std::clamp(label_x, r.left() + 3,
+                   std::max(r.left() + 3, r.right() - text_width - 3)),
+        std::clamp(endpoint.y() + 4, r.top() + 2,
+                   std::max(r.top() + 2, r.bottom() - 16)),
+        text_width, 14);
+    if (lab) {
+      if (r.contains(endpoint)) lab_skin_label = label_bounds;
+    } else {
+      p.drawText(label_bounds, Qt::AlignCenter, label);
+    }
   }
   p.setPen(ink);
+  if (lab) {
+    // Fixed references share one collision space across both axes. Draw their
+    // marks independently of label placement and ahead of ordinary labels.
+    std::vector<QRectF> occupied;
+    if (r.contains(center)) occupied.push_back(QRectF(center + QPointF(3, 2), QSizeF(15, 16)));
+    auto place = [&](const analysis::AxisTick &tick, bool horizontal) {
+      const QPointF pt = horizontal ? at({tick.value, 0}) : at({0, tick.value});
+      if (!r.contains(pt)) return;
+      const double distance = horizontal ? std::abs(pt.x() - center.x())
+                                         : std::abs(pt.y() - center.y());
+      const bool edge = horizontal ? (pt.x() < r.left() + 16 || pt.x() > r.right() - 16)
+                                   : (pt.y() < r.top() + 22 || pt.y() > r.bottom() - 14);
+      if (!tick.reference && (distance < 24 || (!tick.boundary && edge))) return;
+      p.drawLine(pt - (horizontal ? QPointF(0, 3) : QPointF(3, 0)),
+                 pt + (horizontal ? QPointF(0, 3) : QPointF(3, 0)));
+      const QString label = QString::fromStdString(tick.label);
+      const double width = p.fontMetrics().horizontalAdvance(label) + (horizontal ? 8 : 4);
+      auto available = [&](const QRectF &bounds) {
+        return r.contains(bounds) && std::none_of(occupied.begin(), occupied.end(),
+            [&](const auto &other) { return bounds.adjusted(-2, -2, 2, 2).intersects(other); });
+      };
+      auto draw_label = [&](const QRectF &bounds) {
+        occupied.push_back(bounds);
+        p.drawText(bounds, horizontal ? Qt::AlignCenter : Qt::AlignVCenter, label);
+      };
+      if (!tick.reference) {
+        const QRectF bounds = horizontal
+            ? QRectF(std::clamp(pt.x() - width * .5, r.left(),
+                                std::max(r.left(), r.right() - width)), pt.y() + 5, width, 14)
+            : QRectF(edge ? pt.x() - width - 6 : pt.x() + 6,
+                     std::clamp(pt.y() - 7, r.top(), std::max(r.top(), r.bottom() - 16)),
+                     width, 16);
+        if (available(bounds)) draw_label(bounds);
+        return;
+      }
+      constexpr double height = 16;
+      for (double offset : {0., 16., -16., 32., -32.}) {
+        for (int side : {1, -1}) {
+          QRectF bounds = horizontal
+              ? QRectF(pt.x() - width / 2 + offset, pt.y() + (side > 0 ? 5 : -height - 5), width, height)
+              : QRectF(pt.x() + (side > 0 ? 6 : -width - 6), pt.y() - height / 2 + offset, width, height);
+          bounds.moveLeft(std::clamp(bounds.left(), r.left(), std::max(r.left(), r.right() - width)));
+          bounds.moveTop(std::clamp(bounds.top(), r.top(), std::max(r.top(), r.bottom() - height)));
+          if (available(bounds)) { draw_label(bounds); return; }
+        }
+      }
+    };
+    for (bool fixed : {true, false}) {
+      for (const auto &tick : c.x_ticks) if (tick.reference == fixed) place(tick, true);
+      for (const auto &tick : c.y_ticks) if (tick.reference == fixed) place(tick, false);
+    }
+    auto optional_label = [&](QRectF b, const QString &text) {
+      if (r.contains(b) && std::none_of(occupied.begin(), occupied.end(),
+          [&](const auto &o) { return b.intersects(o); })) {
+        occupied.push_back(b); p.drawText(b, Qt::AlignCenter, text);
+      }
+    };
+    if (r.contains(center)) p.drawText(center + QPointF(5, 14), "0");
+    const auto xp = at({reference[0], 0}), yp = at({0, reference[1]});
+    if (center.y() >= r.top() && center.y() <= r.bottom() && xp.x() >= r.left() && at({-reference[0], 0}).x() <= r.right())
+      optional_label(QRectF(std::min(r.right()-22, xp.x()-22), center.y()-20, 22, 16), QString::fromStdString(c.x_label));
+    if (center.x() >= r.left() && center.x() <= r.right() && yp.y() <= r.bottom() && at({0, -reference[1]}).y() >= r.top())
+      optional_label(QRectF(center.x()+6, std::max(r.top(), yp.y()), 22, 16), QString::fromStdString(c.y_label));
+    if (lab_skin_label) {
+      p.setPen(QColor(233, 235, 239, 150));
+      optional_label(*lab_skin_label, "Skin ref");
+    }
+    p.restore(); return;
+  }
   const QPointF x_name(std::min(r.right() - 20, at({reference[0], 0}).x()), center.y() - 8);
   const QPointF y_name(center.x() + 6, std::max(r.top() + 12, at({0, reference[1]}).y() - 6));
   p.drawText(x_name, QString::fromStdString(c.x_label));
@@ -918,10 +995,13 @@ void AnalyzerScopePlot::draw_markers(QPainter &p) {
       const double half_height = reference[1] * options_.vector_zoom * r.height() / (2 * calibration.y_extent);
       const auto origin = analysis::project_vector({0, 0}, calibration, options_.vector_zoom, options_.vector_pan);
       const QPointF center(r.left() + origin[0] * r.width(), r.bottom() - origin[1] * r.height());
-      if (std::abs(sample.vector[0]) <= reference[0] && std::abs(sample.vector[1]) <= reference[1]) {
+      const bool lab = options_.vector_mode == analysis::VectorMode::perceptual && !analysis::is_hdr(result_->settings.working_space);
+      const bool in_x = std::abs(sample.vector[0]) <= reference[0];
+      const bool in_y = std::abs(sample.vector[1]) <= reference[1];
+      if (in_y && (lab || in_x))
         p.drawLine(QPointF(center.x() - half_width, pt.y()), QPointF(center.x() + half_width, pt.y()));
+      if (in_x && (lab || in_y))
         p.drawLine(QPointF(pt.x(), center.y() - half_height), QPointF(pt.x(), center.y() + half_height));
-      }
       focus(p, pt, sample_ink, mean);
     }
   };

@@ -1,6 +1,6 @@
 # SeriousShot
 
-最后更新：2026-11-05 01:18:02 CST
+最后更新：2026-11-22 23:01:32 CST
 
 [简体中文](README.md) · English
 
@@ -21,11 +21,11 @@ For SDR, SeriousShot converts pixels to standard Display P3 and embeds the match
 
 HDR rendering depends on your display, system, and viewer. HDR PNG requires PQ support. Ultra HDR JPEG requires a gain-map-aware viewer for HDR playback, and ordinary JPEG viewers can display the SDR base image.
 
-[Version 0.2.2](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2) is available as a Windows x64 ZIP and a macOS arm64 DMG.
+Download the Windows x64 ZIP from the [0.2.3 release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3). For the macOS arm64 DMG, see [Releases](https://github.com/OverDriveHuang/SeriousShot/releases).
 
 ## Capture, annotate, and share
 
-Start a capture and select an area. Add rectangles, ellipses, lines, arrows, text, or freehand strokes in the selection. Move, resize, recolor, or change the thickness of annotations. Then copy the result, save it, choose Save As, or open the Analyzer.
+Start a capture and drag to select an area, or hover over a window and click to select it. This includes the SeriousShot Settings window. Add rectangles, ellipses, lines, arrows, text, or freehand strokes in the selection. Move, resize, recolor, or change the thickness of annotations. Then copy the result, save it, choose Save As, or open the Analyzer.
 
 <img src="docs/images/annotation-toolbar-20261029-150731.png" alt="SeriousShot 0.1.9 annotation toolbar with line and brush tools, a seven-color palette, and stroke widths in DIP" width="700">
 
@@ -52,7 +52,7 @@ For HDR content, the JPEG contains an SDR base image and a gain map with ISO 214
 
 - **Waveform and Parade.** Inspect luminance and channel distributions across the image. Add reference lines to check highlights and shadows.
 - **Histogram.** View luminance, RGB, and hue distributions, including an Adobe Style view with separate SDR and HDR ranges.
-- **Vectorscope.** View the distribution and working-gamut boundary in Y′CbCr, Lab, or ITP.
+- **Vectorscope.** View the distribution and working-gamut boundary in Y′CbCr, Lab, or ITP. In SDR Lab, the a* and b* axes mark −128 and +127 as reference ticks.
 - **Eyedropper and Swatches.** Sample a pixel or average an area. Keep swatches and locate their mean values and area distributions in the scopes.
 - **Mask and False Color.** Limit the analysis area or inspect luminance with False Color. Changing the False Color view leaves the data used by the other scopes intact.
 

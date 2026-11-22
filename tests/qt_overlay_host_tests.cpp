@@ -915,8 +915,9 @@ class CountingText final : public TextRasterizerPort {
 };
 struct CleanTasks final : ExportTaskExecutorPort {
   std::vector<std::function<void()>> builds,callbacks;
-  void background(std::function<void()> f) override{builds.push_back(std::move(f));}
-  void main_thread(std::function<void()> f) override{callbacks.push_back(std::move(f));}
+  int build_count{}, callback_count{};
+  void background(std::function<void()> f) override{++build_count;builds.push_back(std::move(f));}
+  void main_thread(std::function<void()> f) override{++callback_count;callbacks.push_back(std::move(f));}
   void drain() {
     while(!builds.empty() || !callbacks.empty()) {
       auto work=std::move(builds);builds.clear();for(auto& f:work)f();
@@ -925,6 +926,92 @@ struct CleanTasks final : ExportTaskExecutorPort {
     }
   }
 };
+class HoverCard final : public MagnifierCardPresenterPort {
+ public:
+  std::vector<MagnifierCardFrame> frames;
+  void present_card(MagnifierCardFrame frame, Completion done) override {
+    frames.push_back(std::move(frame));
+    done(Result<std::uint64_t, Error>::success(frames.back().revision));
+  }
+  void invalidate_card(std::uint64_t) override {}
+};
+
+void async_clean_uses_latest_window_hover() {
+  for (int scenario = 0; scenario < 5; ++scenario) {
+    test::TestInputPlatformAdapter input;
+    CleanTasks tasks;
+    QtOverlayHost host(std::make_unique<Window>(), {7}, {1, {}}, input);
+    host.resize(500, 300);
+    auto source = std::make_shared<FrozenDesktop>();
+    source->frame_id = {3}; source->display_generation = 9;
+    CanonicalFrameSegment segment;
+    segment.display_id = {7}; segment.size_px = {500, 300}; segment.point_pixel_scale = 1;
+    segment.encoding = {ColorPrimaries::display_p3, TransferFunction::linear, AlphaMode::opaque, 0};
+    segment.rgba_float.assign(500 * 300 * 4, .5F);
+    source->canonical_segments.push_back(std::move(segment));
+    auto windows = std::make_shared<WindowSnapshot>();
+    windows->candidates = {{1, {7}, {0, 0, 200, 300}, 0},
+                           {2, {7}, {200, 0, 200, 300}, 1}};
+    auto presenter = std::make_shared<Presenter>();
+    auto card = std::make_shared<HoverCard>();
+    host.set_background_clean_composition(tasks, std::make_shared<CpuCleanComposition>());
+    host.set_annotation_preview_optimization(true);
+    host.set_magnifier_card(card);
+    host.activate_capture({source, {{1}, {1}, {3}, 9, 1, 0}, windows}, presenter,
+                          std::make_shared<std::atomic<std::uint64_t>>(2));
+    auto* editor = dynamic_cast<OverlayEditorWidget*>(host.findChild<QWidget*>("overlayEditor"));
+    HDRSHOT_CHECK(editor && tasks.builds.size() == 1 && tasks.callbacks.empty());
+    auto build = std::move(tasks.builds.front()); tasks.builds.clear(); build();
+    HDRSHOT_CHECK(tasks.callbacks.size() == 1 && tasks.builds.empty());
+    auto callback = std::move(tasks.callbacks.front()); tasks.callbacks.clear();
+    const auto builds = tasks.build_count, callbacks = tasks.callback_count;
+    const auto move = [&](QPointF p) {
+      QMouseEvent event(QEvent::MouseMove, p, p, QPointF(editor->mapToGlobal(p.toPoint())),
+                        Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(editor, &event);
+    };
+    if (scenario == 4) callback();
+    move({100, 100});
+    if (scenario == 1 || scenario == 3) move({250, 100});
+    if (scenario == 2) move({450, 100});
+    if (scenario == 3) move({100, 100});
+    const auto expected = editor->initial_highlight();
+    const auto expected_rect = scenario == 1 ? PixelRect{200, 0, 200, 300} :
+                               scenario == 2 ? PixelRect{} : PixelRect{0, 0, 200, 300};
+    HDRSHOT_CHECK(expected.rect == expected_rect);
+    HDRSHOT_CHECK(expected.kind == (scenario == 2 ? PreviewHighlightKind::none :
+                                                   PreviewHighlightKind::window_candidate));
+    HDRSHOT_CHECK(tasks.builds.empty() && tasks.callbacks.empty());
+    HDRSHOT_CHECK(tasks.build_count == builds && tasks.callback_count == callbacks);
+    const int before = presenter->frames;
+    if (scenario != 4) {
+      HDRSHOT_CHECK(before == 0);
+      callback();
+      HDRSHOT_CHECK(presenter->frames == before + 1);
+    }
+    HDRSHOT_CHECK(presenter->last && presenter->last->model.clean_content);
+    HDRSHOT_CHECK(presenter->last->model.initial_highlight == expected);
+    HDRSHOT_CHECK(presenter->last->model.selection.desktop_rect.empty());
+    HDRSHOT_CHECK(tasks.builds.empty() && tasks.callbacks.empty());
+    if (scenario == 0 || scenario == 4) {
+      const int backgrounds = presenter->frames;
+      const auto card_count = card->frames.size();
+      move({101, 100});
+      HDRSHOT_CHECK(card->frames.size() > card_count);
+      HDRSHOT_CHECK(card->frames.back().image.center == (PixelPoint{101, 100}));
+      HDRSHOT_CHECK(presenter->frames == backgrounds);
+      move({250, 100});
+      HDRSHOT_CHECK(presenter->last->model.initial_highlight == editor->initial_highlight());
+      HDRSHOT_CHECK(editor->initial_highlight().rect == (PixelRect{200, 0, 200, 300}));
+      move({100, 100});
+      HDRSHOT_CHECK(presenter->last->model.initial_highlight == editor->initial_highlight());
+      HDRSHOT_CHECK(editor->initial_highlight().rect == (PixelRect{0, 0, 200, 300}));
+      HDRSHOT_CHECK(presenter->frames == backgrounds + 2);
+      HDRSHOT_CHECK(tasks.builds.empty() && tasks.callbacks.empty());
+      HDRSHOT_CHECK(tasks.build_count == builds && tasks.callback_count == callbacks);
+    }
+  }
+}
 // Deterministic scheduling: a newer input arrives before the old build
 // callback.
 void continuous_annotation_results_publish_within_their_gesture(
@@ -1258,7 +1345,8 @@ int main(int argc, char** argv) {
     HDRSHOT_CHECK(pixels.save(screenshot));return 0;
   }
   return hdrshot::test::run(
-      {{"pending readings retain briefly, expire through motion, "
+      {{"async clean publishes latest window hover", async_clean_uses_latest_window_hover},
+       {"pending readings retain briefly, expire through motion, "
         "replace/fail/hide safely (panel)",
         [] { host_pending_readings_have_one_bounded_grace(false); }},
        {"pending readings retain briefly, expire through motion, "

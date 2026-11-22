@@ -709,7 +709,6 @@ class QtOverlayHost final : public QWidget {
         const auto ticket = ++clean_requested_;
         const auto saved_selection = selection_;
         const auto saved_document = annotation_document_;
-        const auto saved_highlight = initial_highlight_;
         const auto saved_magnifier =
             magnifier_card_ ? MagnifierPreview{} : magnifier_;
         const QPointer<QtOverlayHost> guard(this);
@@ -717,7 +716,7 @@ class QtOverlayHost final : public QWidget {
         async_clean_cache_->preview(
             source, target_display_id_, plan,
             [guard, plan, source, epoch, ticket, saved_selection,
-             saved_document, saved_highlight, saved_magnifier](auto result) {
+             saved_document, saved_magnifier](auto result) {
               if (!guard || !guard->capture_active_ ||
                   guard->frozen_desktop_ != source || !guard->editor_)
                 return;
@@ -751,7 +750,7 @@ class QtOverlayHost final : public QWidget {
                 guard->publish_preview(hdrshot::PreviewModel{
                     guard->session_id_, source, saved_selection, saved_document,
                     hdrshot::OverlayStyle{}, source->display_generation,
-                    saved_highlight, guard->clean_content_, saved_magnifier});
+                    guard->initial_highlight_, guard->clean_content_, saved_magnifier});
               } else
                 guard->present();
             });

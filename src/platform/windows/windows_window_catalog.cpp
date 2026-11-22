@@ -73,8 +73,8 @@ struct Pending {
 } // namespace
 
 WindowsWindowRole classify_windows_window(const WindowsWindowRecord &r,
-                                          std::uint32_t own_pid) {
-  if (!r.token || r.process_id == own_pid || !r.visible || r.cloaked ||
+                                          std::uint32_t own_pid, std::optional<std::uint64_t> settings_token) {
+  if (!r.token || (r.process_id == own_pid && (!settings_token || r.token != *settings_token)) || !r.visible || r.cloaked ||
       r.minimized || r.bounds_physical.width <= 0 ||
       r.bounds_physical.height <= 0 || !std::isfinite(r.bounds_physical.x) ||
       !std::isfinite(r.bounds_physical.y) ||
@@ -89,14 +89,14 @@ WindowSnapshot
 map_windows_window_records(const SnapshotWindowsRequest &request,
                            const std::vector<WindowsWindowRecord> &records,
                            const std::vector<WindowsDisplayInfo> &displays,
-                           std::uint32_t own_pid) {
+                           std::uint32_t own_pid, std::optional<std::uint64_t> settings_token) {
   WindowSnapshot result{request.session_id,
                         request.operation_id,
                         request.displays.generation,
                         {}};
   for (std::size_t index = 0; index < records.size(); ++index) {
     const auto &record = records[index];
-    const auto role = classify_windows_window(record, own_pid);
+    const auto role = classify_windows_window(record, own_pid, settings_token);
     if (role == WindowsWindowRole::ignored)
       continue;
     for (const auto &display : displays) {
@@ -134,6 +134,8 @@ map_windows_window_records(const SnapshotWindowsRequest &request,
 }
 struct WindowsWindowCatalogPort::State {
   std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays;
+  SessionId session{};
+  std::optional<std::uint64_t> settings_token;
   Enumerate enumerate;
   std::chrono::milliseconds timeout;
   std::atomic_bool busy{false};
@@ -172,18 +174,23 @@ WindowsWindowCatalogPort::~WindowsWindowCatalogPort() {
   }
 }
 void WindowsWindowCatalogPort::set_displays(
-    std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays) {
+    std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays,
+    SessionId session, std::optional<std::uint64_t> settings_token) {
   const std::scoped_lock lock(state_->mutex);
   state_->displays = std::move(displays);
+  state_->session = session;
+  state_->settings_token = settings_token;
 }
 void WindowsWindowCatalogPort::snapshot_windows(
     const SnapshotWindowsRequest &request, Completion done) {
   const auto state = state_;
   const auto owned = request;
   std::shared_ptr<const std::vector<WindowsDisplayInfo>> displays;
+  std::optional<std::uint64_t> token;
   {
     const std::scoped_lock lock(state->mutex);
     displays = state->displays;
+    if (state->session.value == request.session_id.value) token = state->settings_token;
   }
   const Key key{request.session_id.value, request.operation_id.value};
   auto job = std::make_shared<Pending>();
@@ -212,7 +219,7 @@ void WindowsWindowCatalogPort::snapshot_windows(
     return;
   }
   try {
-    std::thread([state, key, job, owned, displays] {
+    std::thread([state, key, job, owned, displays, token] {
       Result<std::vector<WindowsWindowRecord>, Error> records =
           Result<std::vector<WindowsWindowRecord>, Error>::failure(
               error("metadata_query_failed"));
@@ -231,7 +238,7 @@ void WindowsWindowCatalogPort::snapshot_windows(
           Result<WindowSnapshot, Error>::success(map_windows_window_records(
               owned, records.value(),
               displays ? *displays : std::vector<WindowsDisplayInfo>{},
-              GetCurrentProcessId())));
+              GetCurrentProcessId(), token)));
     }).detach();
   } catch (...) {
     state->busy.store(false);

@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <future>
 #include <thread>
+#include <unistd.h>
 
 using namespace hdrshot;
 using namespace std::chrono_literals;
@@ -159,6 +160,49 @@ void ignoring_dock_does_not_bypass_security_blockers() {
     HDRSHOT_CHECK(window_at(snapshot, {1}, {900, 600}) == (PixelRect{0, 0, 2000, 1000}));
   }
 }
+void own_settings_exception_and_session_isolation() {
+  const auto pid = static_cast<std::int32_t>(getpid());
+  const std::vector<MacWindowRecord> records{
+      {10, pid, 0, {10, 20, 200, 100}}, {11, pid, 0, {20, 30, 50, 50}},
+      {12, 99, 0, {0, 0, 500, 500}},
+      {13, 98, 0, {0, 0, 500, 500}, 1, true, classify_mac_window("dev.hdrshot.desktop", "", 0)}};
+  HDRSHOT_CHECK(map_mac_window_records(request(), records, pid).candidates.size() == 1);
+  auto selected = map_mac_window_records(request(), records, pid, 10);
+  HDRSHOT_CHECK(selected.candidates.size() == 2);
+  HDRSHOT_CHECK(window_at(selected, {1}, {30, 50}) == (PixelRect{20, 40, 400, 200}));
+  auto front = records; front.insert(front.begin(), {14, 90, 1, {10, 20, 50, 50}, 1, true, MacWindowRole::blocker});
+  HDRSHOT_CHECK(!window_at(map_mac_window_records(request(), front, pid, 10), {1}, {30, 50}));
+  front[0].role = MacWindowRole::selectable;
+  HDRSHOT_CHECK(window_at(map_mac_window_records(request(), front, pid, 10), {1}, {30, 50}) == (PixelRect{20, 40, 100, 100}));
+  auto invalid = records; invalid[0].on_screen = false;
+  HDRSHOT_CHECK(map_mac_window_records(request(), invalid, pid, 10).candidates.size() == 1);
+  invalid = records; invalid[0].bounds_points.width = 0;
+  HDRSHOT_CHECK(map_mac_window_records(request(), invalid, pid, 10).candidates.size() == 1);
+  struct Fixture {
+    std::mutex mutex; std::condition_variable cv; bool started = false, released = false;
+    std::vector<MacWindowRecord> records;
+    void release() { { std::scoped_lock lock(mutex); released = true; } cv.notify_all(); }
+  };
+  auto fixture = std::make_shared<Fixture>(); fixture->records = records;
+  struct ReleaseOnExit { std::shared_ptr<Fixture> fixture; ~ReleaseOnExit() { fixture->release(); } } guard{fixture};
+  MacWindowCatalogPort port([fixture] { std::unique_lock lock(fixture->mutex); fixture->started = true; fixture->cv.notify_all();
+    fixture->cv.wait_for(lock, 2s, [&] { return fixture->released; });
+    return Result<std::vector<MacWindowRecord>, Error>::success(fixture->records); }, 1000ms);
+  port.set_session({1}, 10);
+  auto promise = std::make_shared<std::promise<Result<WindowSnapshot, Error>>>(); auto future = promise->get_future();
+  port.snapshot_windows(request(), [promise](auto result) { promise->set_value(std::move(result)); });
+  { std::unique_lock lock(fixture->mutex); HDRSHOT_CHECK(fixture->cv.wait_for(lock, 1s, [&] { return fixture->started; })); }
+  port.set_session({2}, 11); fixture->release();
+  HDRSHOT_CHECK(future.wait_for(2s) == std::future_status::ready);
+  HDRSHOT_CHECK(future.get().value().candidates[0].token == 10);
+  auto query = [&](SessionId id) { auto req = request(); req.session_id = id;
+    auto p = std::make_shared<std::promise<Result<WindowSnapshot, Error>>>(); auto f = p->get_future();
+    port.snapshot_windows(req, [p](auto r) { p->set_value(std::move(r)); });
+    HDRSHOT_CHECK(f.wait_for(2s) == std::future_status::ready); return f.get().value(); };
+  HDRSHOT_CHECK(query({2}).candidates[0].token == 11);
+  HDRSHOT_CHECK(query({3}).candidates.size() == 1);
+  port.set_session({2}, {}); HDRSHOT_CHECK(query({2}).candidates.size() == 1);
+}
 void async_success_and_destructor_do_not_duplicate_completion() {
   std::atomic<int> calls{};
   std::promise<bool> result;
@@ -242,6 +286,7 @@ void cancel_and_destroy_are_bounded_while_query_is_pending() {
 } // namespace
 int main() {
   return hdrshot::test::run({
+      {"settings exception and session isolation", own_settings_exception_and_session_isolation},
       {"Quartz metadata projection and filtering", native_records_map_without_titles_or_shadow_expansion},
       {"stable owner identity and system surface roles", stable_identity_roles_preserve_front_to_back_applications},
       {"menu bar and status item selection preserve stacking", system_menu_bar_and_status_items_use_real_z_order},

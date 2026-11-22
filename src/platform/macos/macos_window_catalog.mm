@@ -43,6 +43,12 @@ Result<std::vector<MacWindowRecord>, Error> enumerate_quartz_windows() {
       NSNumber* layer = item[(__bridge NSString*)kCGWindowLayer];
       NSNumber* alpha = item[(__bridge NSString*)kCGWindowAlpha];
       if (!identifier || !pid || !layer || !alpha) continue;
+      if (pid.intValue == getpid()) {
+        result.push_back({identifier.unsignedLongLongValue, pid.intValue, layer.intValue,
+            {rect.origin.x, rect.origin.y, rect.size.width, rect.size.height},
+            alpha.doubleValue, true, MacWindowRole::selectable});
+        continue;
+      }
       auto [entry, inserted] = identities.try_emplace(pid.intValue);
       if (inserted) {
         NSRunningApplication* app =
@@ -117,11 +123,12 @@ MacWindowRole classify_mac_window(const std::string_view bundle,
 
 WindowSnapshot map_mac_window_records(
     const SnapshotWindowsRequest& request, const std::vector<MacWindowRecord>& records,
-    std::int32_t own_pid) {
+    std::int32_t own_pid, std::optional<std::uint64_t> settings_token) {
   WindowSnapshot result{request.session_id, request.operation_id, request.displays.generation, {}};
   for (std::size_t index = 0; index < records.size(); ++index) {
     const auto& record = records[index];
-    if (!record.window_id || record.owner_pid == own_pid || !record.on_screen ||
+    if (!record.window_id || (record.owner_pid == own_pid &&
+        (!settings_token || record.window_id != *settings_token)) || !record.on_screen ||
         record.role == MacWindowRole::ignored || record.layer < 0 ||
         !std::isfinite(record.alpha) || record.alpha <= 0.0) continue;
     for (const auto& display : request.displays.displays) {
@@ -142,6 +149,8 @@ struct MacWindowCatalogPort::State {
   std::atomic<bool> query_busy{false};
   std::mutex mutex;
   std::map<Key, std::shared_ptr<Pending>> pending;
+  SessionId session{};
+  std::optional<std::uint64_t> settings_token;
   void finish(Key key, const std::shared_ptr<Pending>& job, Result<WindowSnapshot, Error> result) {
     {
       const std::scoped_lock lock(mutex);
@@ -167,11 +176,21 @@ MacWindowCatalogPort::~MacWindowCatalogPort() {
   }
 }
 
+void MacWindowCatalogPort::set_session(SessionId session, std::optional<std::uint64_t> token) {
+  const std::scoped_lock lock(state_->mutex);
+  state_->session = session;
+  state_->settings_token = token;
+}
+
 void MacWindowCatalogPort::snapshot_windows(const SnapshotWindowsRequest& request, Completion done) {
   const auto state = state_;
   // Objective-C blocks capture reference parameters by reference. Own the
   // request before dispatch: the caller may pass a temporary or finish its run.
   const auto owned_request = request;
+  std::optional<std::uint64_t> token;
+  { const std::scoped_lock lock(state->mutex);
+    if (state->session.value == request.session_id.value) token = state->settings_token;
+  }
   const Key key{request.session_id.value, request.operation_id.value};
   auto job = std::make_shared<Pending>();
   job->completion = std::move(done);
@@ -197,7 +216,7 @@ void MacWindowCatalogPort::snapshot_windows(const SnapshotWindowsRequest& reques
     state->query_busy.store(false);
     if (result) {
       state->finish(key, job, Result<WindowSnapshot, Error>::success(
-          map_mac_window_records(owned_request, result.value(), static_cast<std::int32_t>(getpid()))));
+          map_mac_window_records(owned_request, result.value(), static_cast<std::int32_t>(getpid()), token)));
     } else {
       state->finish(key, job, Result<WindowSnapshot, Error>::failure(result.error()));
     }
