@@ -239,7 +239,7 @@ void MacScreenCaptureKitAdapter::enumerate_displays(DisplayListCompletion comple
           displays.push_back(MacDisplayInfo{display.displayID,
               static_cast<double>(display.frame.origin.x), static_cast<double>(display.frame.origin.y),
               static_cast<double>(display.frame.size.width), static_cast<double>(display.frame.size.height),
-              static_cast<double>(info.pointPixelScale), width, height, 1.0, 1.0});
+              static_cast<double>(info.pointPixelScale), width, height});
         }
         std::sort(displays.begin(), displays.end(), [](const auto& left, const auto& right) { return left.display_id < right.display_id; });
         done(Result<std::vector<MacDisplayInfo>, Error>::success(std::move(displays)));

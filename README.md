@@ -1,6 +1,6 @@
 # SeriousShot · 严肃截图
 
-最后更新：2026-11-22 23:01:32 CST
+最后更新：2026-11-28 01:07:13 CST
 
 [For the English README, please click here.](README.en.md)
 
@@ -27,7 +27,7 @@ SeriousShot 是面向 macOS 与 Windows 的截图工具。关心 **HDR 能否正
 - **比 Game Bar 的捕获流程多一步就地标注**：在桌面选区内直接添加形状、直线、画笔笔迹、箭头和文字，把截图、标注、输出合在一起。
 
 HDR 呈现仍取决于查看器、系统和屏幕的支持；PNG 的 HDR 呈现需要查看器支持 PQ，Ultra HDR 的 HDR 呈现需要支持增益图。选择 JPEG 的优势是：不支持 HDR 的接收端仍有普通 SDR 图可看。
-Windows x64 ZIP 见 [0.2.3 发布页](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3)，macOS arm64 DMG 见 [版本列表](https://github.com/OverDriveHuang/SeriousShot/releases)。
+Windows x64 ZIP 见 [0.2.3 发布页](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3)，macOS arm64 DMG 见 [0.2.4 发布页](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.4)。
 
 ## 截图、标注、分享，一次完成
 
@@ -42,6 +42,8 @@ Windows x64 ZIP 见 [0.2.3 发布页](https://github.com/OverDriveHuang/SeriousS
 等待屏幕画面时，连续2秒没有收到新的有效画面会提示截图超时。可再次按截图快捷键或从菜单重试；系统上一次捕获尚未结束时，会提示稍后再试。详细日志可查看当前捕获阶段与原始错误，便于排查设备上的截图失败。
 
 ## SDR 与 HDR 都有色彩管理
+
+从 macOS 0.2.4 起，编辑器保存截图和分析器保存原图时，对同一选区的 PNG 和 JPEG 采用相同的 SDR/HDR 判定。截图时确认目标屏幕处于 SDR 模式，就按 SDR 处理。HDR 屏幕上截取的普通 SDR 内容也可以保存为 SDR，应用会检查选区内的源像素。
 
 ### PNG：
 
@@ -96,7 +98,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### Windows 解压运行与更新
 
-下载 [0.2.2 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2)，完整解压到一个可写目录，不要直接在压缩包中启动。
+下载 [0.2.3 的 Windows x64 ZIP](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3)，完整解压到一个可写目录，不要直接在压缩包中启动。
 
 ### macOS 软件更新
 
@@ -104,7 +106,7 @@ HDR 内容保存为带 **ISO 21496-1 + XMP 增益图**的 JPEG：普通 JPEG 查
 
 ### macOS 安装与首次使用
 
-下载 [0.2.2 的 macOS arm64 DMG](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2)。
+下载 [0.2.4 的 macOS arm64 DMG](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.4)。
 
 1. 打开下载的 **DMG**，把 **SeriousShot.app** 图标拖到 **Applications（应用程序）** 文件夹。
 2. 从“应用程序”启动 SeriousShot，设置截图快捷键与默认输出格式。不要直接从 DMG 中运行。

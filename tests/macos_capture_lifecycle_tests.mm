@@ -2,6 +2,7 @@
 #include "platform/macos/screen_capture_work.hpp"
 #include "test_support.hpp"
 #include <array>
+#include <limits>
 #include <stdexcept>
 #include "application/capture_session.hpp"
 #include "application/capture_progress_watchdog.hpp"
@@ -107,6 +108,34 @@ void enumeration_cancel_and_frozen_edr() {
   catalog->snapshot_displays({{3},{4}},[&](auto result) { ++delivered; edr_frozen=result && result.value().displays[0].dynamic_range==DisplayDynamicRange::hdr; });
   tasks.back()(); held(Result<std::vector<MacDisplayInfo>,Error>::success({MacDisplayInfo{1,0,0,1,1,1,1,1}}));
   HDRSHOT_CHECK(delivered==1 && snapshots==2 && edr_frozen);
+}
+void only_valid_current_edr_classifies_the_captured_display() {
+  const MacEdrRanges observed{
+      {1, {1.0, 4.0}}, {2, {2.0, 4.0}}, {3, {0.5, 1.0}},
+      {4, {std::numeric_limits<double>::quiet_NaN(), 1.0}},
+      {5, {std::numeric_limits<double>::infinity(), 4.0}}};
+  MacNativeDisplayFunctions native{
+      [&] { return observed; }, [](auto task) { task(); },
+      [](auto done) {
+        std::vector<MacDisplayInfo> screens;
+        for (std::uint32_t id = 1; id <= 6; ++id)
+          screens.push_back(MacDisplayInfo{id, 0, 0, 1, 1, 1, 1, 1});
+        done(Result<std::vector<MacDisplayInfo>, Error>::success(std::move(screens)));
+      }};
+  MacDisplayCatalogPort catalog(nullptr, [&](auto done, auto cancelled, auto stage) {
+    mac_enumerate_with_native(std::move(done), std::move(cancelled), std::move(stage), native);
+  });
+  bool delivered = false;
+  catalog.snapshot_displays({{1}, {1}}, [&](auto result) {
+    HDRSHOT_CHECK(result && result.value().displays.size() == 6);
+    const auto& screens = result.value().displays;
+    HDRSHOT_CHECK(screens[0].dynamic_range == DisplayDynamicRange::sdr);
+    HDRSHOT_CHECK(screens[1].dynamic_range == DisplayDynamicRange::hdr);
+    for (std::size_t i = 2; i < screens.size(); ++i)
+      HDRSHOT_CHECK(screens[i].dynamic_range == DisplayDynamicRange::unknown);
+    delivered = true;
+  });
+  HDRSHOT_CHECK(delivered);
 }
 void progress_registered_before_slow_diagnostics() {
   Image image; CaptureSteadyTime now{}; const CaptureOperationKey key{{1},{1},1};
@@ -243,6 +272,7 @@ int main(int argc, char** argv) { QCoreApplication app(argc, argv); return test:
   {"enumeration submit GUI shutdown",enumeration_submit_cannot_block_gui_or_shutdown},
   {"port outer task ticket",port_outer_call_ticket_survives_adapter_drain},
   {"permission and enqueue failure",permission_and_enqueue_failure_settle_once},{"second screen early error",second_screen_error_while_first_held},
+  {"only valid current EDR determines display range",only_valid_current_edr_classifies_the_captured_display},
   {"enumeration cancellation",enumeration_cancel_and_frozen_edr},{"progress before log IO",progress_registered_before_slow_diagnostics},
   {"blocked submit GUI",blocked_native_submit_keeps_gui_alive},{"native presenter GUI teardown",native_presenter_teardown_stays_on_gui},{"nested tickets",synchronous_nested_tickets}, {"cancel and throws",cancelled_content_and_throws},
   {"progress before copy",progress_before_copy_failure},{"single slot",port_single_slot_and_queued_cancel},

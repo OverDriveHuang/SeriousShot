@@ -231,7 +231,7 @@ void real_analysis_original_and_report_keep_capture_range() {
     const auto& compact = prepared.value().original;
     HDRSHOT_CHECK(compact.frozen_desktop->canonical_segments.front().capture_sdr_tolerance ==
         (captured == DisplayDynamicRange::hdr));
-    HDRSHOT_CHECK(compact.frozen_desktop->canonical_segments.front().display_dynamic_range == DisplayDynamicRange::hdr);
+    HDRSHOT_CHECK(compact.frozen_desktop->canonical_segments.front().display_dynamic_range == captured);
     const auto restored = windows_snapshot_with_capture_range(compact, captured);
     HDRSHOT_CHECK(restored.has_value());
     HDRSHOT_CHECK(restored.value().clean_content->source == restored.value().frozen_desktop);

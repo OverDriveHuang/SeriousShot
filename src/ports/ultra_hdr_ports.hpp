@@ -35,6 +35,8 @@ struct LinearDisplayP3HalfImage {
   // The actual maximum above still drives HDR headroom, including AA edges.
   std::optional<double> source_visible_maximum_linear_component;
   bool capture_sdr_tolerance{};
+  // A confirmed SDR capture selects ordinary JPEG even if a source channel slightly exceeds 1.
+  bool frozen_display_is_sdr{};
 };
 
 class UltraHdrInputRendererPort {
@@ -60,6 +62,7 @@ enum class JpegOutputKind { display_p3_sdr, ultra_hdr };
 }
 
 [[nodiscard]] inline JpegOutputKind jpeg_output_kind(const LinearDisplayP3HalfImage& image) {
+  if (image.frozen_display_is_sdr) return JpegOutputKind::display_p3_sdr;
   return source_requires_hdr(image.source_visible_maximum_linear_component.value_or(
       image.maximum_linear_component), image.capture_sdr_tolerance)
       ? JpegOutputKind::ultra_hdr : JpegOutputKind::display_p3_sdr;

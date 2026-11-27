@@ -767,6 +767,7 @@ Result<LinearDisplayP3HalfImage, Error> MacMetalExportPixelProcessor::render(
   }
   LinearDisplayP3HalfImage result;
   result.capture_sdr_tolerance = source.capture_sdr_tolerance;
+  result.frozen_display_is_sdr = source.display_dynamic_range == DisplayDynamicRange::sdr;
   result.size_px = source.size_px;
   result.reference_white_nits = request.reference_white_nits;
   result.source_visible_maximum_linear_component = static_cast<double>(

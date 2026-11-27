@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <bit>
 #include <cstdint>
 #include <limits>
@@ -61,6 +62,9 @@ Result<DisplaySnapshot, Error> map_display(const MacDisplayInfo& display) {
         Retryability::never,
         {{"displayId", std::to_string(display.display_id)}, {"reason", "pixel_size_overflow"}}));
   }
+  DisplayDynamicRange range = DisplayDynamicRange::unknown;
+  if (std::isfinite(display.current_maximum_edr) && display.current_maximum_edr >= 1.0)
+    range = display.current_maximum_edr == 1.0 ? DisplayDynamicRange::sdr : DisplayDynamicRange::hdr;
   return Result<DisplaySnapshot, Error>::success(DisplaySnapshot{
       DisplayId{display.display_id},
       LogicalRect{
@@ -74,9 +78,7 @@ Result<DisplaySnapshot, Error> map_display(const MacDisplayInfo& display) {
           static_cast<std::int32_t>(display.capture_width_px),
           static_cast<std::int32_t>(display.capture_height_px),
       },
-      display.current_maximum_edr > 1.0
-          ? DisplayDynamicRange::hdr
-          : DisplayDynamicRange::sdr,
+      range,
   });
 }
 

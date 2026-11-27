@@ -26,7 +26,7 @@ enum class PixelFormat : std::uint8_t { rgba16_float, rgba32_float };
 enum class ColorPrimaries : std::uint8_t { bt2020, display_p3, srgb_bt709 };
 enum class TransferFunction : std::uint8_t { pq, linear, srgb, extended_srgb };
 enum class AlphaMode : std::uint8_t { straight, premultiplied, opaque };
-enum class DisplayDynamicRange : std::uint8_t { sdr, hdr };
+enum class DisplayDynamicRange : std::uint8_t { sdr, hdr, unknown };
 
 struct ColorEncoding {
   ColorPrimaries primaries{ColorPrimaries::bt2020};

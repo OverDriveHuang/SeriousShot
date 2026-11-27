@@ -1,6 +1,6 @@
 # SeriousShot
 
-最后更新：2026-11-22 23:01:32 CST
+最后更新：2026-11-28 01:07:13 CST
 
 [简体中文](README.md) · English
 
@@ -21,7 +21,7 @@ For SDR, SeriousShot converts pixels to standard Display P3 and embeds the match
 
 HDR rendering depends on your display, system, and viewer. HDR PNG requires PQ support. Ultra HDR JPEG requires a gain-map-aware viewer for HDR playback, and ordinary JPEG viewers can display the SDR base image.
 
-Download the Windows x64 ZIP from the [0.2.3 release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3). For the macOS arm64 DMG, see [Releases](https://github.com/OverDriveHuang/SeriousShot/releases).
+Download the Windows x64 ZIP from the [0.2.3 release](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3). The macOS arm64 DMG is on the [0.2.4 release page](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.4).
 
 ## Capture, annotate, and share
 
@@ -36,6 +36,8 @@ Pin multiple screenshots to the desktop. Pan or zoom each pinned window, fit the
 If no new valid screen frame arrives for two seconds, SeriousShot reports a capture timeout. Retry with the capture shortcut or menu. When the system is still finishing the previous capture, the app asks you to wait. Detailed logs show the capture stage and the underlying error.
 
 ## SDR and HDR output
+
+On macOS 0.2.4, the editor and Analyzer use the same SDR or HDR classification when you save a captured selection as PNG or JPEG. A display confirmed to be in SDR mode at capture time produces SDR output. An SDR selection on an HDR display can also produce SDR output because SeriousShot checks the source pixels in that selection.
 
 ### PNG
 
@@ -82,11 +84,11 @@ In **Pinned**, set whether new windows stay on top and their initial short edge.
 
 ### Windows
 
-Download the [Windows x64 ZIP for 0.2.2](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2). Extract the entire ZIP to a writable folder before running SeriousShot.
+Download the [Windows x64 ZIP for 0.2.3](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.3). Extract the entire ZIP to a writable folder before running SeriousShot.
 
 ### macOS
 
-Download the [macOS arm64 DMG for 0.2.2](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.2).
+Download the [macOS arm64 DMG for 0.2.4](https://github.com/OverDriveHuang/SeriousShot/releases/tag/v0.2.4).
 
 1. Open the DMG and drag **SeriousShot.app** into **Applications**.
 2. Launch SeriousShot from Applications and set the capture shortcut and output format.

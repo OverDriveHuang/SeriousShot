@@ -21,7 +21,7 @@ def arguments(argv=None):
     parser.add_argument('--force-updates', action='store_true', help='Run updater tests even when identical inputs previously passed')
     parser.add_argument('--force-uhdr-fixture', action='store_true', help='Run the fixed-image libuhdr error test even when unchanged')
     parser.add_argument('--uhdr-fixture', type=Path, help='Run the libuhdr error test with this image; remember the local path after success')
-    parser.add_argument('--package', action='store_true', help='After tests, sign/notarize/package a DMG; requires separate release authorization')
+    parser.add_argument('--package', action='store_true', help='Stage a signed/notarized DMG for independent acceptance; requires release authorization')
     parser.add_argument('--work-dir', type=Path, help='Explicit new private packaging staging directory')
     parser.add_argument('--output-dir', type=Path, help='Explicit task deliverables directory')
     args = parser.parse_args(argv)

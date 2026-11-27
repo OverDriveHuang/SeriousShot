@@ -29,8 +29,9 @@ struct MacDisplayInfo {
   double point_pixel_scale{};
   std::size_t capture_width_px{};
   std::size_t capture_height_px{};
-  double current_maximum_edr{1.0};
-  double maximum_potential_edr{1.0};
+  // NSScreen EDR values are >= 1. Zero means no matching display observation.
+  double current_maximum_edr{};
+  double maximum_potential_edr{};
 
   friend bool operator==(const MacDisplayInfo&, const MacDisplayInfo&) = default;
 };

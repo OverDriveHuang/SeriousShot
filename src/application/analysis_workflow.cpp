@@ -32,8 +32,6 @@ ExportSnapshot compact_snapshot(const ExportSnapshot &original,
   segment.pixel_format = PixelFormat::rgba32_float;
   segment.encoding = {ColorPrimaries::display_p3, TransferFunction::linear,
                       AlphaMode::opaque, 0.0};
-  // Actual source-visible pixels, not the display headroom, choose the class.
-  segment.display_dynamic_range = DisplayDynamicRange::hdr;
   segment.linear_source = std::move(source);
   const auto& segments = original.frozen_desktop->canonical_segments;
   const auto provenance = std::find_if(segments.begin(), segments.end(),
@@ -41,8 +39,13 @@ ExportSnapshot compact_snapshot(const ExportSnapshot &original,
         return candidate.display_id == original.target_display_id ||
             (original.target_display_id.value == 0 && segments.size() == 1);
       });
-  segment.capture_sdr_tolerance = preserve_capture_provenance &&
-      provenance != segments.end() && provenance->capture_sdr_tolerance;
+  // The original retains its frozen display mode. Composed reports classify their own pixels.
+  if (preserve_capture_provenance && provenance != segments.end()) {
+    segment.display_dynamic_range = provenance->display_dynamic_range;
+    segment.capture_sdr_tolerance = provenance->capture_sdr_tolerance;
+  } else {
+    segment.display_dynamic_range = DisplayDynamicRange::hdr;
+  }
   desktop->canonical_segments.push_back(std::move(segment));
   auto result = original;
   result.frozen_desktop = desktop;

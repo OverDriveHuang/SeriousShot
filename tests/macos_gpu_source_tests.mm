@@ -66,7 +66,7 @@ std::vector<std::uint16_t> source_pixels(PixelSize size = kSize) {
 }
 
 FrozenDesktopRef interpret(std::vector<std::uint16_t> pixels, bool native,
-    PixelSize size = kSize) {
+    PixelSize size = kSize, DisplayDynamicRange range = DisplayDynamicRange::hdr) {
   NativeCaptureFrame frame{kDisplay, size, PixelFormat::rgba16_float,
       {ColorPrimaries::display_p3, TransferFunction::extended_srgb, AlphaMode::opaque, 0},
       std::move(pixels), {}, {}};
@@ -74,7 +74,7 @@ FrozenDesktopRef interpret(std::vector<std::uint16_t> pixels, bool native,
   else frame.linear_storage = macos_linear_storage(); // Retained T21 CPU reference.
   auto segment = SourceColorInterpreter::interpret(std::move(frame),
       {kDisplay, {0, 0, static_cast<double>(size.width), static_cast<double>(size.height)},
-          1, size, DisplayDynamicRange::hdr});
+          1, size, range});
   HDRSHOT_CHECK(segment.has_value());
   HDRSHOT_CHECK(segment.value().software_linearization_passes == 1);
   HDRSHOT_CHECK(segment.value().rgba_half.empty());
@@ -923,17 +923,21 @@ void capture_boundary_drives_exports_and_analysis_without_losing_isolated_hdr() 
   const auto backend = make_macos_analysis_backend();
   HDRSHOT_CHECK(backend.has_value());
   LibUltraHdrEncoder encoder;
-  for (const bool has_hdr : {false, true}) {
+  struct Case { DisplayDynamicRange range; bool over_boundary; bool expect_hdr; };
+  for (const auto test : {
+      Case{DisplayDynamicRange::sdr, false, false}, Case{DisplayDynamicRange::sdr, true, false},
+      Case{DisplayDynamicRange::hdr, false, false}, Case{DisplayDynamicRange::hdr, true, true},
+      Case{DisplayDynamicRange::unknown, false, false}, Case{DisplayDynamicRange::unknown, true, true}}) {
     std::vector<std::uint16_t> pixels(32U * 32U * 4U, 0x3c01);
     for (std::size_t offset = 0; offset < pixels.size(); offset += 4U) {
       pixels[offset + 1] = 0x3800;
       pixels[offset + 2] = 0xb800;
       pixels[offset + 3] = 0x7e00;
     }
-    if (has_hdr) pixels[1] = 0x3c02;
+    if (test.over_boundary) pixels[1] = 0x3c02;
     pixels[5] = 0x8000;
-    const auto native = interpret(pixels, true, size);
-    const auto cpu = interpret(pixels, false, size);
+    const auto native = interpret(pixels, true, size, test.range);
+    const auto cpu = interpret(pixels, false, size, test.range);
     const auto source = native->canonical_segments.front().linear_source;
     const auto samples = source->read_region(full);
     HDRSHOT_CHECK(samples.has_value());
@@ -952,15 +956,22 @@ void capture_boundary_drives_exports_and_analysis_without_losing_isolated_hdr() 
     snapshot.annotation_render_plan = std::make_shared<AnnotationRenderPlan>(empty_render(full));
     const auto analysis = AnalysisWorkflow::prepare(snapshot, *backend.value().port, metal.get());
     HDRSHOT_CHECK(analysis.has_value());
-    HDRSHOT_CHECK(analysis.value().input.is_hdr == has_hdr);
+    HDRSHOT_CHECK(analysis.value().input.is_hdr == test.expect_hdr);
     const auto analyzed_samples = analysis.value().input.source->read_region(full);
     HDRSHOT_CHECK(analyzed_samples.has_value());
     check_float_bits(analyzed_samples.value(), samples.value());
-    const auto report = AnalysisWorkflow::report_snapshot(snapshot, analysis.value().input.source);
+    auto cpu_snapshot = snapshot;
+    cpu_snapshot.frozen_desktop = cpu;
+    cpu_snapshot.save_format = SaveFormat::ultra_hdr_jpeg;
+    CpuUltraHdrInputRenderer cpu_renderer;
+    const auto cpu_jpeg = ExportWorkflow::prepare(cpu_snapshot, nullptr, nullptr, &cpu_renderer, &encoder);
+    HDRSHOT_CHECK(cpu_jpeg && cpu_jpeg.value().output_encoding.transfer ==
+        (test.expect_hdr ? TransferFunction::pq : TransferFunction::srgb));
+    const auto report = AnalysisWorkflow::report_snapshot(analysis.value().original, analysis.value().input.source);
     HDRSHOT_CHECK(report.has_value());
 
     for (auto candidate : {snapshot, analysis.value().original, report.value()}) {
-      const bool output_hdr = has_hdr || !candidate.frozen_desktop->canonical_segments.front().capture_sdr_tolerance;
+      const bool output_hdr = test.expect_hdr || candidate.frozen_desktop == report.value().frozen_desktop;
       for (const auto white : {PqDiffuseWhite::nits_100, PqDiffuseWhite::nits_203}) {
         for (const auto format : {SaveFormat::png_display_p3_dual_range, SaveFormat::ultra_hdr_jpeg}) {
           candidate.pq_diffuse_white = white;
